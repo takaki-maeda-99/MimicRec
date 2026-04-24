@@ -1054,7 +1054,7 @@ class LatestValue(Generic[T]):
 pytest tests/unit/test_latest_value.py -v
 ```
 
-Expected: `3 passed`.
+Expected: `4 passed`.
 
 - [ ] **Step 2.4: Write `clock.py` and `metrics.py`**
 
@@ -1963,6 +1963,13 @@ async def run_replay(
     fps: int,
     command_goal_slot: LatestValue[RobotCommand],
     clock: Clock,
+    # Optional params plumbed by Task 10's watchdog. When None, replay runs
+    # without safety enforcement (acceptable only for mock-backed tests that
+    # explicitly want to exercise the gating logic without safety). Task 10
+    # makes these load-bearing when the watchdog is present.
+    measured_state_slot: "LatestValue | None" = None,
+    safety: "object | None" = None,         # ReplaySafetyConfig when present
+    error_bus: "object | None" = None,      # ErrorBus when present
 ) -> None:
     if session.state != SessionState.READY:
         from mimicrec.errors import InvalidTransitionError
@@ -3372,6 +3379,54 @@ class MockRobotAdapter:
 
 Analogous updates for `MockTeleoperator` and `MockCamera`: accept `fault: FaultProfile | None = None` in `__init__`, honor `drop_prob`, `latency_ms`, `jitter_ms`, and `stuck_for_n_calls` in the corresponding `read_*` method.
 
+Explicit `MockCamera` diff:
+
+```python
+# backend/mimicrec/cameras/mock_camera.py
+from __future__ import annotations
+import asyncio
+import numpy as np
+
+from mimicrec.adapters.fault_profile import FaultProfile
+from mimicrec.types import Frame
+
+
+class MockCamera:
+    def __init__(
+        self,
+        name: str,
+        width: int = 64,
+        height: int = 48,
+        dt_ns: int = 33_000_000,
+        fault: FaultProfile | None = None,
+    ):
+        self.name = name
+        self._w, self._h = width, height
+        self._dt_ns = dt_ns
+        self._fault = fault
+        self._last_frame: Frame | None = None
+        self._counter = 0
+        self.drop_next = 0   # kept for backwards compatibility with Task 7 test
+
+    async def read(self) -> Frame:
+        await asyncio.sleep(self._dt_ns / 1e9)
+        if self.drop_next > 0:
+            self.drop_next -= 1
+            raise TimeoutError("mock camera drop (drop_next)")
+        if self._fault:
+            if self._fault.roll_drop():
+                raise TimeoutError("mock camera drop (fault)")
+            await asyncio.sleep(self._fault.sample_delay_s())
+            if self._fault.stuck_for_n_calls > 0 and self._last_frame is not None:
+                self._fault.stuck_for_n_calls -= 1
+                return self._last_frame
+        img = np.full((self._h, self._w, 3), self._counter % 255, dtype=np.uint8)
+        self._counter += 1
+        frame = Frame(image=img)
+        self._last_frame = frame
+        return frame
+```
+
 - [ ] **Step 9.3: Write `test_fault_injection.py`**
 
 ```python
@@ -3442,16 +3497,39 @@ async def test_stale_sample_counter_increments_when_reader_is_stuck(mock_teleop)
     assert metrics.get("stale_sample_count") > 0
 ```
 
-This test requires `run_teleop_control_loop` to increment `stale_sample_count` when `slot.peek().t_mono_ns < tick_t - 3*tick_interval_ns`. Add that branch in Task 2's loop now (small diff; spec §7.2 "Staleness handling"). Add a similar small test for camera drop and teleop stuck-for-n-calls.
+- [ ] **Step 9.3.1: Amend `run_teleop_control_loop` to count stale samples**
 
-**Required Task 2 diff (apply as part of Task 9):**
+Spec §7.2 staleness handling. Open `backend/mimicrec/session/control_loop.py` and, in `run_teleop_control_loop`, replace the block immediately after reading `state` and `action`:
 
 ```python
-# In run_teleop_control_loop, just after reading `state` and `action`:
-stale_threshold = 3 * tick_interval_ns
-if state is not None and tick_t - state.t_mono_ns > stale_threshold:
+state  = robot_state_slot.peek()
+action = teleop_slot.peek()
+if state is None or action is None:
+    await clock.sleep_until(next_tick_ns)
+    next_tick_ns += tick_interval_ns
+    continue
+```
+
+with:
+
+```python
+state  = robot_state_slot.peek()
+action = teleop_slot.peek()
+if state is None or action is None:
+    await clock.sleep_until(next_tick_ns)
+    next_tick_ns += tick_interval_ns
+    continue
+
+stale_threshold_ns = 3 * tick_interval_ns
+if tick_t - state.t_mono_ns > stale_threshold_ns:
+    metrics.inc("stale_sample_count")
+if tick_t - action.t_mono_ns > stale_threshold_ns:
     metrics.inc("stale_sample_count")
 ```
+
+Make the same change in `run_handteach_control_loop` for `state` only (no teleop there).
+
+Re-run `pytest tests/integration/test_control_loop_teleop.py tests/integration/test_review_hold_idle.py -v` to confirm Task 2's green bar is preserved.
 
 - [ ] **Step 9.4: Run, verify green**
 
@@ -3659,24 +3737,65 @@ Expected: `5 passed`.
 
 - [ ] **Step 10.4: Wire the watchdog into `run_replay`**
 
-Update `backend/mimicrec/session/replay.py`:
+`run_replay`'s signature already accepts `measured_state_slot`, `safety`, and `error_bus` as optional parameters (added in Task 3 explicitly for this handoff). This step promotes them from "optional and ignored" to "active when present". The Task 3 `test_replay_exclusive_ownership.py` test continues to pass them as `None` and is **not** changed.
+
+Update the body of `run_replay` in `backend/mimicrec/session/replay.py`:
 
 ```python
-# Add signature parameter: safety: ReplaySafetyConfig, measured_state_slot: LatestValue[RobotState]
-# Inside the per-target loop, call:
-#   wd.assert_fresh(clock.monotonic_ns())
-#   wd.check(target=q, prev_target=prev_q, prev_prev_target=prev_prev_q, measured=measured)
-# Maintain prev_q / prev_prev_q rolling history.
-# On ReplaySafetyError:
-#   session.replay_active = False
-#   measured = measured_state_slot.peek()
-#   if measured is not None:
-#       command_goal_slot.set(RobotCommand(q=measured.value.joint_pos, t_mono_ns=clock.monotonic_ns()),
-#                             t_mono_ns=clock.monotonic_ns())
-#   await error_bus.publish(e)
-#   raise
-# After a successful set, call wd.note_command_sent(clock.monotonic_ns()).
+from mimicrec.session.replay_safety import ReplayWatchdog
+
+# Inside run_replay, after flipping replay_active = True:
+wd = ReplayWatchdog(safety) if safety is not None else None
+prev_q: np.ndarray | None = None
+prev_prev_q: np.ndarray | None = None
+
+try:
+    for q in trajectory.joint_targets:
+        if session.stopped.is_set() or not session.replay_active:
+            break
+        target = q.astype(np.float32)
+
+        if wd is not None:
+            now_ns = clock.monotonic_ns()
+            try:
+                wd.assert_fresh(now_ns)
+                measured = None
+                if measured_state_slot is not None:
+                    m = measured_state_slot.peek()
+                    measured = m.value.joint_pos if m is not None else target
+                wd.check(
+                    target=target,
+                    prev_target=prev_q,
+                    prev_prev_target=prev_prev_q,
+                    measured=measured if measured is not None else target,
+                )
+            except ReplaySafetyError as e:
+                # Hold: write current measured state and bail.
+                if measured_state_slot is not None:
+                    m = measured_state_slot.peek()
+                    if m is not None:
+                        now2 = clock.monotonic_ns()
+                        command_goal_slot.set(
+                            RobotCommand(q=m.value.joint_pos.copy(), t_mono_ns=now2),
+                            t_mono_ns=now2,
+                        )
+                if error_bus is not None:
+                    await error_bus.publish(e)
+                raise
+
+        now3 = clock.monotonic_ns()
+        command_goal_slot.set(RobotCommand(q=target, t_mono_ns=now3), t_mono_ns=now3)
+        if wd is not None:
+            wd.note_command_sent(now3)
+        prev_prev_q, prev_q = prev_q, target
+        await clock.sleep_until(next_tick_ns)
+        next_tick_ns += tick_interval_ns
+finally:
+    session.replay_active = False
+    session.sub_state = None
 ```
+
+The Task 3 integration test (`test_replay_exclusive_ownership.py`) calls `run_replay(..., clock=RealClock())` with no safety/bus, which hits the `if wd is not None` guard and skips all checks. That test must continue to pass unchanged after this step.
 
 - [ ] **Step 10.5: Write an integration test that proves replay halts on a jump**
 
