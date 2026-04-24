@@ -560,7 +560,11 @@ POST   /api/replay/stop
 
 GET    /api/session/config                         # resolved DictConfig of the active session
 
-GET    /api/datasets/{ds}/archive                  # streamed zip of the dataset directory
+GET    /api/datasets/{ds}/archive                  # streamed zip of the dataset directory;
+                                                   #   tombstoned episodes are excluded
+                                                   #   (files omitted, episodes.jsonl
+                                                   #   rewritten without deleted rows).
+                                                   #   See §8.1.
 
 GET    /api/episodes/{ds}/{idx}/video/{cam}        # MP4 stream
 GET    /api/episodes/{ds}/{idx}/frames             # time-series JSON
@@ -677,7 +681,8 @@ MimicRec/
     mimicrec/
       adapters/        (so101, rebotarm, so_leader, mock)
       mappers/
-      session/         (state machine, control loop, LatestValue)
+      cameras/         (CameraManager; LeRobot driver classes are imported, not wrapped)
+      session/         (state machine, control loop, LatestValue, command dispatcher)
       recording/       (parquet writer, MP4 writers)
       api/             (FastAPI routes, WS hubs)
       config/          (OmegaConf loading + defaults merger)
