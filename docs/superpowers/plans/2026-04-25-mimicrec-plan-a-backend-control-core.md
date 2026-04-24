@@ -164,8 +164,8 @@ configs/
 - `session/dispatcher.py` — the `command_dispatcher` coroutine from spec §7.2.
 - `session/replay.py` — the replay coroutine + a `ReplayWatchdog` that enforces safety params from config.
 - `session/lifecycle.py` — `SessionManager` coordinates: input = requests like `start(cfg)`, `stop()`, `episode_start()`, output = `Session` state updates and `ErrorBus` events. Enforces state-machine transitions and raises `InvalidTransitionError` on bad transitions. Translates adapter exceptions to domain errors; HTTP translation is Plan B's job.
-- `recording/writer.py` — consumes `recorder.queue`, writes one parquet row per bundle via `parquet_row.py`, pushes each camera frame into the per-episode MP4 encoder.
-- `recording/pending.py` — `PendingEpisode` owns a staging dir (`datasets/<ds>/.pending/ep_<N>/`); on save, `move_into_place(ds_root)`; on discard, `rmtree`.
+- `recording/writer.py` — a **session-scoped** task started once by `SessionManager` and stopped once at session end. It consumes `recorder.queue`, and consults a `LatestValue[PendingEpisode | None]` slot (the `current_pending` slot set by `SessionManager` on `episode/start` and cleared on `episode/save`/`episode/discard`) to decide where to append rows and frames. There is no per-episode writer task. Queue draining continues across episode boundaries; rows without an active pending are dropped with a `writer_dropped_no_pending` metric tick.
+- `recording/pending.py` — `PendingEpisode` owns a staging dir (`datasets/<ds>/.pending/ep_<N>/`) and, while active, one `Mp4EpisodeWriter` per camera. `append_row(row, frames)` writes both the parquet buffer entry and the MP4 frames in one call. On `save`, the pending files (parquet + MP4s) are moved into the dataset; on `discard`, the whole staging directory is `rmtree`d.
 - `recording/metadata.py` — read/append helpers for `episodes.jsonl`, `tasks.jsonl`, `info.json`, with tombstone-aware helpers.
 - `datasets/reader.py` — `iter_episodes(ds_path, include_deleted=False)` and `read_episode(idx)`. Single source of truth for "which rows count".
 - `datasets/archive.py` — builds the archive payload as a stream of `(path_in_zip, bytes_or_path)` so Plan B can plug it into a zip stream without buffering whole datasets in memory. Filters tombstones, rewrites `episodes.jsonl` with only live rows.
@@ -257,8 +257,11 @@ packages = ["mimicrec"]
 [pytest]
 asyncio_mode = auto
 testpaths = tests
+# Do not set `filterwarnings = error`: av, pyarrow, and transitive lerobot deps
+# routinely emit DeprecationWarning that is not ours to fix. We keep warnings
+# visible in output but not test-failing.
 filterwarnings =
-    error
+    default
 ```
 
 - [ ] **Step 0.4: Write `backend/mimicrec/__init__.py`**
@@ -276,6 +279,30 @@ __version__ = "0.1.0"
 def test_mimicrec_importable():
     import mimicrec
     assert mimicrec.__version__ == "0.1.0"
+
+
+def test_lerobot_api_surface_we_rely_on():
+    """Fail fast if the LeRobot API we lean on in Tasks 1 and 5 has drifted.
+
+    Tasks 1 and 5 call `LeRobotDataset.resume(repo_id=..., root=...)`. If that
+    signature has changed in the editable-installed lerobot, both spike tests
+    will skip with a PIVOT message and we'd miss the compatibility guarantee.
+    Catch it here at Task 0 instead.
+    """
+    import inspect
+    import pytest
+    try:
+        from lerobot.datasets.lerobot_dataset import LeRobotDataset
+    except Exception as e:
+        pytest.skip(f"lerobot not importable yet: {e}")
+    assert hasattr(LeRobotDataset, "resume"), (
+        "LeRobotDataset.resume has disappeared; re-check Tasks 1 and 5 spike paths."
+    )
+    sig = inspect.signature(LeRobotDataset.resume)
+    params = set(sig.parameters.keys())
+    # Allow extra params, but these two must be accepted by name.
+    missing = {"repo_id", "root"} - params
+    assert not missing, f"LeRobotDataset.resume missing expected params: {missing}"
 ```
 
 - [ ] **Step 0.6: Install the package editable and run tests**
@@ -938,13 +965,25 @@ async def test_peek_returns_last_write():
 async def test_wait_for_new_resolves_on_next_write():
     lv: LatestValue[int] = LatestValue()
     lv.set(1, t_mono_ns=100)
+    seq_before = lv.seq
 
     async def writer():
         await asyncio.sleep(0.01)
         lv.set(2, t_mono_ns=200)
 
     asyncio.create_task(writer())
-    s = await asyncio.wait_for(lv.wait_for_new(), timeout=0.5)
+    s = await asyncio.wait_for(lv.wait_for_new(since_seq=seq_before), timeout=0.5)
+    assert s.value == 2
+
+
+async def test_wait_for_new_returns_immediately_if_already_newer():
+    """The seq-based design must not lose a write that races the waiter."""
+    lv: LatestValue[int] = LatestValue()
+    lv.set(1, t_mono_ns=100)
+    # Waiter observes the current seq, then a write happens *before* wait_for_new
+    seq_before = lv.seq
+    lv.set(2, t_mono_ns=200)
+    s = await asyncio.wait_for(lv.wait_for_new(since_seq=seq_before), timeout=0.5)
     assert s.value == 2
 ```
 
@@ -963,25 +1002,51 @@ T = TypeVar("T")
 
 
 class LatestValue(Generic[T]):
+    """A single-slot, latest-writer-wins value with sequence-based awaiting.
+
+    Writers call `set(value, t_mono_ns)` — unconditional replacement.
+    Non-blocking readers call `peek()` — returns the stored Stamped or None.
+    Awaiting readers call `wait_for_new(since_seq=...)` — returns the next
+    Stamped with seq > since_seq. The sequence number avoids the classic
+    Event set/clear race: if a writer races a would-be waiter, the waiter
+    simply sees a higher seq on the next await and returns immediately.
+    """
+
     def __init__(self) -> None:
         self._stamped: Stamped[T] | None = None
-        self._event = asyncio.Event()
+        self._seq: int = 0
+        self._cond = asyncio.Condition()
 
-    def set(self, value: T, t_mono_ns: int) -> None:
-        self._stamped = Stamped(value=value, t_mono_ns=t_mono_ns)
-        self._event.set()
-        self._event.clear()
+    @property
+    def seq(self) -> int:
+        return self._seq
 
     def peek(self) -> Stamped[T] | None:
         return self._stamped
 
-    async def wait_for_new(self) -> Stamped[T]:
-        await self._event.wait()
-        assert self._stamped is not None
-        return self._stamped
+    def set(self, value: T, t_mono_ns: int) -> None:
+        self._stamped = Stamped(value=value, t_mono_ns=t_mono_ns)
+        self._seq += 1
+        # notify any sleeping waiters; non-blocking if no lock holders.
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        loop.create_task(self._notify_all())
+
+    async def _notify_all(self) -> None:
+        async with self._cond:
+            self._cond.notify_all()
+
+    async def wait_for_new(self, since_seq: int | None = None) -> Stamped[T]:
+        target = self._seq if since_seq is None else since_seq
+        async with self._cond:
+            while self._seq <= target or self._stamped is None:
+                await self._cond.wait()
+            return self._stamped
 ```
 
-Note: `Event.set()` then `Event.clear()` on every write is the single-producer-multiple-consumer pattern when we don't want to buffer per-consumer. Acceptable here because the dispatcher (the only `wait_for_new()` consumer in Plan A) re-enters the wait promptly. Document this.
+**Contract:** the dispatcher in Task 3 captures `seq_before = goal.seq` before `await goal.wait_for_new(since_seq=seq_before)` so writes that land between peek and await are still observed.
 
 - [ ] **Step 2.3: Verify tests pass**
 
@@ -1059,8 +1124,14 @@ from collections import defaultdict
 
 
 class Metrics:
+    """Minimal in-memory metrics. Counters (monotonically increasing) and
+    gauges (arbitrary current values) are kept in separate dicts so readers
+    can distinguish them in `snapshot()`.
+    """
+
     def __init__(self) -> None:
         self._counters: dict[str, int] = defaultdict(int)
+        self._gauges: dict[str, float] = {}
 
     def inc(self, name: str, by: int = 1) -> None:
         self._counters[name] += by
@@ -1068,8 +1139,14 @@ class Metrics:
     def get(self, name: str) -> int:
         return self._counters[name]
 
-    def snapshot(self) -> dict[str, int]:
-        return dict(self._counters)
+    def set_gauge(self, name: str, value: float) -> None:
+        self._gauges[name] = value
+
+    def gauge(self, name: str) -> float:
+        return self._gauges.get(name, 0.0)
+
+    def snapshot(self) -> dict[str, dict[str, float]]:
+        return {"counters": dict(self._counters), "gauges": dict(self._gauges)}
 ```
 
 - [ ] **Step 2.5: Write the adapter Protocols and mocks**
@@ -1101,6 +1178,16 @@ class RobotAdapter(Protocol):
     async def read_state(self) -> RobotState: ...
     async def send_joint_command(self, q: np.ndarray) -> None: ...
     async def set_mode(self, mode: RobotMode) -> None: ...
+
+    def supports_mode(self, mode: RobotMode) -> bool:
+        """Capability query. MUST be pure (no hardware side effects).
+
+        Used by the session precheck to reject HAND_TEACH on adapters that
+        cannot provide gravity compensation, *before* any hardware is
+        touched. An adapter that returns True here must either honor
+        set_mode(mode) or raise HandTeachNotSupportedError when it's called.
+        """
+        ...
 ```
 
 `backend/mimicrec/adapters/teleop.py`:
@@ -1169,6 +1256,9 @@ class MockRobotAdapter:
 
     async def set_mode(self, mode: RobotMode) -> None:
         self._mode = mode
+
+    def supports_mode(self, mode: RobotMode) -> bool:
+        return True   # mock supports all modes
 ```
 
 `backend/mimicrec/adapters/mock_teleop.py`:
@@ -1441,18 +1531,24 @@ def mock_teleop():
 
 
 async def _prime_robot_reader(robot, slot: LatestValue[RobotState]) -> asyncio.Task:
+    import time
     async def run():
         while True:
+            t = time.monotonic_ns()
             st = await robot.read_state()
-            slot.set(st, t_mono_ns=0)
+            st.t_mono_ns = t
+            slot.set(st, t_mono_ns=t)
     return asyncio.create_task(run())
 
 
 async def _prime_teleop_reader(teleop, slot: LatestValue[TeleopAction]) -> asyncio.Task:
+    import time
     async def run():
         while True:
+            t = time.monotonic_ns()
             a = await teleop.read_action()
-            slot.set(a, t_mono_ns=0)
+            a.t_mono_ns = t
+            slot.set(a, t_mono_ns=t)
     return asyncio.create_task(run())
 ```
 
@@ -1737,12 +1833,48 @@ async def test_dispatcher_sends_each_new_goal_to_robot():
     await asyncio.sleep(0.05)
 
     stopped.set()
-    goal.set(RobotCommand(q=np.zeros(2, dtype=np.float32)), t_mono_ns=3)
     await task
 
     sent = robot.sent_commands
-    assert any(np.allclose(c, [0.3, 0.4]) for c in sent)   # latest-writer-wins semantics
-    assert all(not np.allclose(c, [0.5, 0.6]) for c in sent)  # never sent nonsense
+    # The last written goal must have been sent at least once.
+    assert any(np.allclose(c, [0.3, 0.4]) for c in sent)
+    # Dispatcher must only send values that were actually written to the slot.
+    legal = [np.array([0.1, 0.2], dtype=np.float32), np.array([0.3, 0.4], dtype=np.float32)]
+    assert all(any(np.allclose(c, L) for L in legal) for c in sent)
+
+
+async def test_dispatcher_collapses_bursts_latest_writer_wins():
+    """If the dispatcher is busy on a send, stale intermediate goals must
+    not accumulate. After a burst of writes the dispatcher resumes at the
+    latest value, not the oldest pending one."""
+    robot = MockRobotAdapter()
+    # Make the mock's send slow so we can queue up writes during a send.
+    async def slow_send(q):
+        await asyncio.sleep(0.1)
+        robot.sent_commands.append(q.copy())
+    robot.send_joint_command = slow_send  # type: ignore[assignment]
+
+    goal: LatestValue[RobotCommand] = LatestValue()
+    bus = ErrorBus()
+    stopped = asyncio.Event()
+    task = asyncio.create_task(run_command_dispatcher(robot, goal, bus, stopped))
+
+    goal.set(RobotCommand(q=np.array([1.0, 0.0], dtype=np.float32)), t_mono_ns=1)
+    await asyncio.sleep(0.02)    # first send is in flight now
+    goal.set(RobotCommand(q=np.array([2.0, 0.0], dtype=np.float32)), t_mono_ns=2)
+    goal.set(RobotCommand(q=np.array([3.0, 0.0], dtype=np.float32)), t_mono_ns=3)
+    goal.set(RobotCommand(q=np.array([4.0, 0.0], dtype=np.float32)), t_mono_ns=4)
+    await asyncio.sleep(0.25)
+
+    stopped.set()
+    await task
+
+    # We expect the first in-flight send (1.0) plus a single follow-up
+    # reflecting the latest goal (4.0). Intermediate 2.0/3.0 must not all appear.
+    values = [c[0] for c in robot.sent_commands]
+    assert 1.0 in values
+    assert 4.0 in values
+    assert values.count(2.0) + values.count(3.0) <= 1
 ```
 
 - [ ] **Step 3.4: Implement `dispatcher.py`**
@@ -1765,14 +1897,31 @@ async def run_command_dispatcher(
     errors: ErrorBus,
     stopped: asyncio.Event,
 ) -> None:
+    """Single-in-flight command dispatcher with latest-writer-wins collapse.
+
+    Between sends we re-snapshot `goal.peek()` rather than re-awaiting
+    `wait_for_new()` if new writes landed during the previous send. This
+    is the source of the "collapse intermediate goals" guarantee in spec
+    §4: once we return from `send_joint_command`, we send the *newest*
+    value on the next iteration, skipping any stale writes in between.
+    """
+    last_seen_seq = 0
     while not stopped.is_set():
+        # If a new value arrived while we were sending the previous one,
+        # skip the wait and send the latest immediately.
+        current = goal.peek()
+        if current is None or goal.seq <= last_seen_seq:
+            try:
+                stamped = await asyncio.wait_for(
+                    goal.wait_for_new(since_seq=last_seen_seq),
+                    timeout=0.05,
+                )
+            except asyncio.TimeoutError:
+                continue
+            current = stamped
+        last_seen_seq = goal.seq
         try:
-            stamped = await asyncio.wait_for(goal.wait_for_new(), timeout=0.05)
-        except asyncio.TimeoutError:
-            continue
-        cmd = stamped.value
-        try:
-            await robot.send_joint_command(cmd.q)
+            await robot.send_joint_command(current.value.q)
         except HardwareError as e:
             await errors.publish(e)
 ```
@@ -1820,6 +1969,9 @@ async def run_replay(
         raise InvalidTransitionError(
             f"replay requires SessionState.READY, got {session.state}"
         )
+    if session.replay_active:
+        from mimicrec.errors import InvalidTransitionError
+        raise InvalidTransitionError("another replay is already active")
     session.replay_active = True
     session.sub_state = SubState.REPLAYING
 
@@ -2012,6 +2164,9 @@ class SO101Adapter:
                 "(see spec §15). Use teleop mode with a leader arm instead."
             )
         self._mode = mode
+
+    def supports_mode(self, mode: RobotMode) -> bool:
+        return mode != RobotMode.GRAVITY_COMP
 ```
 
 - [ ] **Step 4.3: Run, verify pass**
@@ -2056,6 +2211,9 @@ class ReBotArmAdapter:
     async def set_mode(self, mode: RobotMode) -> None:
         # Unlike SO-101, reBotArm supports GRAVITY_COMP in principle (verified in Plan D).
         self._mode = mode
+
+    def supports_mode(self, mode: RobotMode) -> bool:
+        return True
 ```
 
 - [ ] **Step 4.5: Write `session/lifecycle.py` with the session starter guard**
@@ -2079,17 +2237,18 @@ class StartSessionRequestDomain:
     mode: SessionMode
 
 
-async def precheck_start(req: StartSessionRequestDomain) -> None:
-    """Raise domain errors before any hardware is connected."""
-    if req.mode == SessionMode.HAND_TEACH:
-        # Best-effort: ask the adapter whether it can enter GRAVITY_COMP
-        try:
-            await req.robot.set_mode(RobotMode.GRAVITY_COMP)
-        except HandTeachNotSupportedError:
-            raise
-        else:
-            # Reset to POSITION for the rest of the bring-up; real connect happens later.
-            await req.robot.set_mode(RobotMode.POSITION)
+def precheck_start(req: StartSessionRequestDomain) -> None:
+    """Raise domain errors before any hardware is connected.
+
+    This MUST NOT cause side effects on the adapter — no connect, no
+    set_mode, no I/O. It asks the adapter for its capabilities via the
+    pure `supports_mode` query.
+    """
+    if req.mode == SessionMode.HAND_TEACH and not req.robot.supports_mode(RobotMode.GRAVITY_COMP):
+        raise HandTeachNotSupportedError(
+            f"robot {req.robot.name!r} does not support hand-teach "
+            f"(GRAVITY_COMP). Start a TELEOP-mode session instead."
+        )
 
 
 def assert_can_start_episode(session: Session) -> None:
@@ -2110,11 +2269,17 @@ from mimicrec.session.lifecycle import StartSessionRequestDomain, precheck_start
 from mimicrec.types import SessionMode
 
 
-async def test_precheck_rejects_so101_handteach():
+def test_precheck_rejects_so101_handteach():
     a = SO101Adapter(port="/dev/null")
     req = StartSessionRequestDomain(robot=a, mode=SessionMode.HAND_TEACH)
     with pytest.raises(HandTeachNotSupportedError):
-        await precheck_start(req)
+        precheck_start(req)   # pure capability query; must not touch hardware
+
+
+def test_precheck_accepts_so101_teleop():
+    a = SO101Adapter(port="/dev/null")
+    req = StartSessionRequestDomain(robot=a, mode=SessionMode.TELEOP)
+    precheck_start(req)  # should not raise
 ```
 
 - [ ] **Step 4.7: Run, verify pass**
@@ -2365,15 +2530,21 @@ git commit -m "planA: tombstone-aware dataset reader and archive filter"
 
 ---
 
-## Task 6 — Recorder writer task (drains queue, encodes MP4, writes parquet)
+## Task 6 — Recorder writer task (session-scoped, drains queue, encodes MP4, writes parquet)
 
-**Goal:** Implement the writer task from spec §7.2. It owns `recorder.queue` (an `asyncio.Queue[SampleBundle]`), per-episode parquet rows (appended via `PendingEpisode.append_row`), and per-camera MP4 encoders (opened on episode start, flushed on `finalize`). Expose `queue_depth`, `writer_lag_ms`, and episode-progress counters via `Metrics`.
+**Goal:** Implement the **session-scoped** writer task from spec §7.2. The task is started once by `SessionManager` on `session/start` and stopped once on `session/end`. It watches a `current_pending: LatestValue[PendingEpisode | None]` slot that the `SessionManager` mutates on `episode/start`, `episode/save`, and `episode/discard`. It drains `recorder.queue` (an `asyncio.Queue[SampleBundle]`) and:
+
+- when `current_pending.peek()` is a `PendingEpisode`, writes parquet rows via `PendingEpisode.append_row(row, frames)` and pushes each camera frame into the per-camera MP4 encoder that `PendingEpisode` opened on `episode/start`,
+- when it is `None`, drops the bundle and increments a `writer_dropped_no_pending` counter — this is the "REVIEW hold" case where the control loop has stopped enqueuing but late-arrived bundles may still be in the queue.
+
+The writer never restarts across episodes. It exposes `queue_depth`, `writer_lag_ms`, `writer_rows_written`, and `writer_dropped_no_pending` via `Metrics`.
 
 **Files:**
 - Create: `backend/mimicrec/recording/writer.py`
 - Create: `backend/mimicrec/cameras/recording.py`   (MP4 encoder wrapper)
-- Modify: `backend/mimicrec/recording/pending.py`    (add `open_video_writer()` hook)
+- Modify: `backend/mimicrec/recording/pending.py`    (add per-camera Mp4EpisodeWriter lifecycle; new `append_row(row, frames)` signature)
 - Create: `tests/integration/test_writer_drains_queue.py`
+- Create: `tests/integration/test_writer_across_episodes.py`
 
 - [ ] **Step 6.1: Write MP4 encoder wrapper**
 
@@ -2413,7 +2584,53 @@ class Mp4EpisodeWriter:
         self._container.close()
 ```
 
-- [ ] **Step 6.2: Write failing integration test**
+- [ ] **Step 6.2: Extend `PendingEpisode` with per-camera Mp4 writers**
+
+Modify `backend/mimicrec/recording/pending.py`:
+
+```python
+# Inside PendingEpisode:
+
+def open_video_writers(self, fps: int, cameras: dict[str, tuple[int, int]]) -> None:
+    """Open one Mp4EpisodeWriter per camera. `cameras` maps name -> (width, height)."""
+    from mimicrec.cameras.recording import Mp4EpisodeWriter
+    self._video_writers: dict[str, Mp4EpisodeWriter] = {}
+    for name, (w, h) in cameras.items():
+        path = self._stage / f"{name}.mp4"   # save() moves *.mp4 into videos/ dir
+        self._video_writers[name] = Mp4EpisodeWriter(path, fps=fps, width=w, height=h)
+
+def append_row(self, row: dict, frames: dict[str, object] | None = None) -> int:
+    """Append a parquet row and (if frames given) write frame bytes to the matching MP4.
+
+    Returns the video_frame_index written for each camera (as a side channel via `frames`).
+    Callers pass a dict {name: Stamped[Frame] | None}; None means no frame this tick.
+    """
+    if self._finalized:
+        raise RuntimeError("cannot append after finalize()")
+    self._rows.append(row)
+    if frames and getattr(self, "_video_writers", None):
+        for name, stamped in frames.items():
+            if stamped is None:
+                continue
+            writer = self._video_writers.get(name)
+            if writer is not None:
+                writer.write_frame(stamped.value.image)
+    return len(self._rows) - 1
+
+def finalize(self) -> None:
+    if self._finalized:
+        return
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    table = pa.Table.from_pylist(self._rows)
+    pq.write_table(table, self._stage / f"episode_{self._episode_index:06d}.parquet")
+    # close all mp4 writers
+    for w in getattr(self, "_video_writers", {}).values():
+        w.close()
+    self._finalized = True
+```
+
+- [ ] **Step 6.3: Write failing integration test**
 
 `tests/integration/test_writer_drains_queue.py`:
 
@@ -2426,22 +2643,28 @@ import numpy as np
 from mimicrec.recording.dataset_layout import init_dataset, dataset_paths
 from mimicrec.recording.pending import PendingEpisode
 from mimicrec.recording.writer import run_writer
-from mimicrec.types import RobotCommand, RobotState, SampleBundle, Stamped
+from mimicrec.types import Frame, RobotCommand, RobotState, SampleBundle, Stamped
+from mimicrec.util.latest_value import LatestValue
 from mimicrec.util.metrics import Metrics
 
 
-async def test_writer_drains_queue_into_pending(tmp_path: Path):
+async def test_writer_drains_queue_into_pending_with_mp4(tmp_path: Path):
     ds = tmp_path / "ds"
-    init_dataset(ds, fps=30, joint_names=["j1", "j2"], camera_names=[])
+    init_dataset(ds, fps=30, joint_names=["j1", "j2"], camera_names=["front"])
     pe = PendingEpisode.open(ds, episode_index=0)
+    pe.open_video_writers(fps=30, cameras={"front": (64, 48)})
+
+    current: LatestValue[PendingEpisode | None] = LatestValue()
+    current.set(pe, t_mono_ns=1)
     q: asyncio.Queue = asyncio.Queue()
     metrics = Metrics()
     stopped = asyncio.Event()
 
     task = asyncio.create_task(run_writer(
-        pending=pe, queue=q, episode_fps=30, metrics=metrics, stopped=stopped,
+        current_pending=current, queue=q, metrics=metrics, stopped=stopped,
     ))
 
+    img = np.zeros((48, 64, 3), dtype=np.uint8)
     for i in range(10):
         state = Stamped(
             RobotState(
@@ -2453,24 +2676,61 @@ async def test_writer_drains_queue_into_pending(tmp_path: Path):
             t_mono_ns=i * 33_000_000,
         )
         action = RobotCommand(q=np.zeros(2, np.float32), t_mono_ns=i * 33_000_000)
+        frame = Stamped(Frame(image=img.copy(), t_mono_ns=i * 33_000_000), t_mono_ns=i * 33_000_000)
         await q.put(SampleBundle(
-            tick_t_mono_ns=i * 33_000_000, state=state, action=action, frames={},
+            tick_t_mono_ns=i * 33_000_000,
+            state=state, action=action, frames={"front": frame},
         ))
 
-    # wait for queue to drain
     while q.qsize() > 0:
         await asyncio.sleep(0.01)
     stopped.set()
     await task
 
     pe.finalize()
-    # After finalize, parquet should exist in staging
-    staged = list(pe.stage_dir.glob("*.parquet"))
-    assert len(staged) == 1
+    staged_parquet = list(pe.stage_dir.glob("*.parquet"))
+    staged_mp4 = list(pe.stage_dir.glob("*.mp4"))
+    assert len(staged_parquet) == 1
+    assert len(staged_mp4) == 1
     assert metrics.get("writer_rows_written") == 10
+    assert metrics.gauge("queue_depth") == 0
+
+
+async def test_writer_drops_bundles_when_no_current_pending(tmp_path: Path):
+    """During REVIEW (or any window without a pending episode), late bundles
+    on the queue must be dropped with a counter bump, not crash the writer."""
+    current: LatestValue[object] = LatestValue()
+    current.set(None, t_mono_ns=1)
+    q: asyncio.Queue = asyncio.Queue()
+    metrics = Metrics()
+    stopped = asyncio.Event()
+
+    task = asyncio.create_task(run_writer(
+        current_pending=current, queue=q, metrics=metrics, stopped=stopped,
+    ))
+    state = Stamped(
+        RobotState(
+            joint_pos=np.zeros(2, np.float32),
+            joint_vel=np.zeros(2, np.float32),
+            joint_effort=np.zeros(2, np.float32),
+        ),
+        t_mono_ns=0,
+    )
+    action = RobotCommand(q=np.zeros(2, np.float32))
+    for _ in range(3):
+        await q.put(SampleBundle(
+            tick_t_mono_ns=0, state=state, action=action, frames={}
+        ))
+    while q.qsize() > 0:
+        await asyncio.sleep(0.01)
+    stopped.set()
+    await task
+
+    assert metrics.get("writer_dropped_no_pending") == 3
+    assert metrics.get("writer_rows_written") == 0
 ```
 
-- [ ] **Step 6.3: Implement `writer.py`**
+- [ ] **Step 6.4: Implement `writer.py`**
 
 `backend/mimicrec/recording/writer.py`:
 
@@ -2482,16 +2742,24 @@ import time
 from mimicrec.recording.pending import PendingEpisode
 from mimicrec.recording.parquet_row import sample_bundle_to_row
 from mimicrec.types import SampleBundle
+from mimicrec.util.latest_value import LatestValue
 from mimicrec.util.metrics import Metrics
 
 
 async def run_writer(
-    pending: PendingEpisode,
+    current_pending: LatestValue,   # LatestValue[PendingEpisode | None]
     queue: asyncio.Queue,
-    episode_fps: int,
     metrics: Metrics,
     stopped: asyncio.Event,
 ) -> None:
+    """Session-scoped writer. Watches current_pending for the active episode.
+
+    When current_pending is a PendingEpisode, rows + frames are persisted.
+    When it is None (e.g. REVIEW), bundles are drained and counted as dropped
+    so the queue doesn't back up. The writer exits once `stopped` is set and
+    the queue is empty.
+    """
+    last_pending: PendingEpisode | None = None
     episode_start_t_mono_ns: int | None = None
     video_frame_index: dict[str, int] = {}
 
@@ -2499,47 +2767,134 @@ async def run_writer(
         try:
             bundle: SampleBundle = await asyncio.wait_for(queue.get(), timeout=0.05)
         except asyncio.TimeoutError:
-            metrics.inc("writer_idle_ticks", 0)
+            metrics.set_gauge("queue_depth", float(queue.qsize()))
             continue
 
         started_ns = time.monotonic_ns()
+        metrics.set_gauge("queue_depth", float(queue.qsize()))
+
+        slot = current_pending.peek()
+        pending = slot.value if slot is not None else None
+
+        if pending is not last_pending:
+            # new episode started (or ended): reset per-episode bookkeeping
+            last_pending = pending
+            episode_start_t_mono_ns = None
+            video_frame_index = {}
+
+        if pending is None:
+            metrics.inc("writer_dropped_no_pending")
+            continue
+
         if episode_start_t_mono_ns is None:
             episode_start_t_mono_ns = bundle.tick_t_mono_ns
-            for cam_name in bundle.frames:
-                video_frame_index[cam_name] = 0
+            video_frame_index = {name: 0 for name in bundle.frames.keys()}
 
-        # Advance per-camera frame indices: +1 for each camera where we have a frame.
         advanced: dict[str, int] = {}
         for cam_name, stamped in bundle.frames.items():
+            if cam_name not in video_frame_index:
+                video_frame_index[cam_name] = 0
+            advanced[cam_name] = video_frame_index[cam_name]
             if stamped is not None:
-                advanced[cam_name] = video_frame_index[cam_name]
                 video_frame_index[cam_name] += 1
-            else:
-                advanced[cam_name] = video_frame_index[cam_name]
 
         row = sample_bundle_to_row(bundle, episode_start_t_mono_ns, advanced)
-        pending.append_row(row)
+        pending.append_row(row, frames=bundle.frames)
         metrics.inc("writer_rows_written")
 
         done_ns = time.monotonic_ns()
-        metrics.inc("writer_lag_ms_total", (done_ns - started_ns) // 1_000_000)
-        metrics._counters["queue_depth"] = queue.qsize()
+        metrics.set_gauge("writer_lag_ms", (done_ns - started_ns) / 1_000_000)
 ```
 
-- [ ] **Step 6.4: Run, verify pass**
+- [ ] **Step 6.5: Run, verify pass**
 
 ```bash
 pytest tests/integration/test_writer_drains_queue.py -v
 ```
 
-Expected: `1 passed`.
+Expected: `2 passed`.
 
-- [ ] **Step 6.5: Commit**
+- [ ] **Step 6.6: Add a "writer survives episode transitions" test**
+
+`tests/integration/test_writer_across_episodes.py`:
+
+```python
+import asyncio
+from pathlib import Path
+import numpy as np
+
+from mimicrec.recording.dataset_layout import init_dataset
+from mimicrec.recording.pending import PendingEpisode
+from mimicrec.recording.writer import run_writer
+from mimicrec.types import RobotCommand, RobotState, SampleBundle, Stamped
+from mimicrec.util.latest_value import LatestValue
+from mimicrec.util.metrics import Metrics
+
+
+async def test_writer_handles_two_episodes_without_restart(tmp_path: Path):
+    ds = tmp_path / "ds"
+    init_dataset(ds, fps=30, joint_names=["j1", "j2"], camera_names=[])
+
+    current: LatestValue[PendingEpisode | None] = LatestValue()
+    q: asyncio.Queue = asyncio.Queue()
+    metrics = Metrics()
+    stopped = asyncio.Event()
+    task = asyncio.create_task(run_writer(
+        current_pending=current, queue=q, metrics=metrics, stopped=stopped,
+    ))
+
+    # Episode 0
+    pe0 = PendingEpisode.open(ds, episode_index=0)
+    current.set(pe0, t_mono_ns=1)
+    state = Stamped(
+        RobotState(joint_pos=np.zeros(2, np.float32), joint_vel=np.zeros(2, np.float32),
+                   joint_effort=np.zeros(2, np.float32)),
+        t_mono_ns=0,
+    )
+    action = RobotCommand(q=np.zeros(2, np.float32))
+    for i in range(5):
+        await q.put(SampleBundle(tick_t_mono_ns=i, state=state, action=action, frames={}))
+    while q.qsize() > 0:
+        await asyncio.sleep(0.01)
+
+    # REVIEW: writer should drain and drop
+    current.set(None, t_mono_ns=2)
+    await q.put(SampleBundle(tick_t_mono_ns=99, state=state, action=action, frames={}))
+    while q.qsize() > 0:
+        await asyncio.sleep(0.01)
+
+    # Episode 1
+    pe1 = PendingEpisode.open(ds, episode_index=1)
+    current.set(pe1, t_mono_ns=3)
+    for i in range(3):
+        await q.put(SampleBundle(tick_t_mono_ns=100 + i, state=state, action=action, frames={}))
+    while q.qsize() > 0:
+        await asyncio.sleep(0.01)
+
+    stopped.set()
+    await task
+
+    pe0.finalize()
+    pe1.finalize()
+    assert metrics.get("writer_rows_written") == 8   # 5 + 3
+    assert metrics.get("writer_dropped_no_pending") == 1
+```
+
+- [ ] **Step 6.7: Run, verify pass**
 
 ```bash
-git add backend/mimicrec/recording/writer.py backend/mimicrec/cameras/recording.py \
-    tests/integration/test_writer_drains_queue.py
-git commit -m "planA: writer task drains queue into pending episode"
+pytest tests/integration -v
+```
+
+Expected: all green.
+
+- [ ] **Step 6.8: Commit**
+
+```bash
+git add backend/mimicrec/recording backend/mimicrec/cameras/recording.py \
+    tests/integration/test_writer_drains_queue.py \
+    tests/integration/test_writer_across_episodes.py
+git commit -m "planA: session-scoped writer task with MP4 integration and episode transitions"
 ```
 
 ---
@@ -2833,20 +3188,37 @@ recording:
 
 ```python
 from pathlib import Path
+import pytest
+
 from mimicrec.config.loader import load_session_config
 
 
-def test_defaults_composition_expands_robot_and_cameras(tmp_path: Path):
-    # Use the real configs/ directory.
-    import os
-    os.chdir(Path(__file__).resolve().parents[2])  # MimicRec/
-    cfg = load_session_config(Path("configs/sessions/mock_teleop.yaml"))
+REPO_ROOT = Path(__file__).resolve().parents[2]   # MimicRec/
+CONFIGS = REPO_ROOT / "configs"
+
+
+def test_defaults_composition_expands_robot_and_cameras():
+    cfg = load_session_config(
+        CONFIGS / "sessions" / "mock_teleop.yaml",
+        configs_root=CONFIGS,
+    )
     assert cfg.robot._target_ == "mimicrec.adapters.mock_robot.MockRobotAdapter"
     assert cfg.teleop._target_ == "mimicrec.adapters.mock_teleop.MockTeleoperator"
     assert cfg.mapper._target_ == "mimicrec.mappers.identity.IdentityMapper"
     assert "mock_cam" in cfg.cameras
     assert cfg.recording.fps == 30
     assert cfg.task.name == "mock_pick"
+
+
+def test_missing_referenced_file_raises_clear_error(tmp_path: Path):
+    configs_root = tmp_path / "configs"
+    (configs_root / "robots").mkdir(parents=True)
+    (configs_root / "sessions").mkdir(parents=True)
+    session = configs_root / "sessions" / "bad.yaml"
+    session.write_text("defaults:\n  robot: doesnotexist\n")
+    with pytest.raises(FileNotFoundError) as e:
+        load_session_config(session, configs_root=configs_root)
+    assert "doesnotexist" in str(e.value)
 ```
 
 - [ ] **Step 8.3: Implement `loader.py`**
@@ -2860,20 +3232,29 @@ from pathlib import Path
 from omegaconf import DictConfig, OmegaConf
 
 
-CONFIGS_ROOT = Path("configs")
+def load_session_config(session_yaml: Path, configs_root: Path) -> DictConfig:
+    """Load a session config and compose its `defaults:` references.
 
-
-def load_session_config(session_yaml: Path) -> DictConfig:
+    `configs_root` is explicit (no cwd coupling). Each group listed under
+    `defaults:` is resolved relative to configs_root/<group>/<name>.yaml.
+    """
     cfg = OmegaConf.load(session_yaml)
     defaults = cfg.pop("defaults", {}) if "defaults" in cfg else {}
     for group, ref in defaults.items():
-        folder = CONFIGS_ROOT / group
+        folder = configs_root / group
         if isinstance(ref, list) or OmegaConf.is_list(ref):
-            cfg[group] = OmegaConf.create({
-                name: OmegaConf.load(folder / f"{name}.yaml") for name in ref
-            })
+            resolved = {}
+            for name in ref:
+                path = folder / f"{name}.yaml"
+                if not path.exists():
+                    raise FileNotFoundError(f"config {group}/{name}.yaml not found at {path}")
+                resolved[name] = OmegaConf.load(path)
+            cfg[group] = OmegaConf.create(resolved)
         else:
-            cfg[group] = OmegaConf.load(folder / f"{ref}.yaml")
+            path = folder / f"{ref}.yaml"
+            if not path.exists():
+                raise FileNotFoundError(f"config {group}/{ref}.yaml not found at {path}")
+            cfg[group] = OmegaConf.load(path)
     OmegaConf.resolve(cfg)
     return cfg
 ```
@@ -2931,29 +3312,65 @@ class FaultProfile:
         return max(0.0, (self.latency_ms + j) / 1000.0)
 ```
 
-- [ ] **Step 9.2: Wire `FaultProfile` into `MockRobotAdapter`, `MockTeleoperator`, `MockCamera`**
+- [ ] **Step 9.2: Update `MockRobotAdapter` to accept `fault`**
 
-Update each to accept an optional `fault: FaultProfile | None = None`, honor:
-- `latency_ms + jitter_ms` → additional `await asyncio.sleep(...)` before returning
-- `drop_prob` → raise `TimeoutError` on roll
-- `stuck_for_n_calls` → repeat the previous value for that many calls (no new data)
-
-See the full patch in the adapter files; the key added wrapper for the mock robot:
+Rewrite `backend/mimicrec/adapters/mock_robot.py`:
 
 ```python
-async def read_state(self) -> RobotState:
-    await asyncio.sleep(self._dt_ns / 1e9)
-    if self._fault:
-        if self._fault.roll_drop():
-            raise TimeoutError("mock robot drop")
-        await asyncio.sleep(self._fault.sample_delay_s())
-        if self._fault.stuck_for_n_calls > 0:
-            self._fault.stuck_for_n_calls -= 1
-            return self._last_state  # repeat
-    state = RobotState(...)   # as before
-    self._last_state = state
-    return state
+from __future__ import annotations
+import asyncio
+import numpy as np
+
+from mimicrec.adapters.robot import RobotMode
+from mimicrec.adapters.fault_profile import FaultProfile
+from mimicrec.types import RobotState
+
+
+class MockRobotAdapter:
+    name = "mock"
+    dof = 2
+    joint_names = ["j1", "j2"]
+
+    def __init__(self, dt_ns: int = 5_000_000, fault: FaultProfile | None = None):
+        self._q = np.zeros(self.dof, dtype=np.float32)
+        self._mode = RobotMode.POSITION
+        self._dt_ns = dt_ns
+        self._fault = fault
+        self._last_state: RobotState | None = None
+        self.sent_commands: list[np.ndarray] = []
+
+    async def connect(self) -> None: ...
+    async def disconnect(self) -> None: ...
+
+    async def read_state(self) -> RobotState:
+        await asyncio.sleep(self._dt_ns / 1e9)
+        if self._fault:
+            if self._fault.roll_drop():
+                raise TimeoutError("mock robot drop")
+            await asyncio.sleep(self._fault.sample_delay_s())
+            if self._fault.stuck_for_n_calls > 0 and self._last_state is not None:
+                self._fault.stuck_for_n_calls -= 1
+                return self._last_state
+        state = RobotState(
+            joint_pos=self._q.copy(),
+            joint_vel=np.zeros(self.dof, dtype=np.float32),
+            joint_effort=np.zeros(self.dof, dtype=np.float32),
+        )
+        self._last_state = state
+        return state
+
+    async def send_joint_command(self, q: np.ndarray) -> None:
+        self.sent_commands.append(q.copy())
+        self._q = q.astype(np.float32)
+
+    async def set_mode(self, mode: RobotMode) -> None:
+        self._mode = mode
+
+    def supports_mode(self, mode: RobotMode) -> bool:
+        return True
 ```
+
+Analogous updates for `MockTeleoperator` and `MockCamera`: accept `fault: FaultProfile | None = None` in `__init__`, honor `drop_prob`, `latency_ms`, `jitter_ms`, and `stuck_for_n_calls` in the corresponding `read_*` method.
 
 - [ ] **Step 9.3: Write `test_fault_injection.py`**
 
@@ -2974,8 +3391,7 @@ from tests.conftest import _prime_robot_reader, _prime_teleop_reader
 
 
 async def test_stale_samples_raise_tick_skips_under_latency(mock_teleop):
-    robot = MockRobotAdapter()
-    robot._fault = FaultProfile(latency_ms=80, jitter_ms=10)   # way over 33ms tick
+    robot = MockRobotAdapter(fault=FaultProfile(latency_ms=80, jitter_ms=10))   # way over 33ms tick
     session = Session(mode=SessionMode.TELEOP, state=SessionState.READY)
     rs: LatestValue[RobotState] = LatestValue()
     ts: LatestValue[TeleopAction] = LatestValue()
@@ -2997,9 +3413,45 @@ async def test_stale_samples_raise_tick_skips_under_latency(mock_teleop):
     r.cancel(); t.cancel()
 
     assert metrics.get("ticks_skipped") > 0
+
+
+async def test_stale_sample_counter_increments_when_reader_is_stuck(mock_teleop):
+    """If the robot state reader is stuck, the control loop should still tick
+    but count the stale samples. Spec §7.2 staleness handling."""
+    robot = MockRobotAdapter(fault=FaultProfile(stuck_for_n_calls=1000))
+    session = Session(mode=SessionMode.TELEOP, state=SessionState.RECORDING)
+    rs: LatestValue[RobotState] = LatestValue()
+    ts: LatestValue[TeleopAction] = LatestValue()
+    cg: LatestValue[RobotCommand] = LatestValue()
+    metrics = Metrics()
+
+    r = await _prime_robot_reader(robot, rs)
+    t = await _prime_teleop_reader(mock_teleop, ts)
+    loop = asyncio.create_task(run_teleop_control_loop(
+        session=session, fps=30,
+        robot_state_slot=rs, teleop_slot=ts, camera_slots={},
+        command_goal_slot=cg, mapper=IdentityMapper(),
+        enqueue=lambda b: None, clock=RealClock(), metrics=metrics,
+    ))
+    await asyncio.sleep(0.3)
+    session.stopped.set()
+    await loop
+    r.cancel(); t.cancel()
+
+    # The exact number depends on timing; require it to be non-zero.
+    assert metrics.get("stale_sample_count") > 0
 ```
 
-Similar small tests for camera drop and teleop stuck-for-n-calls.
+This test requires `run_teleop_control_loop` to increment `stale_sample_count` when `slot.peek().t_mono_ns < tick_t - 3*tick_interval_ns`. Add that branch in Task 2's loop now (small diff; spec §7.2 "Staleness handling"). Add a similar small test for camera drop and teleop stuck-for-n-calls.
+
+**Required Task 2 diff (apply as part of Task 9):**
+
+```python
+# In run_teleop_control_loop, just after reading `state` and `action`:
+stale_threshold = 3 * tick_interval_ns
+if state is not None and tick_t - state.t_mono_ns > stale_threshold:
+    metrics.inc("stale_sample_count")
+```
 
 - [ ] **Step 9.4: Run, verify green**
 
@@ -3018,19 +3470,280 @@ git commit -m "planA: fault-injecting mock adapters + tick-skip test"
 
 ## Task 10 — Replay safety watchdog
 
-**Goal:** Add `ReplayWatchdog` that enforces `max_joint_velocity`, `max_joint_acceleration`, `max_joint_position_jump`, `command_timeout_sec`, `watchdog_hz`. On violation, raise `ReplaySafetyError`, clear `replay_active`, and hold current measured state.
+**Goal:** Add `ReplayWatchdog` that enforces the six `replay:` parameters from spec §10 against the replay stream **before** the dispatcher sends each goal. On violation the watchdog (a) raises `ReplaySafetyError(param=...)` inside the replay task, (b) clears `session.replay_active` and `session.sub_state`, (c) writes a hold command to `command_goal_slot` (the current measured joint state), and (d) publishes the error on the `ErrorBus`.
+
+**Control-flow design.** The watchdog is **inline**, not a separate asyncio task. The replay coroutine calls `watchdog.check(target, prev_target, prev_prev_target, measured)` immediately before every `command_goal_slot.set(...)`. This keeps the safety check on the same single-threaded execution path that writes commands — no races with an external watchdog task. The `watchdog_hz` parameter is a bound on how often the replay task is *allowed* to write, not how often a separate task polls.
+
+Config is resolved at session start: `SessionManager` reads the `replay:` block from the resolved robot config and passes a `ReplaySafetyConfig` to the replay task when replay is initiated. The replay task owns the watchdog for its lifetime.
+
+**Parameters enforced (each mapped to a check in `ReplayWatchdog.check`):**
+
+| Param | Check | Error message |
+|---|---|---|
+| `max_joint_position_jump` | `max(abs(target - measured)) ≤ limit` | `"joint_position_jump exceeded"` |
+| `max_joint_velocity` | `max(abs((target - prev_target) / dt)) ≤ limit` | `"joint_velocity exceeded"` |
+| `max_joint_acceleration` | `max(abs(((target - prev) - (prev - prev_prev)) / dt²)) ≤ limit` | `"joint_acceleration exceeded"` |
+| `ramp_duration_sec` | duration of initial slow-ramp from measured → first frame | — (structural, not a trip) |
+| `command_timeout_sec` | time since last successful `command_goal_slot.set()` by replay task | `"command_timeout exceeded"` |
+| `watchdog_hz` | the replay task uses this as its *minimum* tick rate when it must hold (between targets) | — (structural) |
+
+**Fallback behaviour:** the replay task has a `hold(measured_state)` method called on any `ReplaySafetyError`. It writes `RobotCommand(q=measured_state.joint_pos)` to `command_goal_slot` once (the dispatcher's collapsing semantics ensure only this holds) and exits. `SessionManager` catches the error, clears `replay_active`, publishes on the error bus, and leaves the session in `READY`.
 
 **Files:**
+- Create: `backend/mimicrec/session/replay_safety.py`
 - Create: `tests/unit/test_replay_watchdog.py`
 - Modify: `backend/mimicrec/session/replay.py`
 
-Tests cover: each parameter independently trips, and the expected `ReplaySafetyError` is raised with the tripped parameter name.
+- [ ] **Step 10.1: Write failing `test_replay_watchdog.py`**
 
-*(Structure mirrors Task 9; keeping this task dense since the pattern is by now established.)*
+```python
+import pytest
+import numpy as np
 
-- [ ] Write unit tests first, implement, commit.
+from mimicrec.errors import ReplaySafetyError
+from mimicrec.session.replay_safety import ReplaySafetyConfig, ReplayWatchdog
+
+
+def _cfg(**overrides) -> ReplaySafetyConfig:
+    base = ReplaySafetyConfig(
+        ramp_duration_sec=2.0,
+        max_joint_velocity=1.0,
+        max_joint_acceleration=5.0,
+        max_joint_position_jump=0.3,
+        command_timeout_sec=0.2,
+        watchdog_hz=20,
+        dof=2,
+        dt_sec=1 / 30,
+    )
+    for k, v in overrides.items():
+        setattr(base, k, v)
+    return base
+
+
+def test_position_jump_trips():
+    wd = ReplayWatchdog(_cfg(max_joint_position_jump=0.05))
+    target = np.array([0.5, 0.0], dtype=np.float32)
+    measured = np.array([0.0, 0.0], dtype=np.float32)
+    with pytest.raises(ReplaySafetyError) as e:
+        wd.check(target=target, prev_target=None, prev_prev_target=None, measured=measured)
+    assert "joint_position_jump" in str(e.value)
+
+
+def test_velocity_trips():
+    wd = ReplayWatchdog(_cfg(max_joint_velocity=0.1, dt_sec=1 / 30))
+    prev = np.array([0.0, 0.0], dtype=np.float32)
+    target = np.array([0.1, 0.0], dtype=np.float32)
+    measured = np.array([0.05, 0.0], dtype=np.float32)
+    with pytest.raises(ReplaySafetyError) as e:
+        wd.check(target=target, prev_target=prev, prev_prev_target=None, measured=measured)
+    assert "joint_velocity" in str(e.value)
+
+
+def test_acceleration_trips():
+    wd = ReplayWatchdog(_cfg(max_joint_acceleration=1.0, dt_sec=1 / 30))
+    prev_prev = np.array([0.0, 0.0], dtype=np.float32)
+    prev = np.array([0.01, 0.0], dtype=np.float32)
+    target = np.array([1.0, 0.0], dtype=np.float32)
+    measured = np.array([0.01, 0.0], dtype=np.float32)
+    with pytest.raises(ReplaySafetyError) as e:
+        wd.check(target=target, prev_target=prev, prev_prev_target=prev_prev, measured=measured)
+    assert "joint_acceleration" in str(e.value)
+
+
+def test_command_timeout_trips():
+    wd = ReplayWatchdog(_cfg(command_timeout_sec=0.05))
+    wd.note_command_sent(t_mono_ns=1_000_000_000)
+    with pytest.raises(ReplaySafetyError) as e:
+        wd.assert_fresh(now_t_mono_ns=1_000_000_000 + 200_000_000)
+    assert "command_timeout" in str(e.value)
+
+
+def test_within_all_limits_does_not_trip():
+    wd = ReplayWatchdog(_cfg())
+    target = np.array([0.1, 0.1], dtype=np.float32)
+    measured = np.array([0.1, 0.1], dtype=np.float32)
+    wd.check(target=target, prev_target=target, prev_prev_target=target, measured=measured)
+```
+
+- [ ] **Step 10.2: Implement `replay_safety.py`**
+
+`backend/mimicrec/session/replay_safety.py`:
+
+```python
+from __future__ import annotations
+from dataclasses import dataclass
+import numpy as np
+
+from mimicrec.errors import ReplaySafetyError
+
+
+@dataclass
+class ReplaySafetyConfig:
+    ramp_duration_sec: float
+    max_joint_velocity: float
+    max_joint_acceleration: float
+    max_joint_position_jump: float
+    command_timeout_sec: float
+    watchdog_hz: int
+    dof: int
+    dt_sec: float     # derived from session fps
+
+    @classmethod
+    def from_robot_cfg(cls, robot_cfg, dof: int, dt_sec: float) -> "ReplaySafetyConfig":
+        r = robot_cfg.replay
+        return cls(
+            ramp_duration_sec=float(r.ramp_duration_sec),
+            max_joint_velocity=float(r.max_joint_velocity),
+            max_joint_acceleration=float(r.max_joint_acceleration),
+            max_joint_position_jump=float(r.max_joint_position_jump),
+            command_timeout_sec=float(r.command_timeout_sec),
+            watchdog_hz=int(r.watchdog_hz),
+            dof=dof,
+            dt_sec=dt_sec,
+        )
+
+
+class ReplayWatchdog:
+    def __init__(self, cfg: ReplaySafetyConfig):
+        self._cfg = cfg
+        self._last_command_t_mono_ns: int | None = None
+
+    def note_command_sent(self, t_mono_ns: int) -> None:
+        self._last_command_t_mono_ns = t_mono_ns
+
+    def assert_fresh(self, now_t_mono_ns: int) -> None:
+        if self._last_command_t_mono_ns is None:
+            return
+        age_sec = (now_t_mono_ns - self._last_command_t_mono_ns) / 1e9
+        if age_sec > self._cfg.command_timeout_sec:
+            raise ReplaySafetyError(
+                f"command_timeout exceeded: {age_sec:.3f}s > {self._cfg.command_timeout_sec}s"
+            )
+
+    def check(
+        self,
+        target: np.ndarray,
+        prev_target: np.ndarray | None,
+        prev_prev_target: np.ndarray | None,
+        measured: np.ndarray,
+    ) -> None:
+        if np.max(np.abs(target - measured)) > self._cfg.max_joint_position_jump:
+            raise ReplaySafetyError(
+                f"joint_position_jump exceeded: "
+                f"max={float(np.max(np.abs(target - measured))):.3f} > "
+                f"{self._cfg.max_joint_position_jump}"
+            )
+        if prev_target is not None:
+            velocity = np.abs((target - prev_target) / self._cfg.dt_sec)
+            if float(np.max(velocity)) > self._cfg.max_joint_velocity:
+                raise ReplaySafetyError(
+                    f"joint_velocity exceeded: max={float(np.max(velocity)):.3f} > "
+                    f"{self._cfg.max_joint_velocity}"
+                )
+        if prev_target is not None and prev_prev_target is not None:
+            accel = np.abs((target - 2 * prev_target + prev_prev_target) / (self._cfg.dt_sec ** 2))
+            if float(np.max(accel)) > self._cfg.max_joint_acceleration:
+                raise ReplaySafetyError(
+                    f"joint_acceleration exceeded: max={float(np.max(accel)):.3f} > "
+                    f"{self._cfg.max_joint_acceleration}"
+                )
+```
+
+- [ ] **Step 10.3: Run unit tests, verify green**
 
 ```bash
+pytest tests/unit/test_replay_watchdog.py -v
+```
+
+Expected: `5 passed`.
+
+- [ ] **Step 10.4: Wire the watchdog into `run_replay`**
+
+Update `backend/mimicrec/session/replay.py`:
+
+```python
+# Add signature parameter: safety: ReplaySafetyConfig, measured_state_slot: LatestValue[RobotState]
+# Inside the per-target loop, call:
+#   wd.assert_fresh(clock.monotonic_ns())
+#   wd.check(target=q, prev_target=prev_q, prev_prev_target=prev_prev_q, measured=measured)
+# Maintain prev_q / prev_prev_q rolling history.
+# On ReplaySafetyError:
+#   session.replay_active = False
+#   measured = measured_state_slot.peek()
+#   if measured is not None:
+#       command_goal_slot.set(RobotCommand(q=measured.value.joint_pos, t_mono_ns=clock.monotonic_ns()),
+#                             t_mono_ns=clock.monotonic_ns())
+#   await error_bus.publish(e)
+#   raise
+# After a successful set, call wd.note_command_sent(clock.monotonic_ns()).
+```
+
+- [ ] **Step 10.5: Write an integration test that proves replay halts on a jump**
+
+`tests/integration/test_replay_halts_on_jump.py`:
+
+```python
+import asyncio
+import numpy as np
+import pytest
+
+from mimicrec.errors import ReplaySafetyError
+from mimicrec.session.replay import ReplayTrajectory, run_replay
+from mimicrec.session.replay_safety import ReplaySafetyConfig
+from mimicrec.session.state import Session
+from mimicrec.types import RobotCommand, RobotState, SessionMode, SessionState, Stamped
+from mimicrec.util.clock import RealClock
+from mimicrec.util.error_bus import ErrorBus
+from mimicrec.util.latest_value import LatestValue
+
+
+async def test_replay_halts_on_position_jump_and_holds_measured():
+    session = Session(mode=SessionMode.TELEOP, state=SessionState.READY)
+    cg: LatestValue[RobotCommand] = LatestValue()
+    measured: LatestValue[RobotState] = LatestValue()
+    measured.set(
+        RobotState(
+            joint_pos=np.zeros(2, dtype=np.float32),
+            joint_vel=np.zeros(2, np.float32),
+            joint_effort=np.zeros(2, np.float32),
+        ),
+        t_mono_ns=1,
+    )
+
+    cfg = ReplaySafetyConfig(
+        ramp_duration_sec=0.0,
+        max_joint_velocity=10.0,
+        max_joint_acceleration=1000.0,
+        max_joint_position_jump=0.1,
+        command_timeout_sec=1.0,
+        watchdog_hz=20,
+        dof=2,
+        dt_sec=1 / 30,
+    )
+    traj = ReplayTrajectory(joint_targets=np.array([[5.0, 5.0]], dtype=np.float32))
+    bus = ErrorBus()
+    sub = bus.subscribe()
+
+    with pytest.raises(ReplaySafetyError):
+        await run_replay(
+            session=session, trajectory=traj, fps=30,
+            command_goal_slot=cg, measured_state_slot=measured,
+            clock=RealClock(), safety=cfg, error_bus=bus,
+        )
+    assert session.replay_active is False
+    held = cg.peek()
+    assert held is not None
+    # After trip, measured state (all zeros) should be the hold command
+    assert (held.value.q == 0.0).all()
+    evt = sub.get_nowait()
+    assert isinstance(evt, ReplaySafetyError)
+```
+
+- [ ] **Step 10.6: Commit**
+
+```bash
+git add backend/mimicrec/session/replay_safety.py backend/mimicrec/session/replay.py \
+    tests/unit/test_replay_watchdog.py tests/integration/test_replay_halts_on_jump.py
 git commit -m "planA: replay safety watchdog enforces config-driven parameters"
 ```
 
@@ -3038,31 +3751,215 @@ git commit -m "planA: replay safety watchdog enforces config-driven parameters"
 
 ## Task 11 — SessionManager (domain-level lifecycle)
 
-**Goal:** Orchestrate all tasks (readers, control loop, dispatcher, writer, CameraManager) under one `SessionManager` with clean start/end and episode start/stop/save/discard and replay start/stop. Raise `InvalidTransitionError` on illegal transitions. No FastAPI — just domain methods.
+**Goal:** Orchestrate all tasks under one `SessionManager` with clean start/end and explicit episode/replay transitions. No FastAPI — just domain methods.
+
+**Responsibilities of `SessionManager`:**
+
+1. **Task ownership.** Holds `asyncio.Task` handles for each reader (robot, teleop, per-camera), the control loop, the command dispatcher, and the writer. Starts them all on `start()`; cancels and awaits them all on `end()` in reverse order (writer → dispatcher → control loop → readers → camera manager). Shutdown also drains `recorder.queue` first to persist any late bundles from the control loop.
+2. **Slots.** Owns the `LatestValue` slots: `robot_state_slot`, `teleop_slot`, per-camera camera_slots (owned by `CameraManager`), `command_goal_slot`, `current_pending`, `measured_state_slot` (alias for `robot_state_slot` but named for replay use).
+3. **State machine.** `state: SessionState` is the single source of truth. Transitions are guarded:
+   - `start(cfg)`: `IDLE → READY`. `precheck_start` runs first (may raise `HandTeachNotSupportedError`). Mode-dispatches to either `run_teleop_control_loop` or `run_handteach_control_loop`.
+   - `episode_start()`: `READY → RECORDING`. Must not be called while `replay_active`; raises `InvalidTransitionError`. Creates a new `PendingEpisode`, opens per-camera MP4 writers, writes it to `current_pending`.
+   - `episode_stop()`: `RECORDING → REVIEW`. Drains the queue (briefly — up to `queue_flush_timeout_sec=1.0`), finalises the pending's parquet buffer and MP4 writers (but does NOT move files yet).
+   - `episode_save(success, comment)`: `REVIEW → READY`. Moves pending files into dataset, appends `episodes.jsonl` row (including the resolved config snapshot and timestamps). Clears `current_pending`.
+   - `episode_discard()`: `REVIEW → READY`. `rmtree` the pending staging dir. Clears `current_pending`.
+   - `replay_start(trajectory)`: asserts `state == READY and not replay_active`. Spawns `run_replay` as a task; `replay_active` is flipped on by `run_replay` itself.
+   - `replay_stop()`: sets `session.replay_active = False` (breaks the replay loop on its next iteration), awaits the task.
+   - `end()`: any state → `IDLE`. Force-cancels ongoing replay and pending, then shuts down tasks as above.
+4. **Error handling.** Subscribes to the `ErrorBus` once at start. On `HardwareError` during `RECORDING`, triggers an auto-discard (§7.3): sets `state = READY`, calls `episode_discard()`-equivalent cleanup, re-publishes the error for consumers (Plan B WebSocket). On `HardwareError` in `READY`/`REVIEW`, logs and re-publishes; does not abort the session. On `ReplaySafetyError`, the replay task already cleared `replay_active`; `SessionManager` logs and re-publishes.
+5. **Task aggregation.** Each spawned task's exception is captured via a `done_callback`; the callback publishes the exception on the `ErrorBus` and sets `self._fatal = True` so the next domain-method call raises `RuntimeError("session is in a fatal state")`.
+6. **Shutdown ordering.** Writer MUST drain before dispatcher shuts down (so final rows are committed). Dispatcher MUST finish before robot.disconnect (so no late writes go to a closed device). Readers can be cancelled in any order.
 
 **Files:**
-- Modify: `backend/mimicrec/session/lifecycle.py`  (grow `SessionManager`)
+- Modify: `backend/mimicrec/session/lifecycle.py` — grow `SessionManager` class
+- Create: `backend/mimicrec/session/tasks.py` — `start_session_tasks()` helper that `SessionManager` calls (separation of concerns: the task graph layout is one function, the state-machine orchestration is another)
 - Create: `tests/integration/test_session_lifecycle_mock.py`
+- Create: `tests/integration/test_auto_discard_on_hardware_error.py`
 
-Tests exercise the full flow against mocks:
+- [ ] **Step 11.1: Sketch the `SessionManager` skeleton (no logic yet)**
 
-1. `sm.start(cfg)` → `state == READY`
-2. `sm.episode_start()` → `state == RECORDING`, readers/loop already running
-3. Tick time passes, bundles are produced
-4. `sm.episode_stop()` → `state == REVIEW`, pending files present
-5. `sm.episode_save({success: True, comment: "ok"})` → `state == READY`, dataset row appended, pending dir empty
-6. `sm.episode_discard()` variant on a fresh episode → dataset unchanged
-7. `sm.replay_start(episode_idx=0)` → `replay_active == True`, `episode_start` during replay raises `InvalidTransitionError`
-8. `sm.replay_stop()` → normal commanding resumes
-9. `sm.end()` → all tasks joined, `state == IDLE`
+Write `SessionManager.__init__`, property getters, and typed stubs for `start`, `end`, `episode_start`, `episode_stop`, `episode_save`, `episode_discard`, `replay_start`, `replay_stop`, each raising `NotImplementedError`. Commit as "planA: SessionManager skeleton".
 
-- [ ] Write the test first, implement, commit. Commit message: `planA: SessionManager integrates the full task graph`.
+- [ ] **Step 11.2: Write failing `test_session_lifecycle_mock.py`**
+
+```python
+import asyncio
+import numpy as np
+import pytest
+from pathlib import Path
+
+from mimicrec.adapters.mock_robot import MockRobotAdapter
+from mimicrec.adapters.mock_teleop import MockTeleoperator
+from mimicrec.cameras.mock_camera import MockCamera
+from mimicrec.cameras.manager import CameraManager
+from mimicrec.errors import InvalidTransitionError
+from mimicrec.mappers.identity import IdentityMapper
+from mimicrec.session.lifecycle import SessionManager, SessionStartConfig
+from mimicrec.recording.dataset_layout import init_dataset, dataset_paths
+from mimicrec.types import SessionMode, SessionState
+from mimicrec.util.error_bus import ErrorBus
+
+
+async def test_full_teleop_flow(tmp_path: Path):
+    ds = tmp_path / "ds"
+    init_dataset(ds, fps=30, joint_names=["j1", "j2"], camera_names=["front"])
+    robot = MockRobotAdapter()
+    teleop = MockTeleoperator(dof=2)
+    bus = ErrorBus()
+    cm = CameraManager(cameras={"front": MockCamera("front")}, error_bus=bus)
+    sm = SessionManager(
+        dataset_root=ds,
+        robot=robot, teleop=teleop, mapper=IdentityMapper(),
+        cameras=cm, mode=SessionMode.TELEOP, fps=30, error_bus=bus,
+        resolved_config={},
+        replay_safety=None,
+    )
+
+    await sm.start()
+    assert sm.state == SessionState.READY
+
+    await sm.episode_start()
+    assert sm.state == SessionState.RECORDING
+    await asyncio.sleep(0.2)
+
+    await sm.episode_stop()
+    assert sm.state == SessionState.REVIEW
+
+    await sm.episode_save(success=True, comment="ok")
+    assert sm.state == SessionState.READY
+
+    paths = dataset_paths(ds)
+    assert (paths.data_dir / "chunk-000" / "episode_000000.parquet").exists()
+
+    # Attempting episode_start during replay must fail
+    sm.session.replay_active = True
+    with pytest.raises(InvalidTransitionError):
+        await sm.episode_start()
+    sm.session.replay_active = False
+
+    await sm.end()
+    assert sm.state == SessionState.IDLE
+```
+
+- [ ] **Step 11.3: Implement `SessionManager` in `lifecycle.py`**
+
+This is the biggest single implementation chunk in Plan A. Keep it organised: one helper `_spawn_tasks()` that returns a `SessionTaskSet`, one `_shutdown_tasks()` that cancels in the documented order with timeouts. All state transitions check the current state and raise `InvalidTransitionError` on mismatch.
+
+Key interfaces:
+
+```python
+@dataclass
+class SessionStartConfig:
+    resolved_config: dict   # snapshot of the merged OmegaConf tree
+
+@dataclass
+class SessionTaskSet:
+    robot_reader: asyncio.Task
+    teleop_reader: asyncio.Task | None
+    control_loop: asyncio.Task
+    dispatcher: asyncio.Task
+    writer: asyncio.Task
+```
+
+Shutdown sequence (`end()`):
+
+```python
+# 1. Stop producers
+self.session.stopped.set()        # readers/loop exit on next iteration
+await self._await_with_timeout(self.tasks.teleop_reader, 1.0)
+await self._await_with_timeout(self.tasks.robot_reader, 1.0)
+await self._await_with_timeout(self.tasks.control_loop, 1.0)
+
+# 2. Drain queue and stop writer
+# give writer one more pass to drain; stopped=True causes it to exit when queue empty
+await self._await_with_timeout(self.tasks.writer, 2.0)
+
+# 3. Stop dispatcher
+await self._await_with_timeout(self.tasks.dispatcher, 1.0)
+
+# 4. Stop CameraManager
+await self.cameras.stop()
+
+# 5. Disconnect robot
+await self.robot.disconnect()
+
+self.session.state = SessionState.IDLE
+```
+
+- [ ] **Step 11.4: Write failing `test_auto_discard_on_hardware_error.py`**
+
+```python
+import asyncio
+import numpy as np
+from pathlib import Path
+
+from mimicrec.adapters.fault_profile import FaultProfile
+from mimicrec.adapters.mock_robot import MockRobotAdapter
+from mimicrec.adapters.mock_teleop import MockTeleoperator
+from mimicrec.cameras.mock_camera import MockCamera
+from mimicrec.cameras.manager import CameraManager
+from mimicrec.errors import HardwareError
+from mimicrec.mappers.identity import IdentityMapper
+from mimicrec.session.lifecycle import SessionManager
+from mimicrec.recording.dataset_layout import init_dataset, dataset_paths
+from mimicrec.types import SessionMode, SessionState
+from mimicrec.util.error_bus import ErrorBus
+
+
+async def test_hardware_error_during_recording_auto_discards(tmp_path: Path):
+    ds = tmp_path / "ds"
+    init_dataset(ds, fps=30, joint_names=["j1", "j2"], camera_names=["front"])
+
+    # Schedule a camera drop partway through the episode
+    cam = MockCamera("front")
+    cam.drop_next = 3
+    bus = ErrorBus()
+    cm = CameraManager(cameras={"front": cam}, error_bus=bus)
+
+    sm = SessionManager(
+        dataset_root=ds,
+        robot=MockRobotAdapter(), teleop=MockTeleoperator(dof=2),
+        mapper=IdentityMapper(), cameras=cm,
+        mode=SessionMode.TELEOP, fps=30, error_bus=bus,
+        resolved_config={}, replay_safety=None,
+    )
+    await sm.start()
+    await sm.episode_start()
+    await asyncio.sleep(0.3)
+
+    # The session must have auto-discarded, returned to READY, and NOT committed
+    assert sm.state == SessionState.READY
+    paths = dataset_paths(ds)
+    assert not (paths.data_dir / "chunk-000" / "episode_000000.parquet").exists()
+
+    await sm.end()
+```
+
+- [ ] **Step 11.5: Implement the auto-discard handler in `SessionManager`**
+
+When a `HardwareError` arrives on the bus *and* `state == RECORDING`: set `state = READY`, call the pending-discard path, publish the error for Plan B consumers. Log and surface a clear message.
+
+- [ ] **Step 11.6: Run the integration suite, verify green**
+
+```bash
+pytest tests/integration -v
+```
+
+Expected: all green.
+
+- [ ] **Step 11.7: Commit**
+
+```bash
+git add backend/mimicrec/session tests/integration/test_session_lifecycle_mock.py \
+    tests/integration/test_auto_discard_on_hardware_error.py
+git commit -m "planA: SessionManager integrates the full task graph"
+```
 
 ---
 
 ## Task 12 — Exit-criteria test suite
 
-**Goal:** Lock the exit criteria as a dedicated test directory that CI can run as `pytest -k exit_criterion`. Each criterion maps to one test file that uses `SessionManager` end-to-end against mocks.
+**Goal:** Lock the exit criteria as a dedicated test directory that CI can run as `pytest -k exit_criterion`. Each criterion maps to one test file that uses `SessionManager` end-to-end against mocks. **Use `FakeClock` wherever the test asserts a tick count or frame count, so results are deterministic.** `RealClock` is acceptable only for criteria 2 and 9 where the test is asserting *qualitative* behaviour (stream delivery, fault recovery), not exact counts.
 
 **Files:**
 - Create: `tests/exit_criteria/test_exit_criterion_1_start_teleop.py`
@@ -3074,6 +3971,14 @@ Tests exercise the full flow against mocks:
 - Create: `tests/exit_criteria/test_exit_criterion_7_replay_gates_teleop.py`
 - Create: `tests/exit_criteria/test_exit_criterion_8_tombstone_delete.py`
 - Create: `tests/exit_criteria/test_exit_criterion_9_fault_injection.py`
+
+**Criterion-specific rubrics:**
+
+- **3 (FPS):** Use `FakeClock`, advance by exactly `1.0s` worth of `tick_interval_ns`, assert `writer_rows_written == expected` ± 1 (for start/stop edges), and `ticks_skipped == 0`.
+- **5 (no restart):** Capture `id(sm.tasks.control_loop)` before `episode_stop`, assert identical after `episode_save`.
+- **6 (save and discard):** Two episodes in one session — save the first, discard the second. Final dataset has one `episode_000000.parquet`, no `.pending/` contents, no `episode_000001.*` files.
+- **7 (replay gates teleop):** Set `teleop.target` to a known "leaked-if-sent" value, run replay with a distinct trajectory, assert the teleop value never appears in the dispatcher's `sent_commands`.
+- **9 (fault injection):** Apply `FaultProfile(drop_prob=0.2, latency_ms=50)` to the robot reader for 2 seconds. Assert `ticks_skipped > 0`, `stale_sample_count > 0`, and the session is still in a valid state (no crash, no orphan tasks).
 
 Each test ≤ 40 lines, delegating to fixtures. Favor clear behavioural assertions over broad coverage — these tests are a *gate*, not a replacement for the unit + integration tests.
 
