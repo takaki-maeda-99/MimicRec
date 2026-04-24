@@ -141,9 +141,20 @@ class Teleoperator(Protocol):
 
 MVP ships only leader-arm adapters (SO-Leader, and a reBotArm leader if one is wired up). The protocol leaves room for other device types without redesign.
 
-### 5.3 `Camera`
+### 5.3 `Camera` and `CameraManager`
 
-Use LeRobot's existing `OpenCVCamera`, `IntelRealSenseCamera`, etc. unchanged. No wrapper.
+MimicRec does **not** fork or wrap individual camera driver classes: LeRobot's `OpenCVCamera`, `IntelRealSenseCamera`, etc. are used as-is as the underlying drivers. However, MimicRec owns a thin `CameraManager` layer that sits between those drivers and the rest of the system, because several session-level responsibilities are not covered by the drivers.
+
+`CameraManager` responsibilities:
+
+- Instantiate LeRobot camera classes from `configs/cameras/*.yaml`.
+- Own connect/disconnect across all cameras in a session, including error aggregation if any one fails to connect.
+- Own the per-camera `camera_reader` task (§7.2) that captures frames at the driver's native rate and populates `LatestValue[Frame]` slots.
+- Fan out each captured frame to **two consumers**: the recorder (full-resolution, passed into the per-episode MP4 encoder) and the preview hub (downscaled + JPEG-encoded, published on `/ws/cameras/<name>`).
+- Isolate slow preview clients from the recording path: the preview fan-out is non-blocking; a stalled WebSocket consumer drops frames for itself only, never back-pressures the recorder.
+- Detect and report camera drops / read timeouts as hardware errors that the session-level error handler turns into an auto-discard (§7.3).
+
+The driver is swappable, the manager is not: adding a new camera type means adding a driver class to the config layer, not modifying `CameraManager`.
 
 ### 5.4 `TeleopMapper`
 
@@ -238,18 +249,39 @@ IDLE
 
 Let `session.state` be the current `SessionState` enum value (see 11.3). The session runs several concurrent asyncio tasks (see §4): one reader per device writing to a `LatestValue` slot, a control-loop task that ticks at `fps`, and a writer task that drains the recorder queue.
 
+**Task lifecycle.**
+
+- All session tasks (device readers, control loop, command dispatcher, writer) are **started once on `session/start`** and **stopped once on `session/end`**. No task is restarted at episode boundaries (`episode/start`, `episode/stop`, `episode/save`, `episode/discard`).
+- Stop is signalled by a shared `asyncio.Event` (`stopped`), used by the dispatcher (shown below) and by every reader/loop task. The `session.state != SessionState.IDLE` condition is a convenience derived from the same event and they are always consistent.
+- The control loop is alive for the whole session; only what it *does* each tick depends on `session.state`.
+
+**Per-tick behaviour by state:**
+
+| `session.state` | Teleop-mode loop does… | Hand-teach-mode loop does… |
+|---|---|---|
+| `READY` | read state+action, map, write to `command_goal_slot` (unless replay active). No recording. | no-op tick (arm remains in `GRAVITY_COMP`). No recording. |
+| `RECORDING` | same as `READY`, plus enqueue a `SampleBundle` to `recorder.queue`. | read state, enqueue a synthesised-action `SampleBundle`. |
+| `REVIEW` | **hold**: do not generate new commands, do not enqueue samples. Do not write to `command_goal_slot` at all — the dispatcher retains its last target, so the robot holds its last commanded joint position. | **idle**: the arm stays in `GRAVITY_COMP`. Do not enqueue samples. |
+| `IDLE` | loop has already exited. | loop has already exited. |
+
+The loop does not follow teleop input during `REVIEW`. This prevents unintended motion between episodes: the user can take their hand off the leader arm, label/comment the just-recorded episode, and know the follower will not drift.
+
 **Device reader tasks** (one per device, each at its own native rate):
 
 ```python
-async def robot_state_reader(robot: RobotAdapter, slot: LatestValue[RobotState]):
-    while session.state != SessionState.IDLE:
+async def robot_state_reader(
+    robot: RobotAdapter,
+    slot: LatestValue[RobotState],
+    stopped: asyncio.Event,
+):
+    while not stopped.is_set():
         t = time.monotonic_ns()
         state = await robot.read_state()          # may internally use to_thread
         state.t_mono_ns = t                       # capture-time, set right after read
         slot.set(state)
 ```
 
-Analogous tasks exist for `teleop_reader` (teleop mode only) and per-camera `camera_reader` tasks.
+Analogous tasks exist for `teleop_reader` (teleop mode only) and per-camera `camera_reader` tasks. Readers run throughout the session, including `REVIEW` — their data is still useful for live previews on `/ws/state` and `/ws/cameras/*`.
 
 **Command dispatcher.** The robot accepts at most one in-flight `send_joint_command` at a time. A dedicated `command_dispatcher` task owns a `LatestValue[RobotCommand]` **goal slot**: the control loop writes the desired command into the slot, and the dispatcher awaits one send, reads the goal slot again (which already reflects the latest desired command), sends, and repeats. Stale intermediate commands are collapsed automatically — the robot never receives out-of-order joint targets. The control loop thus never calls `send_joint_command` directly and never spawns orphan tasks.
 
@@ -271,7 +303,7 @@ async def command_dispatcher(robot, goal: LatestValue[RobotCommand], stopped: as
 tick_interval_ns = 1_000_000_000 // fps
 next_tick_ns     = time.monotonic_ns() + tick_interval_ns
 
-while session.state in {SessionState.READY, SessionState.RECORDING}:
+while not stopped.is_set():
     tick_t = time.monotonic_ns()
 
     # Tick drift recovery: if we've fallen behind by more than one tick (e.g., GC
@@ -280,6 +312,15 @@ while session.state in {SessionState.READY, SessionState.RECORDING}:
         ticks_skipped = (tick_t - next_tick_ns) // tick_interval_ns
         metrics.inc("ticks_skipped", ticks_skipped)
         next_tick_ns = tick_t + tick_interval_ns
+
+    phase = session.state
+
+    if phase == SessionState.REVIEW:
+        # Hold: do not regenerate commands, do not enqueue samples.
+        # Dispatcher retains its last target, so the robot holds its last pose.
+        await _sleep_until(next_tick_ns)
+        next_tick_ns += tick_interval_ns
+        continue
 
     state  = robot_state_slot.peek()
     action = teleop_slot.peek()
@@ -294,7 +335,7 @@ while session.state in {SessionState.READY, SessionState.RECORDING}:
     if not session.replay_active:              # replay owns the robot while active (see §10)
         command_goal_slot.set(command)
 
-    if session.state == SessionState.RECORDING:
+    if phase == SessionState.RECORDING:
         frames = {name: slot.peek() for name, slot in camera_slots.items()}
         recorder.enqueue(SampleBundle(
             tick_t_mono_ns=tick_t,
@@ -310,7 +351,7 @@ while session.state in {SessionState.READY, SessionState.RECORDING}:
 ```python
 await robot.set_mode(RobotMode.GRAVITY_COMP)
 
-while session.state in {SessionState.READY, SessionState.RECORDING}:
+while not stopped.is_set():
     tick_t = time.monotonic_ns()
 
     if tick_t >= next_tick_ns + tick_interval_ns:
@@ -318,13 +359,21 @@ while session.state in {SessionState.READY, SessionState.RECORDING}:
         metrics.inc("ticks_skipped", ticks_skipped)
         next_tick_ns = tick_t + tick_interval_ns
 
+    phase = session.state
+
+    if phase == SessionState.REVIEW:
+        # Idle: arm stays in GRAVITY_COMP; no samples enqueued.
+        await _sleep_until(next_tick_ns)
+        next_tick_ns += tick_interval_ns
+        continue
+
     state = robot_state_slot.peek()
     if state is None:
         await _sleep_until(next_tick_ns)
         next_tick_ns += tick_interval_ns
         continue
 
-    if session.state == SessionState.RECORDING:
+    if phase == SessionState.RECORDING:
         # Action is filled *here*, in the control loop, before enqueue, so every
         # SampleBundle is complete and well-typed. The writer is dumb: it only
         # serialises. For hand-teach, action == measured state snapshotted at tick_t.
@@ -341,6 +390,8 @@ while session.state in {SessionState.READY, SessionState.RECORDING}:
     await _sleep_until(next_tick_ns)
     next_tick_ns += tick_interval_ns
 ```
+
+**Transitions `RECORDING → REVIEW → READY` do not restart the loop.** `episode/stop` flips `session.state` to `REVIEW`; the loop's next tick observes this and enters the hold/idle branch. `episode/save` and `episode/discard` flip back to `READY`; the next tick resumes the normal READY behaviour — with teleop mode this means the follower starts tracking the leader again from wherever it is *now*, without any catch-up animation. The UI surfaces a ready state on the Record page so the operator knows teleop will re-engage.
 
 `SampleBundle` is an internal dataclass (not an API model):
 
@@ -420,11 +471,26 @@ Per-episode metadata (`episodes.jsonl`):
 
 The on-disk format is LeRobot. Conversions to other formats (e.g., RLDS) are not provided by MVP; see §14.
 
+### 8.1 Episode deletion policy
+
+`DELETE /api/datasets/{ds}/episodes/{idx}` does **not renumber episodes**. Deletion behaviour:
+
+- Remove the episode's parquet file and all per-camera MP4 files from disk.
+- Update the episode's row in `episodes.jsonl` with a tombstone marker: `deleted: true` and `deleted_at: <unix_ts>`. The row is **kept**, not physically removed from the jsonl, so other episodes' byte offsets and any external tooling holding indices remain valid.
+- Episode indices are **stable and may contain gaps** after deletion. Readers and the `/api/datasets/{ds}/archive` zip stream must filter out rows where `deleted == true`.
+- `GET /api/datasets/{ds}/episodes` filters tombstoned rows by default and accepts `include_deleted=true` for administrative views (not exposed in the UI in MVP).
+- Attempting to `DELETE` an already-deleted index returns HTTP 404.
+
+This avoids the complexity of re-indexing and re-writing the full jsonl/parquet/video tree on every deletion, at the cost of allowing gappy indices downstream. A future compaction job can physically re-pack a dataset if needed; it is out of MVP scope.
+
 ## 9. Camera handling
 
-- Recording path: full-resolution frames are encoded directly into per-episode MP4 files during recording. Memory buffering of full episodes is avoided.
-- Preview path: the server downscales and JPEG-compresses frames, publishing them at ~10–15 Hz on `/ws/cameras/<cam_name>`. This keeps the recording path unaffected if the preview consumer is slow, and reduces LAN bandwidth.
+`CameraManager` (§5.3) owns this layer. Behaviour:
+
+- **Recording path.** Full-resolution frames are encoded directly into per-episode MP4 files during recording. Memory buffering of full episodes is avoided.
+- **Preview path.** The manager downscales and JPEG-compresses frames, publishing them at ~10–15 Hz on `/ws/cameras/<cam_name>`. This keeps the recording path unaffected if the preview consumer is slow, and reduces LAN bandwidth.
 - Each camera feed is an independent WebSocket channel so a stalled preview on one camera does not block others.
+- Per-camera capture failures (read timeout, driver error) are surfaced to the session-level error handler; during `RECORDING` this triggers an auto-discard (§7.3), during `READY`/`REVIEW` it is logged and emitted on `/ws/session` `error` without aborting the session.
 
 ## 10. Web UI
 
@@ -440,9 +506,27 @@ Four pages, sidebar navigation, shared header. (No separate Export page — see 
 - Replay uses the current active-session robot.
 - Replay requires the session to be in `READY`. Replay is forbidden during `RECORDING` or `REVIEW`. While replay is streaming joint commands, the session remains in `READY`; replay does not introduce a new top-level session state. A transient internal `REPLAYING` flag (`session.replay_active`) on the session object gates new `/episode/start` requests (they return HTTP 409 until replay finishes or is stopped).
 - **Exclusive robot ownership during replay.** When `replay_active` is true, the control loop (§7.2) explicitly **does not write** to `command_goal_slot`. The replay task is the sole writer during replay, writing successive joint targets from the episode trajectory into the same `command_goal_slot` that the command dispatcher consumes. When replay ends (completed or stopped), `replay_active` is cleared and the control loop resumes commanding. Teleop readers and robot-state readers keep running throughout — only commanding ownership changes.
+- **Leader-arm input during replay.** Leader-arm (and any other teleop) input continues to be read for monitoring/preview but **never reaches the robot command path**. It is dropped at the control-loop level by the `replay_active` guard. The UI displays a *"Replaying… leader-arm input ignored"* notice on the Record and Replay pages so the operator is not surprised by the lack of follower response.
 - If no session is active, the button prompts the user to start one first (the same hardware path is used).
 - Before motion, the robot is commanded to the first joint state of the episode via a slow ramp; only then is the recorded trajectory streamed. The slow-ramp and trajectory-streaming both go through `command_goal_slot`; the dispatcher's collapsing semantics are harmless here because the replay task writes at most once per tick.
-- `Stop` button is always visible and immediately halts motion (clears `replay_active` and writes the current measured state into `command_goal_slot` as a hold command).
+- **`Stop` is always visible and immediately halts motion.** It stops streaming replay commands, clears `replay_active`, and writes the currently-measured joint state into `command_goal_slot` as a hold command. Control returns to `READY`; the teleop command path remains gated until the stop cleanup completes (one tick).
+
+#### Replay-safety configuration
+
+The replay task enforces a set of safety parameters, all configurable per-robot in `configs/robots/<name>.yaml` under a `replay:` key. Numeric defaults live in config; the parameter names are part of the spec:
+
+```yaml
+# configs/robots/<name>.yaml (fragment)
+replay:
+  ramp_duration_sec: 2.0            # slow-ramp from current pose to episode frame 0
+  max_joint_velocity: <rad/s>        # hard cap on |Δq / Δt| between consecutive targets
+  max_joint_acceleration: <rad/s²>   # hard cap on finite-difference Δ² of targets
+  max_joint_position_jump: <rad>     # per-tick |target − measured| cap (discontinuity guard)
+  command_timeout_sec: 0.2           # how long without a new dispatched command before stop
+  watchdog_hz: 20                    # rate at which the watchdog verifies the above
+```
+
+On any safety-parameter violation the replay task triggers the same behaviour as `Stop` and emits an `error` event on `/ws/session` with the parameter that tripped. Adapters that expose a native emergency-stop API should wire it in here; adapters without one rely on the hold-command fallback.
 
 ## 11. REST and WebSocket contract
 
