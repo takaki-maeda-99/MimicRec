@@ -52,6 +52,12 @@ async def run_teleop_control_loop(
             next_tick_ns += tick_interval_ns
             continue
 
+        stale_threshold_ns = 3 * tick_interval_ns
+        if tick_t - state.t_mono_ns > stale_threshold_ns:
+            metrics.inc("stale_sample_count")
+        if tick_t - action.t_mono_ns > stale_threshold_ns:
+            metrics.inc("stale_sample_count")
+
         command = mapper.map(action.value, state.value)
         command.t_mono_ns = clock.monotonic_ns()
 
@@ -104,6 +110,10 @@ async def run_handteach_control_loop(
             await clock.sleep_until(next_tick_ns)
             next_tick_ns += tick_interval_ns
             continue
+
+        stale_threshold_ns = 3 * tick_interval_ns
+        if tick_t - state.t_mono_ns > stale_threshold_ns:
+            metrics.inc("stale_sample_count")
 
         if phase == SessionState.RECORDING:
             synthesized = RobotCommand(q=state.value.joint_pos.copy(), t_mono_ns=tick_t)
