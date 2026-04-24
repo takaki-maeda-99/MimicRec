@@ -55,7 +55,9 @@ async def create_session_from_request(app, req) -> SessionManager:
 
     # Load robot config and instantiate
     robot_cfg = OmegaConf.load(configs_root / "robot" / f"{req.robot}.yaml")
-    robot = instantiate_adapter(str(robot_cfg._target_))
+    robot_kwargs = {k: v for k, v in OmegaConf.to_container(robot_cfg).items()
+                   if k not in ("_target_", "replay")}
+    robot = instantiate_adapter(str(robot_cfg._target_), **robot_kwargs)
 
     # Teleop + mapper (only for TELEOP mode)
     teleop = None
