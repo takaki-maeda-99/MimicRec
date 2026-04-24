@@ -4,6 +4,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from mimicrec.errors import ReplaySafetyError
+from mimicrec.session.replay_safety import ReplaySafetyConfig, ReplayWatchdog
 from mimicrec.session.state import Session
 from mimicrec.types import RobotCommand, SessionState, SubState
 from mimicrec.util.clock import Clock
@@ -23,7 +25,7 @@ async def run_replay(
     command_goal_slot: LatestValue[RobotCommand],
     clock: Clock,
     measured_state_slot: "LatestValue | None" = None,
-    safety: "object | None" = None,
+    safety: "ReplaySafetyConfig | None" = None,
     error_bus: "object | None" = None,
 ) -> None:
     if session.state != SessionState.READY:
@@ -39,14 +41,49 @@ async def run_replay(
 
     tick_interval_ns = 1_000_000_000 // fps
     next_tick_ns = clock.monotonic_ns() + tick_interval_ns
+
+    wd = ReplayWatchdog(safety) if safety is not None else None
+    prev_q: np.ndarray | None = None
+    prev_prev_q: np.ndarray | None = None
+
     try:
         for q in trajectory.joint_targets:
             if session.stopped.is_set() or not session.replay_active:
                 break
-            command_goal_slot.set(
-                RobotCommand(q=q.astype(np.float32), t_mono_ns=clock.monotonic_ns()),
-                t_mono_ns=clock.monotonic_ns(),
-            )
+            target = q.astype(np.float32)
+
+            if wd is not None:
+                now_ns = clock.monotonic_ns()
+                try:
+                    wd.assert_fresh(now_ns)
+                    measured = None
+                    if measured_state_slot is not None:
+                        m = measured_state_slot.peek()
+                        measured = m.value.joint_pos if m is not None else target
+                    wd.check(
+                        target=target,
+                        prev_target=prev_q,
+                        prev_prev_target=prev_prev_q,
+                        measured=measured if measured is not None else target,
+                    )
+                except ReplaySafetyError as e:
+                    if measured_state_slot is not None:
+                        m = measured_state_slot.peek()
+                        if m is not None:
+                            now2 = clock.monotonic_ns()
+                            command_goal_slot.set(
+                                RobotCommand(q=m.value.joint_pos.copy(), t_mono_ns=now2),
+                                t_mono_ns=now2,
+                            )
+                    if error_bus is not None:
+                        await error_bus.publish(e)
+                    raise
+
+            now3 = clock.monotonic_ns()
+            command_goal_slot.set(RobotCommand(q=target, t_mono_ns=now3), t_mono_ns=now3)
+            if wd is not None:
+                wd.note_command_sent(now3)
+            prev_prev_q, prev_q = prev_q, target
             await clock.sleep_until(next_tick_ns)
             next_tick_ns += tick_interval_ns
     finally:
