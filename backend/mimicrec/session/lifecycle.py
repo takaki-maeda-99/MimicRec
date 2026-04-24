@@ -2,6 +2,7 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 from mimicrec.adapters.robot import RobotAdapter, RobotMode
@@ -277,6 +278,7 @@ class SessionManager:
                 "session_boot_t_unix": 0,
                 "session_boot_t_mono_ns": 0,
                 "resolved_config": self._resolved_config,
+                "recorded_at": datetime.now(timezone.utc).isoformat(),
             })
             self._pending = None
             self._episode_index += 1

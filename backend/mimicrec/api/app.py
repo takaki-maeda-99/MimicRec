@@ -1,7 +1,7 @@
 from __future__ import annotations
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
-from mimicrec.api.routes import session
+from mimicrec.api.routes import episode, replay, session
 from mimicrec.api.errors import register_exception_handlers
 
 
@@ -23,5 +23,7 @@ def create_app() -> FastAPI:
     app.state.configs_root = None
     app.state.datasets_root = None
     app.include_router(session.router, prefix="/api")
+    app.include_router(episode.router, prefix="/api")
+    app.include_router(replay.router, prefix="/api")
     register_exception_handlers(app)
     return app
