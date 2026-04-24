@@ -148,7 +148,7 @@ Mapper choice is declared in the session config, so Robot × Teleop × Mapper is
 
 ## 6. Config system
 
-- Config files live under `configs/` as YAML, loaded with **OmegaConf** (Hydra optional later if CLI overrides are needed).
+- Config files live under `configs/` as YAML, loaded with **Hydra** (which wraps OmegaConf). Hydra is adopted from day one because the composition example below uses the `defaults:` list, which is a Hydra feature, not plain OmegaConf. Hydra also gives us CLI overrides for the backend process without extra work. We use Hydra's Python Compose API (`hydra.compose`) rather than the `@hydra.main` CLI decorator, so configs can be resolved on demand from the running FastAPI process.
 - Configs are organized by concern:
 
 ```
@@ -206,15 +206,17 @@ IDLE
 
 ### 7.2 Control loop (per session)
 
+Let `session.state` be the current `SessionState` enum value (see 11.3).
+
 Teleop mode:
 
 ```python
-while session.active:
+while session.state in {READY, RECORDING}:
     state = await robot.read_state()
     action = await teleop.read_action()
     command = mapper.map(action, state)
     await robot.send_joint_command(command.q)
-    if session.state == RECORDING:
+    if session.state == SessionState.RECORDING:
         recorder.append(state, command, cameras.frames(), t=now)
     await sleep_to_next_tick(fps)
 ```
@@ -223,9 +225,9 @@ Hand-teach mode:
 
 ```python
 await robot.set_mode(GRAVITY_COMP)
-while session.active:
+while session.state in {READY, RECORDING}:
     state = await robot.read_state()
-    if session.state == RECORDING:
+    if session.state == SessionState.RECORDING:
         recorder.append(state, action=None, cameras.frames(), t=now)
     await sleep_to_next_tick(fps)
 ```
@@ -270,7 +272,7 @@ Per-frame fields:
 - `timestamp` (float32, seconds since episode start)
 - `observation.state` (joint positions, velocities)
 - `observation.images.<cam_name>` (indexed into MP4)
-- `action` (commanded joint positions; filled with last-state for hand-teach rows so the schema is uniform)
+- `action` (commanded joint positions; for hand-teach rows, filled with the **current measured `observation.state.joint_pos`** so the schema is uniform and action≈state holds along the trajectory)
 
 Per-episode metadata (`episodes.jsonl`):
 
@@ -300,6 +302,7 @@ Five pages, sidebar navigation, shared header.
 ### Replay-on-robot safety
 
 - Replay uses the current active-session robot.
+- Replay requires the session to be in `READY`. Replay is forbidden during `RECORDING` or `REVIEW`. While replay is streaming joint commands, the session remains in `READY`; replay does not introduce a new top-level session state. A transient internal `REPLAYING` flag on the session object gates new `/episode/start` requests (they return HTTP 409 until replay finishes or is stopped).
 - If no session is active, the button prompts the user to start one first (the same hardware path is used).
 - Before motion, the robot is commanded to the first joint state of the episode via a slow ramp; only then is the recorded trajectory streamed.
 - `Stop` button is always visible and immediately halts motion.
@@ -367,11 +370,15 @@ class StartSessionRequest(BaseModel):
     dataset: str
     task: str
     robot: str
-    teleop: str | None = None        # must be None iff mode == HAND_TEACH
+    teleop: str | None = None
     mapper: str | None = None
     cameras: list[str]
     mode: SessionMode
     fps: int = 30
+
+# Validation rule: if mode == HAND_TEACH, both `teleop` and `mapper` MUST be None.
+# If mode == TELEOP, both `teleop` and `mapper` MUST be non-None.
+# Violations return HTTP 422.
 
 class SaveEpisodeRequest(BaseModel):
     success: bool | None = None
@@ -396,7 +403,7 @@ class EpisodeSummary(BaseModel):
 - Python 3.10+
 - FastAPI + Uvicorn
 - Pydantic v2
-- OmegaConf (Hydra optional later)
+- Hydra (which uses OmegaConf internally)
 - `lerobot` and `reBotArm_control_py` as editable installs
 - HuggingFace `datasets` for RLDS export
 - `uv` for dependency management
@@ -428,7 +435,7 @@ MimicRec/
       recording/       (LeRobotDataset writer, MP4 writers)
       export/          (RLDS exporter)
       api/             (FastAPI routes, WS hubs)
-      config/          (OmegaConf loading)
+      config/          (Hydra loading)
     tests/
     pyproject.toml
   frontend/
