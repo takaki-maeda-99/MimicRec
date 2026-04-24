@@ -13,7 +13,7 @@ A local-first web application that helps a single user collect imitation-learnin
 - teleoperate a follower robot using a leader arm (SO-Leader style) and record the resulting trajectories,
 - hand-teach a robot by moving it under gravity compensation with the actuators detorqued, and record the resulting trajectories,
 - review, replay, and visualize recorded episodes,
-- export the resulting datasets to LeRobot and RLDS formats.
+- download recorded datasets in native LeRobot format for downstream use.
 
 The app targets two robots initially:
 
@@ -32,7 +32,7 @@ The design is explicitly *single-user, single-active-session, local-machine*. Mu
 - Config-driven composition of Robot × Teleop × Mapper × Cameras.
 - Live preview of camera streams and joint state during a session.
 - Episode replay on the robot (replaying recorded joint-space trajectories on a real arm).
-- Dataset export: keep native LeRobot format, convert to RLDS.
+- Dataset download as a LeRobot-format archive (zip of the dataset directory).
 - Local disk storage. No auth.
 
 ### Out of scope (MVP)
@@ -50,39 +50,48 @@ The design is explicitly *single-user, single-active-session, local-machine*. Mu
 - The user runs the frontend in a browser on the same machine (or a LAN peer); no authentication is required.
 - The backend process owns **at most one active session** at a time. Attempts to start a second session return HTTP 409.
 - `lerobot` and `reBotArm_control_py` are used as editable installs (cloned into the repo). We do not fork them.
-- Teleop control loops and recording run at a single **fixed FPS** chosen per session (default 30 Hz); all devices are driven to match that rate. No internal high-rate / recorded-low-rate split.
+- Teleop control loops and recording run at a single **fixed FPS** chosen per session (default 30 Hz). The *recording tick* is at this fixed FPS. Individual devices (robot, teleop, each camera) are read by independent producer tasks that may run at their own native rates; the control-loop tick consumes the most recent value from each. See §7.2.
+- All timestamps are captured as `time.monotonic_ns()` at the point of capture for each stream (robot read, camera frame, action send, control-loop tick). See §8.
 - During hand-teach mode, the teleop input is not used. The user moves the arm by hand; the backend only samples state.
 
 ## 4. High-level architecture
 
 ```
 Browser (React + TypeScript, Vite)
-   │  REST (control/commands)     WebSocket (state/video streams)
-   ▼                                ▼
+   │  REST (control/commands)       WebSocket (state/video streams)
+   ▼                                  ▼
 FastAPI server (single process, asyncio)
-   │  in-process async calls
+   │
    ▼
-Device layer (pluggable adapters)
-   ├── RobotAdapter     (SO-101, reBotArm B601-DM)
-   ├── Teleoperator     (leader arms; SpaceMouse/Gamepad/Keyboard reserved for later)
-   ├── Camera           (via LeRobot's existing camera classes)
-   └── TeleopMapper     (Identity, EEFollow, Delta)
-        │
-        ▼
-DataWriter
-   ├── LeRobotDataset (primary, incremental writes during recording)
-   └── RLDS exporter (post-hoc batch conversion)
-        │
-        ▼
+┌─ Device reader tasks (independent asyncio tasks, each at its own native rate) ─┐
+│   RobotStateReader   ── LatestValue[RobotState]                                │
+│   TeleopReader       ── LatestValue[TeleopAction]                              │
+│   CameraReader[cam]  ── LatestValue[Frame]   (one task per camera)             │
+└─────────────────────────────────────────────────────────────────────────────── ┘
+   │   (non-blocking reads from LatestValue slots)
+   ▼
+Control loop task (ticks at session fps)
+   │   reads latest state + action, invokes TeleopMapper, sends joint command,
+   │   enqueues a SampleBundle to the recorder's non-blocking queue
+   ▼
+Writer task (consumes recorder queue)
+   ├── parquet row append (LeRobotDataset incremental)
+   └── MP4 encoder append (per-camera, per-episode)
+   │
+   ▼
 datasets/<dataset_name>/   (LeRobot on-disk layout)
 ```
 
 Key properties:
 
-- **One process.** FastAPI + control loop + device I/O live in one Python process with a single asyncio event loop. Blocking library calls (CAN I/O, camera reads) run in `asyncio.to_thread` / `run_in_executor`.
-- **LeRobot format is the source of truth** on disk. RLDS is a derived export, not a parallel write path.
+- **One process.** FastAPI + device I/O + control loop + writer live in one Python process with a single asyncio event loop. Blocking library calls (CAN I/O, camera reads, MP4 encode) run in `asyncio.to_thread` / `run_in_executor`.
+- **Producer/consumer, not serial await.** Each device has its own reader task writing to a `LatestValue[T]` slot; the control loop never waits on I/O in the critical path. This keeps the recording tick rate stable even when a single device stalls (CAN timeout, camera hiccup) — a stall shows up as a repeated (stale) last value, not as a missed tick.
+- **Writer decoupled from control loop.** The control loop enqueues `SampleBundle` objects and returns immediately; the writer task drains the queue. Queue backpressure is surfaced as a recorder metric, not as control-loop latency.
+- **LeRobot format is the source of truth** on disk. No RLDS writer in MVP (see §14).
 - **No message broker, no Redis, no multi-process orchestration.** Single-user local app; YAGNI.
 - **The server is the single source of truth for session state.** The browser subscribes to state changes via WebSocket; it does not maintain authoritative state.
+
+A `LatestValue[T]` is a tiny wrapper holding `(value, t_mono_ns)`. Writes are unconditional replacement; reads are non-blocking and return the stored tuple. Concurrency safety comes from the single-threaded asyncio event loop (device readers use `to_thread` for the blocking I/O call but the slot write happens back on the loop thread).
 
 ## 5. Device abstractions
 
@@ -148,7 +157,8 @@ Mapper choice is declared in the session config, so Robot × Teleop × Mapper is
 
 ## 6. Config system
 
-- Config files live under `configs/` as YAML, loaded with **Hydra** (which wraps OmegaConf). Hydra is adopted from day one because the composition example below uses the `defaults:` list, which is a Hydra feature, not plain OmegaConf. Hydra also gives us CLI overrides for the backend process without extra work. We use Hydra's Python Compose API (`hydra.compose`) rather than the `@hydra.main` CLI decorator, so configs can be resolved on demand from the running FastAPI process.
+- Config files live under `configs/` as YAML, loaded with **OmegaConf** only — Hydra is intentionally *not* used. Hydra's Python Compose API has long-running-process hazards (global `GlobalHydra` singleton, working-directory mutation, output-dir creation) that conflict with a FastAPI process that may compose configs many times over its lifetime. CLI overrides are not a core requirement for this app.
+- Composition is done by a small (~15 line) in-repo merger that interprets a `defaults:` key at the top of a session config as references to sibling config folders. This is our own, limited subset of Hydra-style composition — enough for our use case and no more. Extended Hydra features (interpolations into the `defaults` list, package overrides, sweeps, etc.) are not supported.
 - Configs are organized by concern:
 
 ```
@@ -161,28 +171,43 @@ configs/
 ```
 
 - Each config has a `_target_`-style key pointing to the Python class to instantiate, plus parameters (ports, calibration paths, etc.).
-- A session config composes references to the above using `defaults:` and adds task/recording metadata.
+- A session config composes references to the above using a `defaults:` key and adds task/recording metadata.
 
 Example:
 
 ```yaml
 # configs/sessions/rebotarm_teleop.yaml
 defaults:
-  - robot: rebotarm_b601dm
-  - teleop: so_leader
-  - mapper: ee_follow
-  - cameras:
-    - front
-    - wrist
+  robot: rebotarm_b601dm           # → configs/robots/rebotarm_b601dm.yaml
+  teleop: so_leader                # → configs/teleops/so_leader.yaml
+  mapper: ee_follow                # → configs/mappers/ee_follow.yaml
+  cameras: [front, wrist]          # → configs/cameras/{front,wrist}.yaml
 task:
   name: "pick_and_place_cube"
   instruction: "Pick up the red cube and place it in the green zone"
 recording:
   fps: 30
-  format: lerobot
 ```
 
-`/api/configs/*` enumerates available files in these folders and returns metadata the UI needs for selection menus.
+Sketch of the merger:
+
+```python
+CONFIGS_ROOT = Path("configs")
+
+def load_session_config(session_yaml: Path) -> DictConfig:
+    cfg = OmegaConf.load(session_yaml)
+    defaults = cfg.pop("defaults", {})
+    for group, ref in defaults.items():
+        folder = CONFIGS_ROOT / group
+        if isinstance(ref, list):
+            cfg[group] = {name: OmegaConf.load(folder / f"{name}.yaml") for name in ref}
+        else:
+            cfg[group] = OmegaConf.load(folder / f"{ref}.yaml")
+    OmegaConf.resolve(cfg)
+    return cfg
+```
+
+`/api/configs/*` enumerates available files in these folders and returns metadata the UI needs for selection menus. `GET /api/session/config` returns the fully-resolved `DictConfig` of the currently active session (for debugging and to let the Record UI display exactly what was loaded).
 
 ## 7. Session lifecycle and control loop
 
@@ -206,31 +231,78 @@ IDLE
 
 ### 7.2 Control loop (per session)
 
-Let `session.state` be the current `SessionState` enum value (see 11.3).
+Let `session.state` be the current `SessionState` enum value (see 11.3). The session runs several concurrent asyncio tasks (see §4): one reader per device writing to a `LatestValue` slot, a control-loop task that ticks at `fps`, and a writer task that drains the recorder queue.
 
-Teleop mode:
-
-```python
-while session.state in {READY, RECORDING}:
-    state = await robot.read_state()
-    action = await teleop.read_action()
-    command = mapper.map(action, state)
-    await robot.send_joint_command(command.q)
-    if session.state == SessionState.RECORDING:
-        recorder.append(state, command, cameras.frames(), t=now)
-    await sleep_to_next_tick(fps)
-```
-
-Hand-teach mode:
+**Device reader tasks** (one per device, each at its own native rate):
 
 ```python
-await robot.set_mode(GRAVITY_COMP)
-while session.state in {READY, RECORDING}:
-    state = await robot.read_state()
-    if session.state == SessionState.RECORDING:
-        recorder.append(state, action=None, cameras.frames(), t=now)
-    await sleep_to_next_tick(fps)
+async def robot_state_reader(robot: RobotAdapter, slot: LatestValue[RobotState]):
+    while session.state != SessionState.IDLE:
+        t = time.monotonic_ns()
+        state = await robot.read_state()          # may internally use to_thread
+        state.t_mono_ns = t                       # capture-time, set right after read
+        slot.set(state)
 ```
+
+Analogous tasks exist for `teleop_reader` (teleop mode only) and per-camera `camera_reader` tasks.
+
+**Control loop task (teleop mode)**:
+
+```python
+tick_interval_ns = 1_000_000_000 // fps
+next_tick_ns = time.monotonic_ns()
+
+while session.state in {SessionState.READY, SessionState.RECORDING}:
+    tick_t = time.monotonic_ns()
+    state  = robot_state_slot.peek()              # non-blocking read, may be stale
+    action = teleop_slot.peek()
+    if state is None or action is None:
+        await _sleep_until(next_tick_ns)          # not yet primed
+        next_tick_ns += tick_interval_ns
+        continue
+
+    command = mapper.map(action.value, state.value)
+    command.t_mono_ns = time.monotonic_ns()
+    asyncio.create_task(robot.send_joint_command(command.q))   # fire and forget
+
+    if session.state == SessionState.RECORDING:
+        frames = {name: slot.peek() for name, slot in camera_slots.items()}
+        recorder.enqueue(SampleBundle(
+            tick_t_mono_ns=tick_t,
+            state=state, action=command, frames=frames,
+        ))
+
+    await _sleep_until(next_tick_ns)
+    next_tick_ns += tick_interval_ns
+```
+
+**Control loop task (hand-teach mode)**:
+
+```python
+await robot.set_mode(RobotMode.GRAVITY_COMP)
+
+while session.state in {SessionState.READY, SessionState.RECORDING}:
+    tick_t = time.monotonic_ns()
+    state = robot_state_slot.peek()
+    if state is None:
+        await _sleep_until(next_tick_ns)
+        next_tick_ns += tick_interval_ns
+        continue
+
+    if session.state == SessionState.RECORDING:
+        frames = {name: slot.peek() for name, slot in camera_slots.items()}
+        recorder.enqueue(SampleBundle(
+            tick_t_mono_ns=tick_t,
+            state=state, action=None, frames=frames,   # action→filled from state at write time
+        ))
+
+    await _sleep_until(next_tick_ns)
+    next_tick_ns += tick_interval_ns
+```
+
+**Writer task** (runs concurrently, drains `recorder.queue` and writes parquet rows + MP4 frames). The writer is the only component that touches the on-disk dataset. If the queue grows beyond a threshold the writer logs a warning; if it exceeds a hard cap the session auto-aborts with an error (to avoid unbounded memory growth on persistent storage stalls).
+
+**Staleness handling.** If `slot.peek()` returns a value whose `t_mono_ns` is older than `tick_t − stale_threshold` (e.g., 3× `tick_interval_ns`), the control loop logs a `stale_sample` warning and counts it in a per-session metric. Frames are still recorded (with their actual capture timestamps) so downstream code can detect and filter stale samples.
 
 Recording lifecycle:
 
@@ -267,21 +339,33 @@ datasets/
           episode_000000.mp4
 ```
 
-Per-frame fields:
+Per-frame fields (one row per control-loop tick):
 
-- `timestamp` (float32, seconds since episode start)
-- `observation.state` (joint positions, velocities)
-- `observation.images.<cam_name>` (indexed into MP4)
-- `action` (commanded joint positions; for hand-teach rows, filled with the **current measured `observation.state.joint_pos`** so the schema is uniform and action≈state holds along the trajectory)
+- `timestamp` (float32, seconds since episode start; derived from `tick_t_mono_ns` for LeRobot-format compatibility)
+- `tick_t_mono_ns` (int64, control-loop tick time in `monotonic_ns()` units)
+- `observation.state.joint_pos` (float32[dof])
+- `observation.state.joint_vel` (float32[dof])
+- `observation.state.joint_effort` (float32[dof]) — included because it carries the human-applied force signal during hand-teach and is useful for admittance-style downstream policies
+- `observation.state.t_mono_ns` (int64, capture time of the joint-state read)
+- `observation.images.<cam_name>.video_frame_index` (int32, row's index into the corresponding MP4)
+- `observation.images.<cam_name>.t_mono_ns` (int64, capture time of the frame)
+- `action.joint_pos` (float32[dof]) — commanded joint positions. For hand-teach rows, filled with the **current measured `observation.state.joint_pos`** so the schema is uniform and action≈state holds along the trajectory.
+- `action.t_mono_ns` (int64, time the command was dispatched; for hand-teach rows, equals `tick_t_mono_ns`)
+
+**Clock model.** All `t_mono_ns` values come from a single `time.monotonic_ns()` source captured inside the backend process. They are monotonically increasing and **continuous across episodes within a single backend-process lifetime**. To convert to wall-clock time, each episode's metadata records `session_boot_t_unix` (Unix seconds) and `session_boot_t_mono_ns`; `unix = session_boot_t_unix + (t_mono_ns − session_boot_t_mono_ns) / 1e9`.
+
+**MP4 correspondence.** Per-row `video_frame_index` is the authoritative mapping from parquet rows to MP4 frames. MP4 PTS is *not* mirrored into parquet (avoiding duplicate time data). MP4 files are written at the session `fps` with fixed-rate PTS, so the `video_frame_index` fully determines the frame to display.
 
 Per-episode metadata (`episodes.jsonl`):
 
 - `episode_index`, `task_name`, `instruction`
 - `robot`, `teleop`, `mapper`, `cameras`, `mode`, `fps`
 - `success: bool | null`, `comment: str | null`
-- `start_time`, `end_time`, `duration_sec`, `num_frames`
+- `start_t_mono_ns`, `end_t_mono_ns`, `duration_sec`, `num_frames`
+- `session_boot_t_unix`, `session_boot_t_mono_ns` (for wall-clock reconstruction)
+- `resolved_config`: the fully-merged session config as JSON, for reproducibility
 
-The primary format is LeRobot. RLDS is produced on demand by an exporter that reads the LeRobot dataset and builds a TFDS-compatible RLDS shard.
+The on-disk format is LeRobot. Conversions to other formats (e.g., RLDS) are not provided by MVP; see §14.
 
 ## 9. Camera handling
 
@@ -291,13 +375,12 @@ The primary format is LeRobot. RLDS is produced on demand by an exporter that re
 
 ## 10. Web UI
 
-Five pages, sidebar navigation, shared header.
+Four pages, sidebar navigation, shared header. (No separate Export page — see §14. Dataset download is a single-click "Download as zip" button on the Datasets page.)
 
-1. **Datasets** — list, create, select.
-2. **Record** (core) — four sub-states matching the session machine: pre-session (choose configs), READY (previews + start episode), RECORDING (previews + stop), REVIEW (scrub preview + save/discard/label). Keyboard shortcuts: `Space` start/stop, `S` save, `D` discard, `1/2/3` success/failure/skip.
+1. **Datasets** — list, create, select. Each row has a **Download** button that streams a zip of the dataset directory via `GET /api/datasets/{ds}/archive`.
+2. **Record** (core) — four sub-states matching the session machine: pre-session (choose configs), READY (previews + start episode), RECORDING (previews + stop), REVIEW (scrub preview + save/discard/label). Keyboard shortcuts: `Space` start/stop, `S` save, `D` discard, `1/2/3` success/failure/skip. A small "Replaying…" badge appears during replay-on-robot (see §11.2).
 3. **Episodes** — filterable table of all episodes in a dataset.
 4. **Replay** — per-episode viewer: synced camera videos, joint/vel/effort plots, metadata panel, "Replay on Robot" button that plays the recorded joint trajectory on the live arm.
-5. **Export** — select dataset and target format (LeRobot/RLDS), filters, output path, asynchronous job with progress.
 
 ### Replay-on-robot safety
 
@@ -337,8 +420,9 @@ POST   /api/episode/discard
 POST   /api/replay/start                           body: {dataset, episode_idx, speed?}
 POST   /api/replay/stop
 
-POST   /api/export                                 body: {dataset, format, filter?, output_path}
-GET    /api/export/jobs/{job_id}
+GET    /api/session/config                         # resolved DictConfig of the active session
+
+GET    /api/datasets/{ds}/archive                  # streamed zip of the dataset directory
 
 GET    /api/episodes/{ds}/{idx}/video/{cam}        # MP4 stream
 GET    /api/episodes/{ds}/{idx}/frames             # time-series JSON
@@ -347,9 +431,10 @@ GET    /api/episodes/{ds}/{idx}/frames             # time-series JSON
 ### 11.2 WebSocket channels
 
 - `/ws/session` — low-rate, event-driven:
-  - `session_state` on state transitions
-  - `episode_progress` ~1 Hz during RECORDING (frames, duration)
-  - `error` on hardware/recording errors
+  - `session_state` on state transitions. Payload: `{state: SessionState, sub_state: "replaying" | null, mode: SessionMode | null, dataset, task, robot, teleop, mapper}`. The top-level `state` tracks the formal state machine from §7.1; `sub_state` surfaces transient internal flags (currently only `"replaying"`) to the client without bloating the state machine.
+  - `replay_progress` ~2 Hz while sub_state is `"replaying"`: `{frame_index, total_frames, speed}`.
+  - `episode_progress` ~1 Hz during RECORDING (frames, duration, stale_sample_count, writer_queue_depth).
+  - `error` on hardware/recording errors.
 - `/ws/state` — robot joint state at 10–15 Hz (server decimates from loop rate)
 - `/ws/cameras/{cam_name}` — one channel per camera, JPEG binary frames at 10–15 Hz
 
@@ -366,19 +451,28 @@ class SessionState(str, Enum):
     RECORDING = "recording"
     REVIEW = "review"
 
-class StartSessionRequest(BaseModel):
+class _BaseSessionRequest(BaseModel):
     dataset: str
     task: str
     robot: str
-    teleop: str | None = None
-    mapper: str | None = None
     cameras: list[str]
-    mode: SessionMode
     fps: int = 30
 
-# Validation rule: if mode == HAND_TEACH, both `teleop` and `mapper` MUST be None.
-# If mode == TELEOP, both `teleop` and `mapper` MUST be non-None.
-# Violations return HTTP 422.
+class TeleopSessionRequest(_BaseSessionRequest):
+    mode: Literal[SessionMode.TELEOP] = SessionMode.TELEOP
+    teleop: str
+    mapper: str
+
+class HandTeachSessionRequest(_BaseSessionRequest):
+    mode: Literal[SessionMode.HAND_TEACH] = SessionMode.HAND_TEACH
+    # no teleop, no mapper — their absence is enforced by the type system.
+
+StartSessionRequest = Annotated[
+    TeleopSessionRequest | HandTeachSessionRequest,
+    Field(discriminator="mode"),
+]
+# FastAPI deserialises the correct variant based on `mode`. Violations return HTTP 422
+# automatically; no custom model_validator needed.
 
 class SaveEpisodeRequest(BaseModel):
     success: bool | None = None
@@ -403,9 +497,9 @@ class EpisodeSummary(BaseModel):
 - Python 3.10+
 - FastAPI + Uvicorn
 - Pydantic v2
-- Hydra (which uses OmegaConf internally)
+- OmegaConf (Hydra explicitly not used; see §6)
 - `lerobot` and `reBotArm_control_py` as editable installs
-- HuggingFace `datasets` for RLDS export
+- `pyarrow` for parquet writes (used directly — `datasets`/HuggingFace is *not* a backend dependency)
 - `uv` for dependency management
 
 ### Frontend
@@ -418,7 +512,7 @@ class EpisodeSummary(BaseModel):
 
 ### Testing
 
-- Backend: `pytest`; unit tests for adapters/mappers/recorder with mocks; integration tests via FastAPI `TestClient` with a `MockRobotAdapter` / `MockTeleoperator` / `MockCamera`. Hardware-in-the-loop tests are manual and documented.
+- Backend: `pytest`; unit tests for adapters/mappers/recorder with mocks; integration tests via FastAPI `TestClient` with a `MockRobotAdapter` / `MockTeleoperator` / `MockCamera`. The mocks accept **fault-injection parameters** (per-call `latency_ms` distribution, `jitter_ms`, `drop_prob`, `stuck_for_n_calls`) so tests can reproduce stale-sample handling, writer backpressure, and hardware-hiccup auto-discard without touching real hardware. Hardware-in-the-loop tests are manual and documented.
 - Frontend: `vitest` for components, `Playwright` for an end-to-end Record → Review → Save → Replay flow against a mock-adapter backend.
 
 ### Layout
@@ -431,16 +525,15 @@ MimicRec/
     mimicrec/
       adapters/        (so101, rebotarm, so_leader, mock)
       mappers/
-      session/         (state machine, control loop)
-      recording/       (LeRobotDataset writer, MP4 writers)
-      export/          (RLDS exporter)
+      session/         (state machine, control loop, LatestValue)
+      recording/       (parquet writer, MP4 writers)
       api/             (FastAPI routes, WS hubs)
-      config/          (Hydra loading)
+      config/          (OmegaConf loading + defaults merger)
     tests/
     pyproject.toml
   frontend/
     src/
-      pages/           (Datasets, Record, Episodes, Replay, Export)
+      pages/           (Datasets, Record, Episodes, Replay)
       components/
       api/             (REST client, WS clients)
       state/           (session store)
@@ -466,10 +559,12 @@ MimicRec/
 - No automatic hyperparameter tuning of control gains from the UI.
 - No on-the-fly URDF rendering in MVP.
 - No bimanual coordination logic in MVP.
+- **No RLDS export or any non-LeRobot format in MVP.** The on-disk format is LeRobot only. Downstream conversion to RLDS (or other formats) is deferred to a future sprint; converter requirements will be driven by actual downstream consumers rather than designed upfront. Dataset download is a plain zip of the dataset directory.
+- **No simulation backend.** All adapters target physical hardware (or a fault-injecting Mock). A MuJoCo / Isaac / PyBullet simulator adapter is out of scope; do not add one even if tempting.
 
 ## 15. Open questions and risks
 
-- **SO-101 gravity compensation** — to be verified against current `lerobot`. If unsupported, hand-teach on SO-101 ships as "torque off + friction compensation" or as an explicit "not supported" with a clear error until a workaround is added.
+- **SO-101 gravity compensation** — SO-101's Feetech STS servos do not expose torque-sensing or current-control primitives, so true gravity compensation is not physically feasible on this hardware. MVP strategy: expose `GRAVITY_COMP` on SO-101 as **"not supported"** with a clear error at session start. A future-work direction is an admittance-like approximation (a light PID that tracks current position so external force moves the arm and releasing hands stops it); explicitly deferred beyond MVP until there is demand and we have tuned it on real hardware.
 - **Cross-kinematics mapping quality** — `EEFollowMapper` for SO-Leader → reBotArm depends on FK/IK agreement and workspace overlap. Expected to need per-pairing calibration; out-of-scope for MVP beyond a functional reference implementation.
 - **MP4 encoding latency** — recording at 30 Hz with 2+ cameras may stress the machine. Fallback: configurable lower recording FPS or frame-dropping with frame counts logged as a quality signal.
 - **Replay-on-robot safety** — a bad trajectory can crash the arm into the environment. MVP relies on slow ramp to the first state and a software watchdog for discontinuities; full safety envelopes (workspace limits, velocity caps beyond the controller's own) are not in MVP.
