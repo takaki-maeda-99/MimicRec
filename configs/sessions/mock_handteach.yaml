@@ -1,0 +1,8 @@
+defaults:
+  robot: mock
+  cameras: [mock_cam]
+task:
+  name: "mock_handteach"
+  instruction: "Hand-teach"
+recording:
+  fps: 30

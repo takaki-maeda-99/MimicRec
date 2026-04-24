@@ -1,0 +1,10 @@
+defaults:
+  robot: mock
+  teleop: mock_leader
+  mapper: identity
+  cameras: [mock_cam]
+task:
+  name: "mock_pick"
+  instruction: "Pick the mock object"
+recording:
+  fps: 30

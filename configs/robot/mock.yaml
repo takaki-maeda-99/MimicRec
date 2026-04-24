@@ -1,0 +1,8 @@
+_target_: mimicrec.adapters.mock_robot.MockRobotAdapter
+replay:
+  ramp_duration_sec: 2.0
+  max_joint_velocity: 1.0
+  max_joint_acceleration: 5.0
+  max_joint_position_jump: 0.3
+  command_timeout_sec: 0.2
+  watchdog_hz: 20
