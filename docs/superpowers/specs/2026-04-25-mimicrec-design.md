@@ -28,7 +28,7 @@ The design is explicitly *single-user, single-active-session, local-machine*. Mu
 
 - Web UI for session setup, episode recording (start/stop/review/save/discard), episode list, and single-episode replay with time-series and video visualization.
 - Teleoperation via leader arm for both SO-101 and reBot Arm B601-DM.
-- Hand-teaching via gravity compensation mode for both robots.
+- Hand-teaching via gravity compensation mode for **reBot Arm B601-DM only**. SO-101 hand-teach is out of MVP (see §15 for the hardware reason); `POST /api/session/start` with `mode=HAND_TEACH` and `robot=so101` returns an HTTP 422 error with a clear "hand-teach not supported on this robot" message.
 - Config-driven composition of Robot × Teleop × Mapper × Cameras.
 - Live preview of camera streams and joint state during a session.
 - Episode replay on the robot (replaying recorded joint-space trajectories on a real arm).
@@ -121,7 +121,7 @@ class RobotAdapter(Protocol):
         """POSITION | TORQUE_OFF | GRAVITY_COMP."""
 ```
 
-- `GRAVITY_COMP` is required for hand-teach. reBotArm supports it (`example/9_gravity_compensation.py`); SO-101 support to be verified, fall back to a minimal implementation or refuse the mode with a clear error if not feasible.
+- `GRAVITY_COMP` is required for hand-teach. reBotArm supports it (`example/9_gravity_compensation.py`). SO-101 does **not** support true gravity compensation in MVP (see §15); the SO-101 adapter raises a `HandTeachNotSupportedError` when `set_mode(GRAVITY_COMP)` is requested, surfaced by the session starter as an HTTP 422 before any hardware is touched.
 - `ee_command` is optional; adapters without IK raise `NotImplementedError`.
 - Adapters hide vendor-specific control rate details; the session-level loop still drives at the configured FPS.
 
