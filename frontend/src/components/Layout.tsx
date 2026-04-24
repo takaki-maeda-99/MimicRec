@@ -1,16 +1,33 @@
 import { NavLink, Outlet } from "react-router-dom";
+import { useSessionStore } from "../state/session-store";
 
 const navItems = [
   { to: "/datasets", label: "Datasets" },
   { to: "/record", label: "Record" },
 ];
 
+function SessionBadge() {
+  const state = useSessionStore((s) => s.state);
+  const colors: Record<string, string> = {
+    idle: "bg-gray-100 text-gray-700",
+    ready: "bg-green-100 text-green-700",
+    recording: "bg-red-100 text-red-700",
+    review: "bg-yellow-100 text-yellow-700",
+  };
+  return (
+    <span className={`px-2 py-1 rounded-full text-xs font-medium ${colors[state] || colors.idle}`}>
+      {state.toUpperCase()}
+    </span>
+  );
+}
+
 export default function Layout() {
   return (
     <div className="flex h-screen bg-gray-50">
       <aside className="w-56 bg-white border-r border-gray-200 flex flex-col">
-        <div className="p-4 border-b border-gray-200">
+        <div className="p-4 border-b border-gray-200 flex items-center justify-between">
           <h1 className="text-lg font-bold text-gray-900">MimicRec</h1>
+          <SessionBadge />
         </div>
         <nav className="flex-1 p-2">
           {navItems.map((item) => (
