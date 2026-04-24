@@ -18,6 +18,7 @@ async def run_writer(
     last_pending: PendingEpisode | None = None
     episode_start_t_mono_ns: int | None = None
     video_frame_index: dict[str, int] = {}
+    frame_counter: int = 0
 
     while not stopped.is_set() or not queue.empty():
         try:
@@ -36,6 +37,7 @@ async def run_writer(
             last_pending = pending
             episode_start_t_mono_ns = None
             video_frame_index = {}
+            frame_counter = 0
 
         if pending is None:
             metrics.inc("writer_dropped_no_pending")
@@ -53,8 +55,17 @@ async def run_writer(
             if stamped is not None:
                 video_frame_index[cam_name] += 1
 
-        row = sample_bundle_to_row(bundle, episode_start_t_mono_ns, advanced)
+        row = sample_bundle_to_row(
+            bundle,
+            episode_start_t_mono_ns,
+            advanced,
+            frame_index=frame_counter,
+            episode_index=pending.episode_index,
+            global_index=0,  # will be set properly when we have global tracking
+            task_index=0,
+        )
         pending.append_row(row, frames=bundle.frames)
+        frame_counter += 1
         metrics.inc("writer_rows_written")
 
         done_ns = time.monotonic_ns()

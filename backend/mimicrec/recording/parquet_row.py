@@ -6,6 +6,10 @@ def sample_bundle_to_row(
     bundle: SampleBundle,
     episode_start_t_mono_ns: int,
     video_frame_index: dict[str, int],
+    frame_index: int = 0,
+    episode_index: int = 0,
+    global_index: int = 0,
+    task_index: int = 0,
 ) -> dict:
     state = bundle.state.value
     row = {
@@ -17,6 +21,10 @@ def sample_bundle_to_row(
         "observation.state.t_mono_ns": state.t_mono_ns,
         "action.joint_pos": bundle.action.q,
         "action.t_mono_ns": bundle.action.t_mono_ns,
+        "frame_index": frame_index,
+        "episode_index": episode_index,
+        "index": global_index,
+        "task_index": task_index,
     }
     for cam_name, frame_idx in video_frame_index.items():
         row[f"observation.images.{cam_name}.video_frame_index"] = frame_idx

@@ -11,6 +11,8 @@ class DatasetPaths:
     data_dir: Path
     videos_dir: Path
     pending_dir: Path
+    episodes_dir: Path
+    tasks_parquet: Path
 
     def chunk_dir(self, chunk_index: int) -> Path:
         return self.data_dir / f"chunk-{chunk_index:03d}"
@@ -32,6 +34,8 @@ def dataset_paths(ds_root: Path) -> DatasetPaths:
         data_dir=ds_root / "data",
         videos_dir=ds_root / "videos",
         pending_dir=ds_root / ".pending",
+        episodes_dir=ds_root / "meta" / "episodes",
+        tasks_parquet=ds_root / "meta" / "tasks.parquet",
     )
 
 
@@ -40,15 +44,59 @@ def init_dataset(ds_root: Path, fps: int, joint_names: list[str], camera_names: 
     p.meta_dir.mkdir(parents=True, exist_ok=True)
     p.data_dir.mkdir(parents=True, exist_ok=True)
     p.videos_dir.mkdir(parents=True, exist_ok=True)
+    p.episodes_dir.mkdir(parents=True, exist_ok=True)
+
+    # Build features dict
+    dof = len(joint_names)
+    features = {}
+    if dof > 0:
+        features["action"] = {"dtype": "float32", "shape": [dof], "names": joint_names}
+        features["observation.state"] = {"dtype": "float32", "shape": [dof], "names": joint_names}
+    features["timestamp"] = {"dtype": "float32", "shape": [1], "names": None}
+    features["frame_index"] = {"dtype": "int64", "shape": [1], "names": None}
+    features["episode_index"] = {"dtype": "int64", "shape": [1], "names": None}
+    features["index"] = {"dtype": "int64", "shape": [1], "names": None}
+    features["task_index"] = {"dtype": "int64", "shape": [1], "names": None}
+
+    for cam in camera_names:
+        features[f"observation.images.{cam}"] = {
+            "dtype": "video",
+            "shape": [480, 640, 3],
+            "names": ["height", "width", "channels"],
+            "info": {
+                "video.height": 480, "video.width": 640,
+                "video.codec": "libx264", "video.pix_fmt": "yuv420p",
+                "video.is_depth_map": False, "video.fps": fps,
+                "video.channels": 3, "has_audio": False,
+            },
+        }
+
     info = {
-        "codebase_version": "mimicrec-0.1.0",
+        "codebase_version": "v3.0",
+        "robot_type": "unknown",
+        "total_episodes": 0,
+        "total_frames": 0,
+        "total_tasks": 0,
+        "chunks_size": 1000,
+        "data_files_size_in_mb": 0,
+        "video_files_size_in_mb": 0,
         "fps": fps,
-        "joint_names": joint_names,
-        "camera_names": camera_names,
+        "splits": {"train": "0:0"},
+        "data_path": "data/chunk-{chunk_index:03d}/episode_{episode_index:06d}.parquet",
+        "video_path": "videos/{video_key}/chunk-{chunk_index:03d}/episode_{episode_index:06d}.mp4",
+        "features": features,
     }
     (p.meta_dir / "info.json").write_text(json.dumps(info, indent=2))
-    (p.meta_dir / "episodes.jsonl").touch()
-    (p.meta_dir / "tasks.jsonl").touch()
+
+    # Create empty tasks.parquet with proper schema
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    schema = pa.schema([
+        ("task", pa.string()),
+        ("task_index", pa.int64()),
+        ("instruction", pa.string()),
+    ])
+    pq.write_table(pa.table({"task": [], "task_index": [], "instruction": []}, schema=schema), p.tasks_parquet)
 
 
 def resolve_chunk(episode_index: int, episodes_per_chunk: int = 1000) -> int:

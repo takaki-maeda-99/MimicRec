@@ -1,7 +1,9 @@
 from __future__ import annotations
-import json
 from pathlib import Path
 from typing import Iterator
+
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 from mimicrec.datasets.reader import iter_episodes
 from mimicrec.recording.dataset_layout import dataset_paths, resolve_chunk
@@ -15,12 +17,18 @@ def build_archive_stream(ds_root: Path) -> Iterator[tuple[str, bytes | Path]]:
     info = p.meta_dir / "info.json"
     if info.exists():
         yield "meta/info.json", info
-    tasks = p.meta_dir / "tasks.jsonl"
-    if tasks.exists():
-        yield "meta/tasks.jsonl", tasks
 
-    rewritten = "\n".join(json.dumps(r) for r in live_rows) + ("\n" if live_rows else "")
-    yield "meta/episodes.jsonl", rewritten.encode("utf-8")
+    tasks_pq = p.tasks_parquet
+    if tasks_pq.exists():
+        yield "meta/tasks.parquet", tasks_pq
+
+    # Rewrite episodes parquet with only live rows
+    if live_rows:
+        table = pa.Table.from_pylist(live_rows)
+        import io
+        buf = io.BytesIO()
+        pq.write_table(table, buf)
+        yield "meta/episodes/chunk-000/file-000.parquet", buf.getvalue()
 
     for idx in sorted(live_indices):
         chunk = resolve_chunk(idx)
