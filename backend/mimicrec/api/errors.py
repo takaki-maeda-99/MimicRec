@@ -35,3 +35,7 @@ def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(KeyError)
     async def handle_key_error(req: Request, exc: KeyError):
         return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    @app.exception_handler(ValueError)
+    async def handle_value_error(req: Request, exc: ValueError):
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
