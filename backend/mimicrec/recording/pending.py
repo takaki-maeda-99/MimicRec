@@ -2,9 +2,6 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
-import pyarrow as pa
-import pyarrow.parquet as pq
-
 from mimicrec.recording.dataset_layout import (
     DatasetPaths, dataset_paths, resolve_chunk,
 )
@@ -39,16 +36,36 @@ class PendingEpisode:
     def episode_index(self) -> int:
         return self._episode_index
 
-    def append_row(self, row: dict) -> None:
+    def open_video_writers(self, fps: int, cameras: dict[str, tuple[int, int]]) -> None:
+        """Open one Mp4EpisodeWriter per camera. `cameras` maps name -> (width, height)."""
+        from mimicrec.cameras.recording import Mp4EpisodeWriter
+        self._video_writers: dict[str, Mp4EpisodeWriter] = {}
+        for name, (w, h) in cameras.items():
+            path = self._stage / f"{name}.mp4"
+            self._video_writers[name] = Mp4EpisodeWriter(path, fps=fps, width=w, height=h)
+
+    def append_row(self, row: dict, frames: dict[str, object] | None = None) -> int:
         if self._finalized:
             raise RuntimeError("cannot append after finalize()")
         self._rows.append(row)
+        if frames and getattr(self, "_video_writers", None):
+            for name, stamped in frames.items():
+                if stamped is None:
+                    continue
+                writer = self._video_writers.get(name)
+                if writer is not None:
+                    writer.write_frame(stamped.value.image)
+        return len(self._rows) - 1
 
     def finalize(self) -> None:
         if self._finalized:
             return
+        import pyarrow as pa
+        import pyarrow.parquet as pq
         table = pa.Table.from_pylist(self._rows)
         pq.write_table(table, self._stage / f"episode_{self._episode_index:06d}.parquet")
+        for w in getattr(self, "_video_writers", {}).values():
+            w.close()
         self._finalized = True
 
     def save(self, metadata_extra: dict) -> None:
