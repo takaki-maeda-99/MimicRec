@@ -41,6 +41,18 @@ class CameraManager:
             except (asyncio.CancelledError, Exception):
                 pass
         self._tasks.clear()
+        # Release underlying device handles (e.g. cv2.VideoCapture) so the next
+        # session can re-open the camera. Task cancellation alone does not free
+        # the OS-level handle.
+        for name, cam in self._cameras.items():
+            if hasattr(cam, "disconnect"):
+                try:
+                    await cam.disconnect()
+                except Exception as e:
+                    import logging
+                    logging.getLogger(__name__).warning(
+                        "camera %s disconnect failed: %s", name, e,
+                    )
 
     async def _run_camera(self, name: str, cam) -> None:
         # Connect camera if it has a connect method (OpenCVCamera needs it, MockCamera doesn't)
