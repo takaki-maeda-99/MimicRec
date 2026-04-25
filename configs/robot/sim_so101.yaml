@@ -1,0 +1,11 @@
+_target_: mimicrec.adapters.sim_bridge.SimBridgeAdapter
+address: tcp://localhost:5556
+dof: 6
+joint_names: [shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper]
+replay:
+  ramp_duration_sec: 2.0
+  max_joint_velocity: 2.0
+  max_joint_acceleration: 10.0
+  max_joint_position_jump: 0.5
+  command_timeout_sec: 0.5
+  watchdog_hz: 20

@@ -1,0 +1,3 @@
+_target_: mimicrec.cameras.sim_camera.SimCamera
+name: sim_front
+address: tcp://localhost:5557
