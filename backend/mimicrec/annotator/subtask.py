@@ -83,7 +83,7 @@ def annotate_episode(
     camera_name: str = "front",
     model_name: str = "google/gemma-4-E2B-it",
     sample_fps: float = 1.0,
-    device: str = "cuda",
+    device: str = "cpu",
     custom_prompt: str | None = None,
 ) -> list[SubtaskSegment]:
     """Annotate an episode with subtask labels using Gemma 4 VLM.
@@ -126,10 +126,11 @@ def annotate_episode(
     import torch
     from PIL import Image
 
-    logger.info(f"Loading {model_name}...")
+    logger.info(f"Loading {model_name} on {device}...")
     processor = AutoProcessor.from_pretrained(model_name)
+    dtype = torch.bfloat16 if device != "cpu" else torch.float32
     model = AutoModelForImageTextToText.from_pretrained(
-        model_name, torch_dtype=torch.bfloat16, device_map=device
+        model_name, torch_dtype=dtype, device_map=device
     )
 
     # Build prompt with images

@@ -248,7 +248,7 @@ async def annotate_episode_subtasks(
     loop = asyncio.get_running_loop()
     segments = await loop.run_in_executor(
         None, annotate_episode, ds_root, idx, body.camera, body.model,
-        body.sample_fps, "cuda", body.prompt,
+        body.sample_fps, "auto", body.prompt,
     )
 
     save_annotations(ds_root, idx, segments)
@@ -302,7 +302,7 @@ async def annotate_all_episodes(
             try:
                 segments = annotate_episode(
                     ds_root, ep_idx, body.camera, body.model,
-                    body.sample_fps, "cuda", body.prompt,
+                    body.sample_fps, "auto", body.prompt,
                 )
                 save_annotations(ds_root, ep_idx, segments)
                 progress["results"].append({
