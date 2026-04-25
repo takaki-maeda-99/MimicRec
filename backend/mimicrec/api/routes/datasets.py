@@ -214,3 +214,41 @@ async def get_episode_frames(request: Request, ds: str, idx: int):
                 clean[k] = v
         rows.append(clean)
     return rows
+
+
+@router.post("/datasets/{ds}/episodes/{idx}/annotate")
+async def annotate_episode_subtasks(
+    request: Request, ds: str, idx: int,
+    camera: str = "front",
+    model: str = "google/gemma-4-E4B",
+    sample_fps: float = 1.0,
+):
+    """Annotate an episode with subtask labels using Gemma 4 VLM."""
+    import asyncio
+    from mimicrec.annotator.subtask import annotate_episode, save_annotations
+
+    root = get_datasets_root(request.app)
+    ds_root = root / ds
+    if not ds_root.exists():
+        raise FileNotFoundError(f"dataset '{ds}' not found")
+
+    loop = asyncio.get_running_loop()
+    segments = await loop.run_in_executor(
+        None, annotate_episode, ds_root, idx, camera, model, sample_fps, "cuda"
+    )
+
+    save_annotations(ds_root, idx, segments)
+
+    return {
+        "episode_index": idx,
+        "num_subtasks": len(segments),
+        "subtasks": [
+            {
+                "name": s.name,
+                "start_frame": s.start_frame,
+                "end_frame": s.end_frame,
+                "description": s.description,
+            }
+            for s in segments
+        ],
+    }
