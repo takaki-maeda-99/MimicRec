@@ -188,6 +188,17 @@ class SessionManager:
 
         precheck_start(StartSessionRequestDomain(robot=self._robot, mode=self.session.mode))
 
+        # Resume episode_index numbering from where the dataset left off.
+        # SessionManager is reconstructed per session, so without this every
+        # new session starts at 0 and overwrites episode_000000.parquet.
+        from mimicrec.recording.metadata import read_episodes
+        try:
+            existing = list(read_episodes(self._dataset_root / "meta", include_deleted=True))
+            if existing:
+                self._episode_index = max(int(e["episode_index"]) for e in existing) + 1
+        except FileNotFoundError:
+            pass
+
         await self._robot.connect()
         if self._teleop:
             await self._teleop.connect()

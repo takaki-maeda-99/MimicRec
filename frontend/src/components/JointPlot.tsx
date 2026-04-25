@@ -31,6 +31,10 @@ interface FrameRow {
 export default function JointPlot({ ds, idx }: Props) {
   const [data, setData] = useState<Record<string, number>[]>([]);
   const [jointNames, setJointNames] = useState<string[]>([]);
+  // hasVelocity is false when the recording is from an adapter that doesn't
+  // report joint velocities (e.g. SO-101) — all values are zero. We hide
+  // the velocity toggle entirely in that case rather than show a flat line.
+  const [hasVelocity, setHasVelocity] = useState(false);
   const [mode, setMode] = useState<"position" | "velocity">("position");
   const [loading, setLoading] = useState(true);
 
@@ -44,6 +48,7 @@ export default function JointPlot({ ds, idx }: Props) {
         const names = Array.from({ length: nJoints }, (_, i) => `j${i + 1}`);
         setJointNames(names);
 
+        let nonzeroVel = false;
         const chartData = rows.map((row) => {
           const pos = row["observation.state.joint_pos"] as number[];
           const vel = row["observation.state.joint_vel"] as number[];
@@ -52,10 +57,14 @@ export default function JointPlot({ ds, idx }: Props) {
           };
           names.forEach((name, i) => {
             entry[`pos_${name}`] = Math.round(pos[i] * 1000) / 1000;
-            entry[`vel_${name}`] = Math.round((vel?.[i] ?? 0) * 1000) / 1000;
+            const v = vel?.[i] ?? 0;
+            entry[`vel_${name}`] = Math.round(v * 1000) / 1000;
+            if (v !== 0) nonzeroVel = true;
           });
           return entry;
         });
+        setHasVelocity(nonzeroVel);
+        if (!nonzeroVel) setMode("position");
         setData(chartData);
       })
       .catch(console.error)
@@ -70,20 +79,22 @@ export default function JointPlot({ ds, idx }: Props) {
 
   return (
     <div>
-      <div className="flex gap-2 mb-3">
-        <button
-          className={`px-3 py-1 rounded text-sm ${mode === "position" ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-700"}`}
-          onClick={() => setMode("position")}
-        >
-          Position
-        </button>
-        <button
-          className={`px-3 py-1 rounded text-sm ${mode === "velocity" ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-700"}`}
-          onClick={() => setMode("velocity")}
-        >
-          Velocity
-        </button>
-      </div>
+      {hasVelocity && (
+        <div className="flex gap-2 mb-3">
+          <button
+            className={`px-3 py-1 rounded text-sm ${mode === "position" ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-700"}`}
+            onClick={() => setMode("position")}
+          >
+            Position
+          </button>
+          <button
+            className={`px-3 py-1 rounded text-sm ${mode === "velocity" ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-700"}`}
+            onClick={() => setMode("velocity")}
+          >
+            Velocity
+          </button>
+        </div>
+      )}
       <ResponsiveContainer width="100%" height={300}>
         <LineChart data={data}>
           <CartesianGrid strokeDasharray="3 3" opacity={0.3} />
