@@ -4,6 +4,7 @@ import { useSessionStore } from "../state/session-store";
 import VideoPlayer from "../components/VideoPlayer";
 import JointPlot from "../components/JointPlot";
 import SubtaskAnnotator from "../components/SubtaskAnnotator";
+import SubtaskTimeline from "../components/SubtaskTimeline";
 
 export default function ReplayPage() {
   const { ds, idx } = useParams<{ ds: string; idx: string }>();
@@ -110,8 +111,13 @@ export default function ReplayPage() {
         </div>
       </div>
 
-      {/* Joint angle plot */}
+      {/* Subtask timeline (shows if annotations exist) */}
       <div className="mt-8 bg-white rounded-lg border border-gray-200 p-4">
+        <SubtaskTimeline ds={ds} idx={episodeIdx} />
+      </div>
+
+      {/* Joint angle plot */}
+      <div className="mt-6 bg-white rounded-lg border border-gray-200 p-4">
         <h3 className="text-sm font-medium text-gray-500 mb-3">Joint Data</h3>
         <JointPlot ds={ds} idx={episodeIdx} />
       </div>
