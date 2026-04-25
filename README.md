@@ -174,6 +174,13 @@ Then in the UI:
 - Mapper: `identity`
 - Cameras: `front`, `wrist` (optional)
 
+**End-effector pose in recordings.** `configs/robot/so101.yaml` ships with
+a `kinematics:` block pointing at `configs/urdf/so101/so101.urdf`. When
+present, the writer adds `observation.state.ee_pos / ee_rotvec` and
+`action.ee_pos / ee_rotvec` (plus explicit `gripper_pos`) columns to each
+parquet row via forward kinematics. Comment out the block to disable.
+Requires the `kinematics` extra: `uv pip install --python .venv/bin/python -e "./backend[kinematics]"` (`setup.sh` installs it by default).
+
 > Both diagnostic / calibration scripts refuse to run while the backend has
 > an active session, since they would collide for the serial port. End the
 > session first: `curl -X POST http://localhost:8000/api/session/end`.

@@ -1,6 +1,7 @@
 from __future__ import annotations
 import asyncio
 import time
+from typing import TYPE_CHECKING
 
 from mimicrec.recording.pending import PendingEpisode
 from mimicrec.recording.parquet_row import sample_bundle_to_row
@@ -8,12 +9,16 @@ from mimicrec.types import SampleBundle
 from mimicrec.util.latest_value import LatestValue
 from mimicrec.util.metrics import Metrics
 
+if TYPE_CHECKING:
+    from mimicrec.kinematics import FKService
+
 
 async def run_writer(
     current_pending: LatestValue,   # LatestValue[PendingEpisode | None]
     queue: asyncio.Queue,
     metrics: Metrics,
     stopped: asyncio.Event,
+    fk: "FKService | None" = None,
 ) -> None:
     last_pending: PendingEpisode | None = None
     episode_start_t_mono_ns: int | None = None
@@ -63,6 +68,7 @@ async def run_writer(
             episode_index=pending.episode_index,
             global_index=0,  # will be set properly when we have global tracking
             task_index=0,
+            fk=fk,
         )
         pending.append_row(row, frames=bundle.frames)
         frame_counter += 1

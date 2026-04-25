@@ -20,6 +20,11 @@ dev = [
   "httpx>=0.27",
   "httpx-ws>=0.6",
 ]
+# Forward / inverse kinematics (placo). Needed only when a robot config
+# declares a `kinematics:` block (e.g. SO-101 EE pose recording).
+kinematics = [
+  "placo>=0.9.6,<0.9.17",
+]
 
 [build-system]
 requires = ["hatchling"]

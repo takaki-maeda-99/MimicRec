@@ -65,6 +65,7 @@ class SessionManager:
         error_bus: ErrorBus,
         resolved_config: dict,
         replay_safety: ReplaySafetyConfig | None = None,
+        fk=None,  # FKService | None — adds EE columns to recordings when set
     ):
         self.session = Session(mode=mode, state=SessionState.IDLE)
         self._dataset_root = dataset_root
@@ -76,6 +77,7 @@ class SessionManager:
         self._error_bus = error_bus
         self._resolved_config = resolved_config
         self._replay_safety = replay_safety
+        self._fk = fk
         self._metrics = Metrics()
 
         # Slots
@@ -231,6 +233,7 @@ class SessionManager:
             queue=self._recorder_queue,
             metrics=self._metrics,
             stopped=self.session.stopped,
+            fk=self._fk,
         ))
 
         # Error handler

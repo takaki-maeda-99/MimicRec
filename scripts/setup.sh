@@ -83,8 +83,8 @@ else
 fi
 PY="$REPO_ROOT/.venv/bin/python"
 
-log "installing backend deps (mimicrec[dev])"
-uv pip install --python "$PY" -e "$REPO_ROOT/backend[dev]"
+log "installing backend deps (mimicrec[dev,kinematics])"
+uv pip install --python "$PY" -e "$REPO_ROOT/backend[dev,kinematics]"
 
 log "installing lerobot + feetech extra"
 uv pip install --python "$PY" -e "$REPO_ROOT/lerobot"

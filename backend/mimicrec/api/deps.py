@@ -96,6 +96,21 @@ async def create_session_from_request(app, req) -> SessionManager:
             robot_cfg, dof=robot.dof, dt_sec=1.0 / req.fps
         )
 
+    # Forward kinematics for EE pose recording (optional; requires placo).
+    # Robot config may declare a `kinematics:` block with urdf_path etc.;
+    # paths are resolved relative to MIMICREC_CONFIGS_ROOT's parent (repo root).
+    fk = None
+    kin_cfg = robot_cfg.get("kinematics", None) if hasattr(robot_cfg, "get") else None
+    if kin_cfg is None and "kinematics" in robot_cfg:
+        kin_cfg = robot_cfg["kinematics"]
+    if kin_cfg is not None:
+        from mimicrec.kinematics import load_kinematics
+        kin_dict = OmegaConf.to_container(kin_cfg)
+        urdf = kin_dict.get("urdf_path") if isinstance(kin_dict, dict) else None
+        if urdf and not Path(urdf).is_absolute():
+            kin_dict["urdf_path"] = str((configs_root.parent / urdf).resolve())
+        fk = load_kinematics(kin_dict)
+
     # Dataset
     ds_root = datasets_root / req.dataset
     if not ds_root.exists():
@@ -138,5 +153,6 @@ async def create_session_from_request(app, req) -> SessionManager:
         error_bus=error_bus,
         resolved_config=resolved,
         replay_safety=replay_safety,
+        fk=fk,
     )
     return sm

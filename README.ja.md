@@ -160,6 +160,8 @@ UI 側では:
 - Mapper: `identity`
 - Cameras: `front`, `wrist` (任意)
 
+**EE 座標を記録に含める。** `configs/robot/so101.yaml` には `kinematics:` ブロックが書かれていて、`configs/urdf/so101/so101.urdf` で順運動学を計算します。これにより各 parquet 行に `observation.state.ee_pos / ee_rotvec`・`action.ee_pos / ee_rotvec`・`gripper_pos` 列が自動で追加されます。不要なら `kinematics:` ブロックをコメントアウトしてください。`kinematics` extra が必要です: `uv pip install --python .venv/bin/python -e "./backend[kinematics]"` (`setup.sh` がデフォルトで入れます)。
+
 > 診断・キャリブレーション系スクリプトは、バックエンドにアクティブなセッションがあると自動で実行を拒否します（シリアルポート競合防止）。実行前にセッションを終了してください: `curl -X POST http://localhost:8000/api/session/end`
 
 ### 3. Isaac Sim (シミュレーション)
