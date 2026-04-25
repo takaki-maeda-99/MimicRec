@@ -1,0 +1,2 @@
+_target_: mimicrec.adapters.so_leader.SOLeaderAdapter
+port: /dev/ttyACM1

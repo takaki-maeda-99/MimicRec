@@ -66,9 +66,8 @@ async def create_session_from_request(app, req) -> SessionManager:
     mapper_name = getattr(req, "mapper", None)
     if teleop_name:
         teleop_cfg = OmegaConf.load(configs_root / "teleop" / f"{teleop_name}.yaml")
-        teleop_kwargs = {}
-        if "dof" in teleop_cfg:
-            teleop_kwargs["dof"] = int(teleop_cfg.dof)
+        teleop_kwargs = {k: v for k, v in OmegaConf.to_container(teleop_cfg).items()
+                        if k not in ("_target_",)}
         teleop = instantiate_adapter(str(teleop_cfg._target_), **teleop_kwargs)
     if mapper_name:
         mapper_cfg = OmegaConf.load(configs_root / "mapper" / f"{mapper_name}.yaml")
@@ -78,10 +77,9 @@ async def create_session_from_request(app, req) -> SessionManager:
     cams = {}
     for cam_name in req.cameras:
         cam_cfg = OmegaConf.load(configs_root / "cameras" / f"{cam_name}.yaml")
-        cam_kwargs = {"name": cam_name}
-        for k in ["width", "height"]:
-            if k in cam_cfg:
-                cam_kwargs[k] = int(cam_cfg[k])
+        cam_kwargs = {k: v for k, v in OmegaConf.to_container(cam_cfg).items()
+                     if k not in ("_target_",)}
+        cam_kwargs.setdefault("name", cam_name)
         cams[cam_name] = instantiate_adapter(str(cam_cfg._target_), **cam_kwargs)
 
     error_bus = ErrorBus()

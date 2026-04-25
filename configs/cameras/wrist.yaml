@@ -1,0 +1,5 @@
+_target_: mimicrec.cameras.opencv_camera.OpenCVCamera
+name: wrist
+device_id: 2
+width: 640
+height: 480

@@ -1,38 +1,61 @@
 from __future__ import annotations
+import asyncio
 import numpy as np
 
 from mimicrec.adapters.robot import RobotMode
 from mimicrec.errors import HandTeachNotSupportedError
 from mimicrec.types import RobotState
 
+JOINT_NAMES = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"]
+
 
 class SO101Adapter:
     name = "so101"
     dof = 6
-    joint_names = [f"j{i}" for i in range(1, 7)]
+    joint_names = JOINT_NAMES
 
-    def __init__(self, port: str):
+    def __init__(self, port: str = "/dev/ttyACM0"):
         self._port = port
         self._mode = RobotMode.POSITION
+        self._follower = None
 
     async def connect(self) -> None:
-        pass
+        from lerobot.robots.so_follower.so_follower import SO101Follower
+        from lerobot.robots.so_follower.config_so_follower import SOFollowerRobotConfig
+        cfg = SOFollowerRobotConfig(port=self._port)
+        self._follower = SO101Follower(cfg)
+        # Run blocking connect in executor
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self._follower.connect)
 
     async def disconnect(self) -> None:
-        pass
+        if self._follower:
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, self._follower.disconnect)
+            self._follower = None
 
     async def read_state(self) -> RobotState:
-        zeros = np.zeros(self.dof, dtype=np.float32)
-        return RobotState(joint_pos=zeros, joint_vel=zeros, joint_effort=zeros)
+        assert self._follower is not None
+        loop = asyncio.get_running_loop()
+        obs = await loop.run_in_executor(None, self._follower.get_observation)
+        joint_pos = np.array([obs[f"{j}.pos"] for j in JOINT_NAMES], dtype=np.float32)
+        return RobotState(
+            joint_pos=joint_pos,
+            joint_vel=np.zeros(self.dof, dtype=np.float32),  # SO101 doesn't provide velocity
+            joint_effort=np.zeros(self.dof, dtype=np.float32),
+        )
 
     async def send_joint_command(self, q: np.ndarray) -> None:
-        pass
+        assert self._follower is not None
+        action = {f"{j}.pos": float(q[i]) for i, j in enumerate(JOINT_NAMES)}
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self._follower.send_action, action)
 
     async def set_mode(self, mode: RobotMode) -> None:
         if mode == RobotMode.GRAVITY_COMP:
             raise HandTeachNotSupportedError(
-                "so101 does not support GRAVITY_COMP / hand-teach in MVP "
-                "(see spec §15). Use teleop mode with a leader arm instead."
+                "so101 does not support GRAVITY_COMP / hand-teach in MVP. "
+                "Use teleop mode with a leader arm instead."
             )
         self._mode = mode
 
