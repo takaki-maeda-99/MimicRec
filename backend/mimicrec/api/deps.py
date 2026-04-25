@@ -157,5 +157,7 @@ async def create_session_from_request(app, req) -> SessionManager:
         resolved_config=resolved,
         replay_safety=replay_safety,
         fk=fk,
+        task=req.task or "default",
+        instruction=getattr(req, "instruction", "") or "",
     )
     return sm

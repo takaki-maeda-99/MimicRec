@@ -66,6 +66,8 @@ class SessionManager:
         resolved_config: dict,
         replay_safety: ReplaySafetyConfig | None = None,
         fk=None,  # FKService | None — adds EE columns to recordings when set
+        task: str = "default",
+        instruction: str = "",
     ):
         self.session = Session(mode=mode, state=SessionState.IDLE)
         self._dataset_root = dataset_root
@@ -77,6 +79,8 @@ class SessionManager:
         self._error_bus = error_bus
         self._resolved_config = resolved_config
         self._replay_safety = replay_safety
+        self._task = task
+        self._instruction = instruction
         self._fk = fk
         self._metrics = Metrics()
 
@@ -282,10 +286,18 @@ class SessionManager:
             )
         if self._pending:
             now_mono = time.monotonic_ns()
+            # Make sure tasks.parquet has an entry for this task name so the
+            # task -> task_index mapping is consistent across episodes.
+            from mimicrec.recording.metadata import upsert_task
+            upsert_task(
+                self._dataset_root / "meta",
+                self._task,
+                self._instruction,
+            )
             self._pending.save(metadata_extra={
                 "episode_index": self._episode_index,
-                "task": "default",
-                "instruction": "",
+                "task": self._task,
+                "instruction": self._instruction,
                 "robot": self._robot.name,
                 "teleop": self._teleop.name if self._teleop else None,
                 "mapper": "identity",
