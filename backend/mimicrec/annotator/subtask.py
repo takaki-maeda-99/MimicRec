@@ -1,11 +1,10 @@
-"""Subtask annotation using Gemma 4 VLM.
+"""Subtask annotation — currently a MOCK pending MimicAno integration.
 
-Takes a recorded episode's camera frames, samples them at ~1fps,
-sends to Gemma 4 vision model, and returns subtask boundaries.
-
-Usage:
-    from mimicrec.annotator.subtask import annotate_episode
-    result = annotate_episode(ds_root, episode_idx, model_name="google/gemma-4-E4B")
+The real subtask prediction pipeline lives in MimicAno/ (see
+MimicAno/docs/design.md). This module stubs out `annotate_episode` so the
+existing API/UI keeps working while MimicAno is being built. Helper
+functions (_extract_frames, _select_keyframes, _build_prompt, _parse_response)
+are kept as reference for the eventual real implementation.
 """
 from __future__ import annotations
 
@@ -116,140 +115,65 @@ def annotate_episode(
     ds_root: Path,
     episode_idx: int,
     camera_name: str = "front",
-    model_name: str = "google/gemma-4-E2B-it",
+    model_name: str = "mock",
     sample_fps: float = 1.0,
     device: str = "cpu",
     custom_prompt: str | None = None,
 ) -> list[SubtaskSegment]:
-    """Annotate an episode with subtask labels using Gemma 4 VLM.
+    """MOCK subtask annotator.
 
-    Args:
-        ds_root: Dataset root path
-        episode_idx: Episode index
-        camera_name: Which camera to use for annotation
-        model_name: HuggingFace model name
-        sample_fps: How many frames per second to sample (1.0 = one per second)
-        device: "cuda" or "cpu"
+    Returns deterministic placeholder subtask segments based on the episode's
+    frame count. Real subtask prediction will live in the MimicAno package
+    (see MimicAno/docs/design.md). This stub keeps the existing API + UI
+    working until that lands.
 
-    Returns:
-        List of SubtaskSegment with frame ranges
+    The signature is stable so callers don't need to change when the real
+    implementation is wired in.
     """
     paths = dataset_paths(ds_root)
     chunk = resolve_chunk(episode_idx)
 
-    # Find video file
+    # Verify the video and parquet exist so callers see a real error if the
+    # episode is missing rather than a phantom annotation.
     video_path = paths.episode_video(chunk, camera_name, episode_idx)
     if not video_path.exists():
         raise FileNotFoundError(f"video not found: {video_path}")
 
-    # Read episode parquet for total frame count
     pq_path = paths.episode_parquet(chunk, episode_idx)
     table = pq.read_table(pq_path)
     total_frames = table.num_rows
-    fps = 30.0  # default
 
-    logger.info(f"Annotating episode {episode_idx}: {total_frames} frames, camera={camera_name}")
-
-    # Sample frames evenly across entire episode (storyboard style)
-    MAX_FRAMES = 8
-    cap = cv2.VideoCapture(str(video_path))
-    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    cap.release()
-
-    # Pick MAX_FRAMES indices spread evenly across the video
-    if total <= MAX_FRAMES:
-        indices = list(range(total))
-    else:
-        indices = [int(i * (total - 1) / (MAX_FRAMES - 1)) for i in range(MAX_FRAMES)]
-
-    sampled = []
-    cap = cv2.VideoCapture(str(video_path))
-    for idx in indices:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
-        ret, frame = cap.read()
-        if ret:
-            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            h, w = rgb.shape[:2]
-            if max(h, w) > 512:
-                scale = 512 / max(h, w)
-                rgb = cv2.resize(rgb, (int(w * scale), int(h * scale)))
-            sampled.append((idx, rgb))
-    cap.release()
-
-    if not sampled:
-        raise RuntimeError("no frames extracted")
-    logger.info(f"Sampled {len(sampled)} frames evenly from {total} total (indices: {indices})")
-
-    # Load model
-    from transformers import AutoProcessor, AutoModelForImageTextToText
-    import torch
-    from PIL import Image
-
-    # Check GPU availability
-    if device == "auto":
-        free_vram = 0
-        if torch.cuda.is_available():
-            free_vram = torch.cuda.mem_get_info()[0] / 1e9
-        device = "cuda" if free_vram > 6.0 else "cpu"
-
-    logger.info(f"Loading {model_name} on {device} (free VRAM: {free_vram:.1f}GB)...")
-    processor = AutoProcessor.from_pretrained(model_name)
-    if device == "cpu":
-        model = AutoModelForImageTextToText.from_pretrained(
-            model_name, torch_dtype=torch.float32,
-        )
-        model = model.to("cpu")
-    else:
-        model = AutoModelForImageTextToText.from_pretrained(
-            model_name, torch_dtype=torch.bfloat16, device_map="cuda",
-        )
-
-    # Build prompt with images
-    text_prompt = custom_prompt if custom_prompt else _build_prompt(len(sampled))
-    images = [Image.fromarray(frame) for _, frame in sampled]
-
-    # Use chat template for Gemma 4
-    messages = [
-        {
-            "role": "user",
-            "content": [
-                *[{"type": "image", "image": img} for img in images],
-                {"type": "text", "text": text_prompt},
-            ],
-        }
-    ]
-    full_prompt = processor.apply_chat_template(messages, add_generation_prompt=True)
-    inputs = processor(
-        text=full_prompt,
-        images=images,
-        return_tensors="pt",
+    logger.info(
+        f"[mock annotator] episode {episode_idx}: {total_frames} frames "
+        f"(camera={camera_name}). Real impl pending in MimicAno."
     )
-    target_device = next(model.parameters()).device
-    inputs = inputs.to(target_device)
 
-    # Generate
-    logger.info("Running inference...")
-    with torch.no_grad():
-        output_ids = model.generate(
-            **inputs,
-            max_new_tokens=1024,
-            temperature=0.1,
-            do_sample=False,
-        )
+    # Three even thirds: approach / interact / retract.
+    if total_frames < 3:
+        return [
+            SubtaskSegment(
+                name="placeholder",
+                start_frame=0,
+                end_frame=max(0, total_frames - 1),
+                description="mock segment (MimicAno will replace this)",
+            )
+        ]
 
-    # Decode
-    response = processor.decode(output_ids[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True)
-    logger.info(f"VLM response: {response[:200]}...")
+    a = total_frames // 3
+    b = (2 * total_frames) // 3
+    return [
+        SubtaskSegment(name="approach", start_frame=0, end_frame=a - 1,
+                       description="mock segment (MimicAno will replace this)"),
+        SubtaskSegment(name="interact", start_frame=a, end_frame=b - 1,
+                       description="mock segment (MimicAno will replace this)"),
+        SubtaskSegment(name="retract", start_frame=b, end_frame=total_frames - 1,
+                       description="mock segment (MimicAno will replace this)"),
+    ]
 
-    # Parse JSON from response
-    segments = _parse_response(response, sampled, total_frames, fps, sample_fps)
 
-    # Cleanup GPU
-    del model, processor
-    if device == "cuda":
-        torch.cuda.empty_cache()
-
-    return segments
+def release_vlm() -> None:
+    """No-op in mock mode; kept for API compatibility."""
+    return
 
 
 def _parse_response(

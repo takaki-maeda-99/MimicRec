@@ -62,6 +62,8 @@ async def create_session_from_request(app, req) -> SessionManager:
     # Teleop + mapper (only for TELEOP mode)
     teleop = None
     mapper = None
+    teleop_cfg = None
+    mapper_cfg = None
     teleop_name = getattr(req, "teleop", None)
     mapper_name = getattr(req, "mapper", None)
     if teleop_name:
@@ -75,8 +77,10 @@ async def create_session_from_request(app, req) -> SessionManager:
 
     # Cameras
     cams = {}
+    cam_cfgs: dict[str, object] = {}
     for cam_name in req.cameras:
         cam_cfg = OmegaConf.load(configs_root / "cameras" / f"{cam_name}.yaml")
+        cam_cfgs[cam_name] = OmegaConf.to_container(cam_cfg)
         cam_kwargs = {k: v for k, v in OmegaConf.to_container(cam_cfg).items()
                      if k not in ("_target_",)}
         cam_kwargs.setdefault("name", cam_name)
@@ -99,7 +103,13 @@ async def create_session_from_request(app, req) -> SessionManager:
                      joint_names=robot.joint_names, camera_names=list(req.cameras))
 
     # Resolved config snapshot
-    resolved = {"robot": OmegaConf.to_container(robot_cfg)}
+    resolved: dict[str, object] = {"robot": OmegaConf.to_container(robot_cfg)}
+    if teleop_cfg is not None:
+        resolved["teleop"] = OmegaConf.to_container(teleop_cfg)
+    if mapper_cfg is not None:
+        resolved["mapper"] = OmegaConf.to_container(mapper_cfg)
+    if cam_cfgs:
+        resolved["cameras"] = cam_cfgs
 
     # Store metadata in app.state for payload building
     app.state.error_bus = error_bus
