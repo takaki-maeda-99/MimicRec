@@ -3,6 +3,7 @@ import { useEpisodes, useReplayStart, useReplayStop } from "../api/queries";
 import { useSessionStore } from "../state/session-store";
 import VideoPlayer from "../components/VideoPlayer";
 import JointPlot from "../components/JointPlot";
+import SubtaskAnnotator from "../components/SubtaskAnnotator";
 
 export default function ReplayPage() {
   const { ds, idx } = useParams<{ ds: string; idx: string }>();
@@ -113,6 +114,11 @@ export default function ReplayPage() {
       <div className="mt-8 bg-white rounded-lg border border-gray-200 p-4">
         <h3 className="text-sm font-medium text-gray-500 mb-3">Joint Data</h3>
         <JointPlot ds={ds} idx={episodeIdx} />
+      </div>
+
+      {/* Subtask annotation */}
+      <div className="mt-6 bg-white rounded-lg border border-gray-200 p-4">
+        <SubtaskAnnotator ds={ds} idx={episodeIdx} cameras={episode?.cameras || ["front"]} />
       </div>
     </div>
   );

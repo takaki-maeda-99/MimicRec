@@ -84,6 +84,7 @@ def annotate_episode(
     model_name: str = "google/gemma-4-E4B",
     sample_fps: float = 1.0,
     device: str = "cuda",
+    custom_prompt: str | None = None,
 ) -> list[SubtaskSegment]:
     """Annotate an episode with subtask labels using Gemma 4 VLM.
 
@@ -132,7 +133,7 @@ def annotate_episode(
     )
 
     # Build prompt with images
-    prompt = _build_prompt(len(sampled))
+    prompt = custom_prompt if custom_prompt else _build_prompt(len(sampled))
     images = [Image.fromarray(frame) for _, frame in sampled]
 
     # Create conversation format for Gemma 4

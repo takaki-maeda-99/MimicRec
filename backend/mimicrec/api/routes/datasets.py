@@ -8,6 +8,7 @@ from pathlib import Path
 import pyarrow.parquet as pq
 from fastapi import APIRouter, Request, Query
 from fastapi.responses import StreamingResponse, FileResponse
+from pydantic import BaseModel as _BaseModel
 
 from mimicrec.api.deps import get_datasets_root, get_configs_root
 from mimicrec.api.schemas import (
@@ -216,12 +217,17 @@ async def get_episode_frames(request: Request, ds: str, idx: int):
     return rows
 
 
+class AnnotateRequest(_BaseModel):
+    camera: str = "front"
+    model: str = "google/gemma-4-E4B"
+    sample_fps: float = 1.0
+    prompt: str | None = None  # Custom prompt, None = use default
+
+
 @router.post("/datasets/{ds}/episodes/{idx}/annotate")
 async def annotate_episode_subtasks(
     request: Request, ds: str, idx: int,
-    camera: str = "front",
-    model: str = "google/gemma-4-E4B",
-    sample_fps: float = 1.0,
+    body: AnnotateRequest = AnnotateRequest(),
 ):
     """Annotate an episode with subtask labels using Gemma 4 VLM."""
     import asyncio
@@ -234,7 +240,8 @@ async def annotate_episode_subtasks(
 
     loop = asyncio.get_running_loop()
     segments = await loop.run_in_executor(
-        None, annotate_episode, ds_root, idx, camera, model, sample_fps, "cuda"
+        None, annotate_episode, ds_root, idx, body.camera, body.model,
+        body.sample_fps, "cuda", body.prompt,
     )
 
     save_annotations(ds_root, idx, segments)
