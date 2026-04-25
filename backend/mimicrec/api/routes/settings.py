@@ -1,0 +1,148 @@
+"""Settings API: device discovery, config editing, calibration status."""
+from __future__ import annotations
+
+import glob
+import json
+from pathlib import Path
+
+from fastapi import APIRouter, Request
+from pydantic import BaseModel
+from omegaconf import OmegaConf
+
+from mimicrec.api.deps import get_configs_root
+
+router = APIRouter()
+
+
+# --- Device discovery ---
+
+@router.get("/settings/devices/serial")
+async def list_serial_ports():
+    """List available serial ports."""
+    ports = sorted(glob.glob("/dev/ttyACM*") + glob.glob("/dev/ttyUSB*"))
+    result = []
+    for port in ports:
+        try:
+            import serial
+            s = serial.Serial(port, timeout=0.1)
+            s.close()
+            result.append({"port": port, "available": True})
+        except Exception:
+            result.append({"port": port, "available": False})
+    return result
+
+
+@router.get("/settings/devices/cameras")
+async def list_camera_devices():
+    """List available camera devices."""
+    import cv2
+    devices = sorted(glob.glob("/dev/video*"))
+    result = []
+    for dev in devices:
+        dev_id = int(dev.replace("/dev/video", ""))
+        cap = cv2.VideoCapture(dev, cv2.CAP_V4L2)
+        opened = cap.isOpened()
+        w, h = 0, 0
+        if opened:
+            w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            cap.release()
+        result.append({"path": dev, "device_id": dev_id, "available": opened, "width": w, "height": h})
+    return result
+
+
+# --- Config CRUD ---
+
+class ConfigUpdate(BaseModel):
+    content: dict
+
+
+@router.get("/settings/configs/{group}")
+async def list_group_configs(request: Request, group: str):
+    """List all configs in a group with their contents."""
+    root = get_configs_root(request.app)
+    group_dir = root / group
+    if not group_dir.is_dir():
+        raise FileNotFoundError(f"config group '{group}' not found")
+    configs = []
+    for f in sorted(group_dir.glob("*.yaml")):
+        cfg = OmegaConf.load(f)
+        configs.append({
+            "name": f.stem,
+            "file": str(f),
+            "content": OmegaConf.to_container(cfg),
+        })
+    return configs
+
+
+@router.get("/settings/configs/{group}/{name}")
+async def get_config(request: Request, group: str, name: str):
+    """Get a single config file's contents."""
+    root = get_configs_root(request.app)
+    path = root / group / f"{name}.yaml"
+    if not path.exists():
+        raise FileNotFoundError(f"config '{group}/{name}' not found")
+    cfg = OmegaConf.load(path)
+    return {"name": name, "group": group, "content": OmegaConf.to_container(cfg)}
+
+
+@router.put("/settings/configs/{group}/{name}")
+async def update_config(request: Request, group: str, name: str, body: ConfigUpdate):
+    """Update a config file."""
+    root = get_configs_root(request.app)
+    path = root / group / f"{name}.yaml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    cfg = OmegaConf.create(body.content)
+    OmegaConf.save(cfg, path)
+    return {"name": name, "group": group, "content": body.content}
+
+
+@router.post("/settings/configs/{group}/{name}")
+async def create_config(request: Request, group: str, name: str, body: ConfigUpdate):
+    """Create a new config file."""
+    root = get_configs_root(request.app)
+    path = root / group / f"{name}.yaml"
+    if path.exists():
+        raise ValueError(f"config '{group}/{name}' already exists")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    cfg = OmegaConf.create(body.content)
+    OmegaConf.save(cfg, path)
+    return {"name": name, "group": group, "content": body.content}
+
+
+@router.delete("/settings/configs/{group}/{name}", status_code=204)
+async def delete_config(request: Request, group: str, name: str):
+    """Delete a config file."""
+    root = get_configs_root(request.app)
+    path = root / group / f"{name}.yaml"
+    if not path.exists():
+        raise FileNotFoundError(f"config '{group}/{name}' not found")
+    path.unlink()
+
+
+# --- Calibration ---
+
+@router.get("/settings/calibration")
+async def list_calibrations():
+    """List available calibration files."""
+    calib_root = Path.home() / ".cache/huggingface/lerobot/calibration"
+    result = {"robots": {}, "teleoperators": {}}
+    for category in ["robots", "teleoperators"]:
+        cat_dir = calib_root / category
+        if not cat_dir.exists():
+            continue
+        for robot_dir in sorted(cat_dir.iterdir()):
+            if robot_dir.is_dir():
+                files = [f.stem for f in robot_dir.glob("*.json")]
+                result[category][robot_dir.name] = files
+    return result
+
+
+@router.get("/settings/calibration/{category}/{robot_type}/{cal_id}")
+async def get_calibration(category: str, robot_type: str, cal_id: str):
+    """Get calibration data."""
+    calib_root = Path.home() / ".cache/huggingface/lerobot/calibration"
+    path = calib_root / category / robot_type / f"{cal_id}.json"
+    if not path.exists():
+        raise FileNotFoundError(f"calibration not found: {path}")
+    return json.loads(path.read_text())

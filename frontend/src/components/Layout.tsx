@@ -7,6 +7,7 @@ import { Badge } from "./ui/badge";
 const navItems = [
   { to: "/datasets", label: "Datasets" },
   { to: "/record", label: "Record" },
+  { to: "/settings", label: "Settings" },
 ];
 
 function SessionBadge() {
