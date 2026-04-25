@@ -1,5 +1,6 @@
 from __future__ import annotations
 import asyncio
+import logging
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -14,6 +15,8 @@ from mimicrec.session.dispatcher import run_command_dispatcher
 from mimicrec.session.replay_safety import ReplaySafetyConfig
 from mimicrec.session.state import Session
 from mimicrec.recording.writer import run_writer
+
+logger = logging.getLogger(__name__)
 from mimicrec.types import (
     RobotCommand, RobotState, SampleBundle, SessionMode, SessionState, TeleopAction,
 )
@@ -109,23 +112,40 @@ class SessionManager:
     # ------------------------------------------------------------------
 
     async def _run_robot_reader(self) -> None:
+        consecutive_errors = 0
         while not self.session.stopped.is_set():
             try:
                 t = time.monotonic_ns()
                 state = await self._robot.read_state()
                 state.t_mono_ns = t
                 self._robot_state_slot.set(state, t_mono_ns=t)
-            except Exception:
+                consecutive_errors = 0
+            except Exception as e:
+                consecutive_errors += 1
+                # Log first occurrence and every 100th to avoid log flood
+                if consecutive_errors == 1 or consecutive_errors % 100 == 0:
+                    logger.warning(
+                        "robot reader error (#%d): %s: %s",
+                        consecutive_errors, type(e).__name__, e,
+                    )
                 await asyncio.sleep(0.01)
 
     async def _run_teleop_reader(self) -> None:
+        consecutive_errors = 0
         while not self.session.stopped.is_set():
             try:
                 t = time.monotonic_ns()
                 action = await self._teleop.read_action()
                 action.t_mono_ns = t
                 self._teleop_slot.set(action, t_mono_ns=t)
-            except Exception:
+                consecutive_errors = 0
+            except Exception as e:
+                consecutive_errors += 1
+                if consecutive_errors == 1 or consecutive_errors % 100 == 0:
+                    logger.warning(
+                        "teleop reader error (#%d): %s: %s",
+                        consecutive_errors, type(e).__name__, e,
+                    )
                 await asyncio.sleep(0.01)
 
     # ------------------------------------------------------------------

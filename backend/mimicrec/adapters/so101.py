@@ -19,6 +19,9 @@ class SO101Adapter:
         self._id = id
         self._mode = RobotMode.POSITION
         self._follower = None
+        # Feetech serial bus is half-duplex; concurrent read+write from different
+        # threads produces "[TxRxResult] Port is in use!". Serialize bus access.
+        self._bus_lock = asyncio.Lock()
 
     async def connect(self) -> None:
         import functools
@@ -29,7 +32,8 @@ class SO101Adapter:
         self._follower = SO101Follower(cfg)
         loop = asyncio.get_running_loop()
         try:
-            await loop.run_in_executor(None, functools.partial(self._follower.connect, calibrate=False))
+            async with self._bus_lock:
+                await loop.run_in_executor(None, functools.partial(self._follower.connect, calibrate=False))
         except RuntimeError as e:
             if "no calibration" in str(e).lower():
                 raise HardwareError(
@@ -41,13 +45,15 @@ class SO101Adapter:
     async def disconnect(self) -> None:
         if self._follower:
             loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, self._follower.disconnect)
+            async with self._bus_lock:
+                await loop.run_in_executor(None, self._follower.disconnect)
             self._follower = None
 
     async def read_state(self) -> RobotState:
         assert self._follower is not None
         loop = asyncio.get_running_loop()
-        obs = await loop.run_in_executor(None, self._follower.get_observation)
+        async with self._bus_lock:
+            obs = await loop.run_in_executor(None, self._follower.get_observation)
         joint_pos = np.array([obs[f"{j}.pos"] for j in JOINT_NAMES], dtype=np.float32)
         return RobotState(
             joint_pos=joint_pos,
@@ -59,7 +65,8 @@ class SO101Adapter:
         assert self._follower is not None
         action = {f"{j}.pos": float(q[i]) for i, j in enumerate(JOINT_NAMES)}
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, self._follower.send_action, action)
+        async with self._bus_lock:
+            await loop.run_in_executor(None, self._follower.send_action, action)
 
     async def set_mode(self, mode: RobotMode) -> None:
         if mode == RobotMode.GRAVITY_COMP:

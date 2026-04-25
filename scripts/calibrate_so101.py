@@ -15,6 +15,7 @@ your MimicRec config YAML (e.g. configs/robot/so101.yaml).
 """
 import argparse
 import sys
+from pathlib import Path
 
 
 def main():
@@ -23,7 +24,20 @@ def main():
     parser.add_argument("--id", required=True, help="Arm identifier for calibration file")
     parser.add_argument("--type", required=True, choices=["follower", "leader"],
                         help="follower or leader arm")
+    parser.add_argument("--force", action="store_true",
+                        help="Delete existing calibration file before running, forcing a fresh calibration")
     args = parser.parse_args()
+
+    if args.force:
+        # LeRobot resolves cal path as: HF_LEROBOT_CALIBRATION / {ROBOTS|TELEOPERATORS} / <self.name> / <id>.json
+        # SO101Follower.name == "so_follower", SOLeader.name == "so_leader"
+        sub = "robots/so_follower" if args.type == "follower" else "teleoperators/so_leader"
+        cal_path = Path.home() / ".cache/huggingface/lerobot/calibration" / sub / f"{args.id}.json"
+        if cal_path.exists():
+            cal_path.unlink()
+            print(f"Deleted existing calibration: {cal_path}")
+        else:
+            print(f"No existing calibration at {cal_path} (proceeding fresh)")
 
     if args.type == "follower":
         from lerobot.robots.so_follower.so_follower import SO101Follower
