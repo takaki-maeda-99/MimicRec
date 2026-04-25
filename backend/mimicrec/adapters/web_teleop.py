@@ -49,11 +49,15 @@ class WebTeleoperator:
                 if msg.get("cmd") == "reset" and "pos" in msg:
                     self._target = np.array(msg["pos"], dtype=np.float32)
                     self._initialized = True
-                elif 0 <= joint < self._dof:
+                elif self._initialized and 0 <= joint < self._dof:
                     self._target[joint] += delta
             except asyncio.QueueEmpty:
                 break
 
-        # Small sleep to yield control
         await asyncio.sleep(0.005)
+
+        # Before browser connects and sends "reset", return None so control loop skips
+        if not self._initialized:
+            return TeleopAction(target_joint_pos=None)
+
         return TeleopAction(target_joint_pos=self._target.copy())

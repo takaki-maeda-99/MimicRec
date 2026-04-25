@@ -58,6 +58,12 @@ async def run_teleop_control_loop(
         if tick_t - action.t_mono_ns > stale_threshold_ns:
             metrics.inc("stale_sample_count")
 
+        # Skip if teleop hasn't produced a valid action yet (e.g. WebTeleoperator before browser connects)
+        if action.value.target_joint_pos is None and action.value.ee_delta is None:
+            await clock.sleep_until(next_tick_ns)
+            next_tick_ns += tick_interval_ns
+            continue
+
         command = mapper.map(action.value, state.value)
         command.t_mono_ns = clock.monotonic_ns()
 

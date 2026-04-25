@@ -60,11 +60,22 @@ def main():
         # Create a camera prim looking at the robot
         cam_prim = UsdGeom.Camera.Define(stage, "/World/MimicRecCam")
         cam_prim.GetFocalLengthAttr().Set(24.0)
+        # Use look-at transform: camera at eye, looking at target, up=Z
+        eye = Gf.Vec3d(1.2, 0.8, 0.8)
+        target = Gf.Vec3d(0, 0, 0.4)  # Franka base + some height
+        up = Gf.Vec3d(0, 0, 1)
+        # Compute look-at matrix
+        forward = (target - eye).GetNormalized()
+        right = Gf.Cross(forward, up).GetNormalized()
+        cam_up = Gf.Cross(right, forward)
+        mat = Gf.Matrix4d()
+        mat.SetRow(0, Gf.Vec4d(right[0], right[1], right[2], 0))
+        mat.SetRow(1, Gf.Vec4d(cam_up[0], cam_up[1], cam_up[2], 0))
+        mat.SetRow(2, Gf.Vec4d(-forward[0], -forward[1], -forward[2], 0))
+        mat.SetRow(3, Gf.Vec4d(eye[0], eye[1], eye[2], 1))
         xform = UsdGeom.Xformable(cam_prim.GetPrim())
         xform.ClearXformOpOrder()
-        xform.AddTranslateOp().Set(Gf.Vec3d(1.5, 1.5, 1.2))
-        # Point camera toward robot origin
-        xform.AddRotateXYZOp().Set(Gf.Vec3f(-30, 0, 135))
+        xform.AddTransformOp().Set(mat)
         sys.stderr.write(f"Camera created at /World/MimicRecCam\n")
 
     world.reset()
