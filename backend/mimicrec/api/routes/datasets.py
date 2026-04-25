@@ -218,14 +218,14 @@ async def get_episode_frames(request: Request, ds: str, idx: int):
 
 
 class AnnotateRequest(_BaseModel):
-    camera: str = "front"
+    camera: str | None = None  # Auto-detect from episode metadata
     model: str = "google/gemma-4-E2B-it"
     sample_fps: float = 1.0
     prompt: str | None = None
 
 
 class BatchAnnotateRequest(_BaseModel):
-    camera: str = "front"
+    camera: str | None = None  # Auto-detect from episode metadata
     model: str = "google/gemma-4-E2B-it"
     sample_fps: float = 1.0
     prompt: str | None = None
@@ -245,9 +245,20 @@ async def annotate_episode_subtasks(
     if not ds_root.exists():
         raise FileNotFoundError(f"dataset '{ds}' not found")
 
+    # Auto-detect camera from episode metadata if not specified
+    camera = body.camera
+    if not camera:
+        for ep in iter_episodes(ds_root):
+            if ep.get("episode_index") == idx:
+                cams = ep.get("cameras", [])
+                camera = cams[0] if cams else "front"
+                break
+        else:
+            camera = "front"
+
     loop = asyncio.get_running_loop()
     segments = await loop.run_in_executor(
-        None, annotate_episode, ds_root, idx, body.camera, body.model,
+        None, annotate_episode, ds_root, idx, camera, body.model,
         body.sample_fps, "auto", body.prompt,
     )
 
@@ -300,8 +311,12 @@ async def annotate_all_episodes(
             ep_idx = ep.get("episode_index", 0)
             progress["current_episode"] = ep_idx
             try:
+                cam = body.camera
+                if not cam:
+                    cams = ep.get("cameras", [])
+                    cam = cams[0] if cams else "front"
                 segments = annotate_episode(
-                    ds_root, ep_idx, body.camera, body.model,
+                    ds_root, ep_idx, cam, body.model,
                     body.sample_fps, "auto", body.prompt,
                 )
                 save_annotations(ds_root, ep_idx, segments)
