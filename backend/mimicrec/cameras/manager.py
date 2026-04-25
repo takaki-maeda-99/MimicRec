@@ -48,8 +48,9 @@ class CameraManager:
             try:
                 await cam.connect()
             except Exception as e:
-                await self._errors.publish(HardwareError(f"camera {name} connect failed: {e}"))
-                return
+                import logging
+                logging.getLogger(__name__).warning(f"camera {name} connect failed: {e}")
+                return  # Don't publish to ErrorBus — failed camera shouldn't kill the session
         while not self._stopped.is_set():
             try:
                 frame = await cam.read()
