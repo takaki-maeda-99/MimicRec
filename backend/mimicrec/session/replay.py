@@ -46,8 +46,31 @@ async def run_replay(
     prev_q: np.ndarray | None = None
     prev_prev_q: np.ndarray | None = None
 
+    # Build the playback sequence: an initial ramp from the current measured
+    # pose to trajectory[0] (so the watchdog doesn't trip on tick 0 because
+    # the arm happens to be away from the recorded start), then the recorded
+    # trajectory. Without this ramp, replay only works when the arm starts
+    # already at trajectory[0] — usually false.
+    targets = list(trajectory.joint_targets)
+    if (
+        safety is not None
+        and measured_state_slot is not None
+        and len(targets) > 0
+        and safety.ramp_duration_sec > 0
+    ):
+        m0 = measured_state_slot.peek()
+        if m0 is not None:
+            start = m0.value.joint_pos.astype(np.float32)
+            goal = np.asarray(targets[0], dtype=np.float32)
+            n_ramp = max(1, int(safety.ramp_duration_sec * fps))
+            ramp = [
+                start + (goal - start) * (i / n_ramp)
+                for i in range(1, n_ramp + 1)
+            ]
+            targets = ramp + targets
+
     try:
-        for q in trajectory.joint_targets:
+        for q in targets:
             if session.stopped.is_set() or not session.replay_active:
                 break
             target = q.astype(np.float32)
