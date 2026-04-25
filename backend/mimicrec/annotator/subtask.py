@@ -126,9 +126,16 @@ def annotate_episode(
     import torch
     from PIL import Image
 
+    # Check GPU availability
+    if device == "auto":
+        free_vram = 0
+        if torch.cuda.is_available():
+            free_vram = torch.cuda.mem_get_info()[0] / 1e9
+        device = "cuda" if free_vram > 8.0 else "cpu"
+
     logger.info(f"Loading {model_name} on {device}...")
     processor = AutoProcessor.from_pretrained(model_name)
-    dtype = torch.bfloat16 if device != "cpu" else torch.float32
+    dtype = torch.bfloat16 if device == "cuda" else torch.float32
     model = AutoModelForImageTextToText.from_pretrained(
         model_name, torch_dtype=dtype, device_map=device
     )
