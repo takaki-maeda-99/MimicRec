@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from mimicrec.api.routes import configs, datasets, episode, replay, session
-from mimicrec.api.ws import session_hub, state_hub, camera_hub
+from mimicrec.api.ws import session_hub, state_hub, camera_hub, teleop_hub
 from mimicrec.api.errors import register_exception_handlers
 
 
@@ -39,6 +39,7 @@ def create_app() -> FastAPI:
     app.include_router(session_hub.router)
     app.include_router(state_hub.router)
     app.include_router(camera_hub.router)
+    app.include_router(teleop_hub.router)
     register_exception_handlers(app)
     return app
 

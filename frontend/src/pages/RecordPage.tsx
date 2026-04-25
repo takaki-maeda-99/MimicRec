@@ -5,6 +5,7 @@ import { WsConnection } from "../api/ws.ts";
 import SessionConfigForm from "../components/SessionConfigForm.tsx";
 import CameraPreview from "../components/CameraPreview.tsx";
 import RecordingControls from "../components/RecordingControls.tsx";
+import KeyboardTeleop from "../components/KeyboardTeleop.tsx";
 import type { EpisodeProgress, ReplayProgress } from "../api/types.ts";
 
 export default function RecordPage() {
@@ -71,6 +72,11 @@ export default function RecordPage() {
           ))}
         </div>
       )}
+
+      {/* Keyboard teleop */}
+      <div className="mb-6">
+        <KeyboardTeleop enabled={sessionState !== "review"} />
+      </div>
 
       {/* Recording controls */}
       <RecordingControls />

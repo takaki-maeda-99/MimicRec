@@ -43,6 +43,12 @@ export class WsConnection {
     this.ws = null;
   }
 
+  sendJson(data: Record<string, unknown>) {
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify(data));
+    }
+  }
+
   onMessage(handler: MessageHandler) {
     this.handlers.push(handler);
     return () => {
