@@ -8,7 +8,12 @@ from pathlib import Path
 
 from mimicrec.adapters.robot import RobotAdapter, RobotMode
 from mimicrec.cameras.manager import CameraManager
-from mimicrec.errors import HandTeachNotSupportedError, HardwareError, InvalidTransitionError
+from mimicrec.errors import (
+    FatalHardwareError,
+    HandTeachNotSupportedError,
+    HardwareError,
+    InvalidTransitionError,
+)
 from mimicrec.recording.pending import PendingEpisode
 from mimicrec.session.control_loop import run_handteach_control_loop, run_teleop_control_loop
 from mimicrec.session.dispatcher import run_command_dispatcher
@@ -117,6 +122,12 @@ class SessionManager:
     # Reader tasks
     # ------------------------------------------------------------------
 
+    # Number of consecutive reader failures before declaring the bus dead and
+    # ending the session. At ~100 Hz read attempts this is ~1 second of pure
+    # failure — fine to forgive momentary blips, but signals "the motors are
+    # not coming back" (e.g. Feetech overload alarm latched).
+    _MAX_CONSECUTIVE_READER_ERRORS = 100
+
     async def _run_robot_reader(self) -> None:
         consecutive_errors = 0
         while not self.session.stopped.is_set():
@@ -128,12 +139,23 @@ class SessionManager:
                 consecutive_errors = 0
             except Exception as e:
                 consecutive_errors += 1
-                # Log first occurrence and every 100th to avoid log flood
                 if consecutive_errors == 1 or consecutive_errors % 100 == 0:
                     logger.warning(
                         "robot reader error (#%d): %s: %s",
                         consecutive_errors, type(e).__name__, e,
                     )
+                if consecutive_errors >= self._MAX_CONSECUTIVE_READER_ERRORS:
+                    logger.error(
+                        "robot reader: %d consecutive failures, declaring "
+                        "the bus dead and ending the session",
+                        consecutive_errors,
+                    )
+                    await self._error_bus.publish(FatalHardwareError(
+                        f"robot bus unresponsive after {consecutive_errors} "
+                        f"reads (last error: {type(e).__name__}: {e}). "
+                        f"Power-cycle the arm and start a new session."
+                    ))
+                    return
                 await asyncio.sleep(0.01)
 
     async def _run_teleop_reader(self) -> None:
@@ -152,6 +174,18 @@ class SessionManager:
                         "teleop reader error (#%d): %s: %s",
                         consecutive_errors, type(e).__name__, e,
                     )
+                if consecutive_errors >= self._MAX_CONSECUTIVE_READER_ERRORS:
+                    logger.error(
+                        "teleop reader: %d consecutive failures, declaring "
+                        "the leader bus dead and ending the session",
+                        consecutive_errors,
+                    )
+                    await self._error_bus.publish(FatalHardwareError(
+                        f"teleop bus unresponsive after {consecutive_errors} "
+                        f"reads (last error: {type(e).__name__}: {e}). "
+                        f"Power-cycle the leader arm and start a new session."
+                    ))
+                    return
                 await asyncio.sleep(0.01)
 
     # ------------------------------------------------------------------
@@ -165,15 +199,24 @@ class SessionManager:
                 evt = await asyncio.wait_for(sub.get(), timeout=0.1)
             except asyncio.TimeoutError:
                 continue
-            if isinstance(evt, HardwareError) and self.session.state == SessionState.RECORDING:
-                # Auto-discard on hardware error during recording
-                self.session.state = SessionState.REVIEW
-                self._current_pending.set(None, t_mono_ns=time.monotonic_ns())
-                if self._pending:
-                    self._pending.finalize()
-                    self._pending.discard()
-                    self._pending = None
-                self.session.state = SessionState.READY
+            if isinstance(evt, HardwareError):
+                if self.session.state == SessionState.RECORDING:
+                    # Auto-discard the in-flight episode so the user doesn't
+                    # end up with half-written parquets.
+                    self.session.state = SessionState.REVIEW
+                    self._current_pending.set(None, t_mono_ns=time.monotonic_ns())
+                    if self._pending:
+                        self._pending.finalize()
+                        self._pending.discard()
+                        self._pending = None
+                    self.session.state = SessionState.READY
+                # Only escalate to a full session end on FATAL hardware errors
+                # (e.g. persistent reader failure). Transient HardwareErrors
+                # — like a single dropped camera frame — recover on their own.
+                if isinstance(evt, FatalHardwareError):
+                    logger.error("FatalHardwareError received — ending session: %s", evt)
+                    asyncio.create_task(self.end())
+                    return
 
     # ------------------------------------------------------------------
     # State transitions
