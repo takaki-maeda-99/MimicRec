@@ -1,6 +1,7 @@
 import { useParams, Link } from "react-router-dom";
 import { useEpisodes, useReplayStart, useReplayStop } from "../api/queries";
 import { useSessionStore } from "../state/session-store";
+import VideoPlayer from "../components/VideoPlayer";
 
 export default function ReplayPage() {
   const { ds, idx } = useParams<{ ds: string; idx: string }>();
@@ -64,9 +65,11 @@ export default function ReplayPage() {
 
         {/* Video + replay controls */}
         <div className="lg:col-span-2 space-y-4">
-          {/* Video placeholder — real video would use <video> with /api/datasets/{ds}/episodes/{idx}/video/{cam} */}
-          <div className="bg-gray-900 rounded-lg aspect-video flex items-center justify-center">
-            <span className="text-gray-500">Video preview</span>
+          {/* Video players — tries common camera names and hides any that 404 */}
+          <div className="space-y-4">
+            {["front", "wrist", "mock_cam"].map((cam) => (
+              <VideoPlayer key={cam} ds={ds} idx={episodeIdx} cam={cam} />
+            ))}
           </div>
 
           {/* Replay controls */}
