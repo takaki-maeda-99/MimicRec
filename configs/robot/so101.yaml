@@ -13,7 +13,12 @@ replay:
   # 30 Hz amplify position jitter by 900x via discrete second derivative,
   # so a 1° per-frame wobble shows up as ~900 deg/s² on this metric.
   max_joint_acceleration: 30000.0    # deg/s²
-  max_joint_position_jump: 15.0      # deg between command and measured per tick
+  # max_joint_position_jump = how far the MEASURED arm is allowed to lag
+  # behind the COMMANDED target. The arm physically lags during fast moves
+  # (peak teleop velocity ~440°/s × 1/15 s ≈ 30° per tick), so 15° was way
+  # too tight for natural replays. 60° catches "motor stuck / mechanism
+  # jammed" while leaving normal physical lag alone.
+  max_joint_position_jump: 60.0      # deg between command and measured
   command_timeout_sec: 0.2
   watchdog_hz: 20
 # Optional: enables EE pose columns in recordings via forward kinematics.

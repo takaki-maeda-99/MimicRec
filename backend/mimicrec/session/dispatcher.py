@@ -34,6 +34,7 @@ async def run_command_dispatcher(
             await robot.send_joint_command(current.value.q)
             consecutive_errors = 0
         except HardwareError as e:
+            logger.warning("dispatcher HardwareError: %s", e)
             await errors.publish(e)
         except Exception as e:
             # Don't let unexpected exceptions kill the dispatcher task silently.

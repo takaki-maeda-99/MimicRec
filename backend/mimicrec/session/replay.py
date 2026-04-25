@@ -1,5 +1,6 @@
 from __future__ import annotations
 import asyncio
+import logging
 from dataclasses import dataclass
 
 import numpy as np
@@ -10,6 +11,8 @@ from mimicrec.session.state import Session
 from mimicrec.types import RobotCommand, SessionState, SubState
 from mimicrec.util.clock import Clock
 from mimicrec.util.latest_value import LatestValue
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -51,6 +54,12 @@ async def run_replay(
     tick_interval_ns = 1_000_000_000 // effective_fps
     next_tick_ns = clock.monotonic_ns() + tick_interval_ns
 
+    logger.warning(
+        "[replay] START: traj_fps=%s session_fps=%s effective_fps=%s n_frames=%d safety=%s",
+        trajectory.fps, fps, effective_fps, len(trajectory.joint_targets),
+        "yes" if safety is not None else "no",
+    )
+
     # Sync the watchdog's dt_sec with the trajectory's native fps so vel/accel
     # checks compute with the correct timebase (otherwise a 15Hz recording
     # replayed in a 30Hz-configured session would report 2x velocity).
@@ -84,9 +93,20 @@ async def run_replay(
             ]
             targets = ramp + targets
 
+    n_ramp_used = len(targets) - len(trajectory.joint_targets)
+    logger.warning(
+        "[replay] ramp=%d frames + traj=%d frames = %d total (~%.1fs at %dHz)",
+        n_ramp_used, len(trajectory.joint_targets), len(targets),
+        len(targets) / effective_fps, effective_fps,
+    )
+
+    sent_count = 0
     try:
-        for q in targets:
+        for tick_i, q in enumerate(targets):
             if session.stopped.is_set() or not session.replay_active:
+                logger.warning("[replay] LOOP EXIT at tick %d/%d (stopped=%s replay_active=%s)",
+                               tick_i, len(targets),
+                               session.stopped.is_set(), session.replay_active)
                 break
             target = q.astype(np.float32)
 
@@ -105,6 +125,10 @@ async def run_replay(
                         measured=measured if measured is not None else target,
                     )
                 except ReplaySafetyError as e:
+                    logger.warning(
+                        "[replay] SAFETY TRIP at tick %d/%d: %s",
+                        tick_i, len(targets), e,
+                    )
                     if measured_state_slot is not None:
                         m = measured_state_slot.peek()
                         if m is not None:
@@ -119,12 +143,20 @@ async def run_replay(
 
             now3 = clock.monotonic_ns()
             command_goal_slot.set(RobotCommand(q=target, t_mono_ns=now3), t_mono_ns=now3)
+            sent_count += 1
             if wd is not None:
                 wd.note_command_sent(now3)
             prev_prev_q, prev_q = prev_q, target
             await clock.sleep_until(next_tick_ns)
             next_tick_ns += tick_interval_ns
+    except Exception as e:
+        logger.exception("[replay] EXCEPTION at tick (sent=%d): %s", sent_count, e)
+        raise
     finally:
+        logger.warning(
+            "[replay] FINISH: sent=%d/%d frames",
+            sent_count, len(targets),
+        )
         session.replay_active = False
         session.sub_state = None
 
