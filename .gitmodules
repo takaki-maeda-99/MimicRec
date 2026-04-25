@@ -1,0 +1,6 @@
+[submodule "lerobot"]
+	path = lerobot
+	url = https://github.com/takaki-maeda-99/lerobot.git
+[submodule "reBotArm_control_py"]
+	path = reBotArm_control_py
+	url = https://github.com/takaki-maeda-99/reBotArm_control_py.git

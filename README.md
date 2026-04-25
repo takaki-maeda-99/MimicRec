@@ -44,13 +44,17 @@ but require adapting the system-package step.
 ### One-shot setup
 
 ```bash
-git clone <repo> && cd MimicRec
+git clone --recurse-submodules <repo> && cd MimicRec
 bash scripts/setup.sh
 ```
 
-That script is idempotent and does everything: installs system packages,
-`uv`, Python 3.12, the backend / LeRobot deps, Node 20 + pnpm + frontend
-deps, and adds your user to `dialout` / `video` groups for hardware access.
+(If you forgot `--recurse-submodules`, `bash scripts/setup.sh` will fetch
+them for you.)
+
+That script is idempotent and does everything: pulls the `lerobot` and
+`reBotArm_control_py` submodules, installs system packages, `uv`,
+Python 3.12, the backend / LeRobot deps, Node 20 + pnpm + frontend deps,
+and adds your user to `dialout` / `video` groups for hardware access.
 
 > If groups were changed, **log out and back in** for the new membership to
 > take effect (or `newgrp video` as a temporary one-shell fix).

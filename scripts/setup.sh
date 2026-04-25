@@ -74,6 +74,13 @@ fi
 have uv || die "uv install failed; install manually: https://docs.astral.sh/uv/"
 log "uv $(uv --version)"
 
+# ---------- 2b. Git submodules (lerobot, reBotArm) ----------
+# Pinned via .gitmodules; idempotent — re-running is a no-op when up to date.
+if [[ -f "$REPO_ROOT/.gitmodules" ]]; then
+    log "syncing git submodules (lerobot, reBotArm_control_py)"
+    git -C "$REPO_ROOT" submodule update --init --recursive
+fi
+
 # ---------- 3. Python venv + backend deps ----------
 if [[ ! -d "$REPO_ROOT/.venv" ]]; then
     log "creating .venv with Python 3.12"

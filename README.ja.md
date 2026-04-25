@@ -43,11 +43,13 @@ Browser (React)  ←→  FastAPI + WebSocket  ←→  SessionManager  ←→  Ha
 ### 一発セットアップ
 
 ```bash
-git clone <repo> && cd MimicRec
+git clone --recurse-submodules <repo> && cd MimicRec
 bash scripts/setup.sh
 ```
 
-このスクリプトは冪等です。システムパッケージ・`uv`・Python 3.12・バックエンドと LeRobot の依存・Node 20 + pnpm + フロントエンド依存・`dialout` / `video` グループへのユーザー追加まで全部やります。
+（`--recurse-submodules` 忘れても `setup.sh` が後から submodule を取ってきます。）
+
+このスクリプトは冪等です。`lerobot` と `reBotArm_control_py` の submodule 取得、システムパッケージ・`uv`・Python 3.12・バックエンドと LeRobot の依存・Node 20 + pnpm + フロントエンド依存・`dialout` / `video` グループへのユーザー追加まで全部やります。
 
 > グループに変更があった場合は、**ログアウト→ログイン**して反映してください（または同じシェルだけで一時的に効かせる場合は `newgrp video`）。
 
