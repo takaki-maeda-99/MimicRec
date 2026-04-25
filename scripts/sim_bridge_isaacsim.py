@@ -56,86 +56,81 @@ def main():
     import zmq
     ctx = zmq.Context()
 
-    robot_sock = ctx.socket(zmq.REP)
+    robot_sock = ctx.socket(zmq.ROUTER)
     robot_sock.bind(f"tcp://*:{args.robot_port}")
 
     cam_sock = ctx.socket(zmq.PUB)
     cam_sock.bind(f"tcp://*:{args.camera_port}")
-
-    # Shared state protected by lock
-    lock = threading.Lock()
-    latest_pos = np.zeros(dof)
-    latest_vel = np.zeros(dof)
-    pending_cmd = [None]  # mutable container for thread-safe exchange
-    running = [True]
-
-    # ZMQ handler thread — responds instantly, never blocked by world.step()
-    def zmq_thread():
-        while running[0]:
-            try:
-                msg = robot_sock.recv_json(flags=zmq.NOBLOCK)
-            except zmq.Again:
-                time.sleep(0.001)
-                continue
-
-            cmd = msg.get("cmd")
-            if cmd == "connect":
-                robot_sock.send_json({"ok": True, "dof": dof, "joint_names": joint_names})
-            elif cmd == "read_state":
-                with lock:
-                    p, v = latest_pos.tolist(), latest_vel.tolist()
-                robot_sock.send_json({
-                    "joint_pos": p,
-                    "joint_vel": v,
-                    "joint_effort": [0.0] * dof,
-                })
-            elif cmd == "send_command":
-                q = msg.get("q", [])
-                with lock:
-                    pending_cmd[0] = np.array(q, dtype=np.float32)
-                robot_sock.send_json({"ok": True})
-            elif cmd == "set_mode":
-                robot_sock.send_json({"ok": True})
-            elif cmd == "disconnect":
-                robot_sock.send_json({"ok": True})
-            elif cmd == "shutdown":
-                robot_sock.send_json({"ok": True})
-                running[0] = False
-            else:
-                robot_sock.send_json({"ok": True})
-
-    t = threading.Thread(target=zmq_thread, daemon=True)
-    t.start()
 
     # Write ready signal
     open("/tmp/mimicrec_bridge_ready", "w").write("1")
     import sys
     sys.stderr.write(f"BRIDGE READY: DOF={dof}, joints={joint_names}\n")
 
+    pending_cmd = None
+
     try:
-        while running[0] and sim_app.is_running():
+        while sim_app.is_running():
+            # 1. Handle ALL pending ZMQ messages (drain the queue)
+            #    ROUTER receives [identity, empty, data] and must reply [identity, empty, data]
+            for _ in range(100):
+                try:
+                    frames = robot_sock.recv_multipart(zmq.NOBLOCK)
+                except zmq.Again:
+                    break
+
+                identity = frames[0]
+                import json as _json
+                msg = _json.loads(frames[-1])
+
+                def reply(data):
+                    robot_sock.send_multipart([identity, b"", _json.dumps(data).encode()])
+
+                cmd = msg.get("cmd")
+                if cmd == "connect":
+                    reply({"ok": True, "dof": dof, "joint_names": joint_names})
+                elif cmd == "read_state":
+                    pos = robot.get_joint_positions()
+                    vel = robot.get_joint_velocities()
+                    reply({
+                        "joint_pos": pos.flatten().tolist() if pos is not None else [0] * dof,
+                        "joint_vel": vel.flatten().tolist() if vel is not None else [0] * dof,
+                        "joint_effort": [0.0] * dof,
+                    })
+                elif cmd == "send_command":
+                    pending_cmd = np.array(msg["q"], dtype=np.float32)
+                    reply({"ok": True})
+                elif cmd == "set_mode":
+                    reply({"ok": True})
+                elif cmd == "disconnect":
+                    reply({"ok": True})
+                elif cmd == "shutdown":
+                    reply({"ok": True})
+                    raise KeyboardInterrupt
+                else:
+                    reply({"ok": True})
+
+            # 2. Apply pending command
+            if pending_cmd is not None:
+                try:
+                    from isaacsim.core.utils.types import ArticulationAction
+                    robot.apply_action(ArticulationAction(joint_positions=pending_cmd))
+                except Exception as ex:
+                    sys.stderr.write(f"CMD ERROR: {ex}\n")
+                pending_cmd = None
+
+            # 3. Step simulation at ~60 Hz (not max speed)
             world.step(render=not args.headless)
-
-            # Update latest state
-            pos = robot.get_joint_positions()
-            vel = robot.get_joint_velocities()
-            with lock:
-                if pos is not None:
-                    latest_pos[:] = pos.flatten()
-                if vel is not None:
-                    latest_vel[:] = vel.flatten()
-
-                # Apply pending command
-                cmd = pending_cmd[0]
-                if cmd is not None:
-                    robot.set_joint_position_targets(cmd.reshape(1, -1))
-                    pending_cmd[0] = None
+            time.sleep(1.0 / 60.0)  # cap sim rate, ensures ZMQ gets polled regularly
 
     except KeyboardInterrupt:
-        pass
+        sys.stderr.write("Interrupted\n")
+    except Exception as e:
+        sys.stderr.write(f"LOOP CRASHED: {type(e).__name__}: {e}\n")
+        import traceback
+        traceback.print_exc(file=sys.stderr)
     finally:
-        running[0] = False
-        t.join(timeout=2)
+        sys.stderr.write("Shutting down...\n")
         robot_sock.close()
         cam_sock.close()
         ctx.term()

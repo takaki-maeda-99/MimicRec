@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 
 import numpy as np
 
@@ -34,7 +35,12 @@ from mimicrec.types import RobotState
 
 
 class SimBridgeAdapter:
-    """Robot adapter that communicates with a simulator via ZMQ."""
+    """Robot adapter that communicates with a simulator via ZMQ.
+
+    Uses a synchronous ZMQ REQ socket on a dedicated thread to avoid
+    asyncio + ZMQ interaction issues. The adapter's async methods
+    delegate to this thread via run_in_executor.
+    """
 
     name = "sim_bridge"
 
@@ -47,59 +53,55 @@ class SimBridgeAdapter:
         self._address = address
         self.dof = dof
         self.joint_names = joint_names or [f"j{i}" for i in range(dof)]
+        self._socket = None
         self._ctx = None
+        self._lock = threading.Lock()
         self._mode = RobotMode.POSITION
 
-    async def _send_recv(self, msg: dict) -> dict:
-        """Send a message and wait for reply with timeout.
+    def _send_recv_sync(self, msg: dict) -> dict:
+        """Thread-safe synchronous send/recv via DEALER socket.
 
-        Uses a fresh REQ socket per call to avoid ZMQ state machine issues
-        (REQ sockets cannot send again if a previous recv timed out).
+        DEALER sends [empty, data] and receives [empty, data] from ROUTER.
         """
-        import zmq
-        import zmq.asyncio
-
-        sock = self._ctx.socket(zmq.REQ)
-        sock.setsockopt(zmq.LINGER, 0)
-        sock.connect(self._address)
-        try:
-            await sock.send_json(msg)
-            return await asyncio.wait_for(sock.recv_json(), timeout=10.0)
-        finally:
-            sock.close()
+        import json
+        with self._lock:
+            self._socket.send_multipart([b"", json.dumps(msg).encode()])
+            frames = self._socket.recv_multipart()
+            return json.loads(frames[-1])
 
     async def connect(self) -> None:
         import zmq
-        import zmq.asyncio
 
-        self._ctx = zmq.asyncio.Context()
+        self._ctx = zmq.Context()
+        self._socket = self._ctx.socket(zmq.DEALER)
+        self._socket.setsockopt(zmq.RCVTIMEO, 10000)
+        self._socket.setsockopt(zmq.SNDTIMEO, 5000)
+        self._socket.connect(self._address)
 
-        # Handshake with retry
-        for attempt in range(5):
-            try:
-                reply = await self._send_recv({"cmd": "connect"})
-                break
-            except (asyncio.TimeoutError, Exception):
-                if attempt == 4:
-                    raise
-                await asyncio.sleep(1.0)
+        loop = asyncio.get_running_loop()
+        reply = await loop.run_in_executor(None, self._send_recv_sync, {"cmd": "connect"})
         if reply.get("dof"):
             self.dof = reply["dof"]
         if reply.get("joint_names"):
             self.joint_names = reply["joint_names"]
 
     async def disconnect(self) -> None:
-        if self._ctx:
+        if self._socket:
+            loop = asyncio.get_running_loop()
             try:
-                await self._send_recv({"cmd": "disconnect"})
+                await loop.run_in_executor(None, self._send_recv_sync, {"cmd": "disconnect"})
             except Exception:
                 pass
+            self._socket.close()
+            self._socket = None
+        if self._ctx:
             self._ctx.term()
             self._ctx = None
 
     async def read_state(self) -> RobotState:
-        assert self._ctx is not None
-        reply = await self._send_recv({"cmd": "read_state"})
+        assert self._socket is not None
+        loop = asyncio.get_running_loop()
+        reply = await loop.run_in_executor(None, self._send_recv_sync, {"cmd": "read_state"})
         return RobotState(
             joint_pos=np.array(reply["joint_pos"], dtype=np.float32),
             joint_vel=np.array(reply.get("joint_vel", [0.0] * self.dof), dtype=np.float32),
@@ -107,12 +109,14 @@ class SimBridgeAdapter:
         )
 
     async def send_joint_command(self, q: np.ndarray) -> None:
-        assert self._ctx is not None
-        await self._send_recv({"cmd": "send_command", "q": q.tolist()})
+        assert self._socket is not None
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self._send_recv_sync, {"cmd": "send_command", "q": q.tolist()})
 
     async def set_mode(self, mode: RobotMode) -> None:
-        assert self._ctx is not None
-        await self._send_recv({"cmd": "set_mode", "mode": mode.value})
+        assert self._socket is not None
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self._send_recv_sync, {"cmd": "set_mode", "mode": mode.value})
         self._mode = mode
 
     def supports_mode(self, mode: RobotMode) -> bool:
