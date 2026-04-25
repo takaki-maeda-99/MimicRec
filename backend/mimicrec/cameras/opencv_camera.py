@@ -15,11 +15,16 @@ class OpenCVCamera:
         self._cap = None
 
     def _open(self):
-        self._cap = cv2.VideoCapture(self._device_id)
+        # Use device path for reliability (index-based open fails on some V4L2 drivers)
+        path = f"/dev/video{self._device_id}"
+        self._cap = cv2.VideoCapture(path, cv2.CAP_V4L2)
+        if not self._cap.isOpened():
+            # Fallback to index
+            self._cap = cv2.VideoCapture(self._device_id)
         self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, self._width)
         self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self._height)
         if not self._cap.isOpened():
-            raise RuntimeError(f"cannot open camera {self._device_id}")
+            raise RuntimeError(f"cannot open camera {self._device_id} ({path})")
 
     def _close(self):
         if self._cap:
