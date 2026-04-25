@@ -1,2 +1,3 @@
 _target_: mimicrec.adapters.so_leader.SOLeaderAdapter
 port: /dev/ttyACM1
+id: my_awesome_leader_arm

@@ -12,16 +12,19 @@ class SOLeaderAdapter:
     name = "so_leader"
     type = TeleopType.LEADER_ARM
 
-    def __init__(self, port: str = "/dev/ttyACM1"):
+    def __init__(self, port: str = "/dev/ttyACM1", id: str = "my_awesome_leader_arm"):
         self._port = port
+        self._id = id
         self._leader = None
 
     async def connect(self) -> None:
-        from lerobot.teleoperators.so_leader import SOLeader, SOLeaderTeleopConfig
-        cfg = SOLeaderTeleopConfig(port=self._port)
+        import functools
+        from lerobot.teleoperators.so_leader.so_leader import SOLeader
+        from lerobot.teleoperators.so_leader.config_so_leader import SOLeaderTeleopConfig
+        cfg = SOLeaderTeleopConfig(port=self._port, id=self._id)
         self._leader = SOLeader(cfg)
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, self._leader.connect)
+        await loop.run_in_executor(None, functools.partial(self._leader.connect, calibrate=False))
 
     async def disconnect(self) -> None:
         if self._leader:

@@ -1,5 +1,6 @@
 _target_: mimicrec.adapters.so101.SO101Adapter
 port: /dev/ttyACM0
+id: my_awesome_follower_arm
 replay:
   ramp_duration_sec: 2.0
   max_joint_velocity: 1.0

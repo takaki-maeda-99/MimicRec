@@ -14,19 +14,20 @@ class SO101Adapter:
     dof = 6
     joint_names = JOINT_NAMES
 
-    def __init__(self, port: str = "/dev/ttyACM0"):
+    def __init__(self, port: str = "/dev/ttyACM0", id: str = "my_awesome_follower_arm"):
         self._port = port
+        self._id = id
         self._mode = RobotMode.POSITION
         self._follower = None
 
     async def connect(self) -> None:
+        import functools
         from lerobot.robots.so_follower.so_follower import SO101Follower
         from lerobot.robots.so_follower.config_so_follower import SOFollowerRobotConfig
-        cfg = SOFollowerRobotConfig(port=self._port)
+        cfg = SOFollowerRobotConfig(port=self._port, id=self._id)
         self._follower = SO101Follower(cfg)
-        # Run blocking connect in executor
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, self._follower.connect)
+        await loop.run_in_executor(None, functools.partial(self._follower.connect, calibrate=False))
 
     async def disconnect(self) -> None:
         if self._follower:
