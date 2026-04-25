@@ -7,3 +7,6 @@ __pycache__/
 .DS_Store
 /lerobot/
 /reBotArm_control_py/
+/MimicAno/sam3/
+node_modules/
+frontend/dist/
