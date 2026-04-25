@@ -22,12 +22,21 @@ class SO101Adapter:
 
     async def connect(self) -> None:
         import functools
+        from mimicrec.errors import HardwareError
         from lerobot.robots.so_follower.so_follower import SO101Follower
         from lerobot.robots.so_follower.config_so_follower import SOFollowerRobotConfig
         cfg = SOFollowerRobotConfig(port=self._port, id=self._id)
         self._follower = SO101Follower(cfg)
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, functools.partial(self._follower.connect, calibrate=False))
+        try:
+            await loop.run_in_executor(None, functools.partial(self._follower.connect, calibrate=False))
+        except RuntimeError as e:
+            if "no calibration" in str(e).lower():
+                raise HardwareError(
+                    f"SO-101 follower '{self._id}' on {self._port} has no calibration. "
+                    f"Run: python scripts/calibrate_so101.py --port {self._port} --id {self._id} --type follower"
+                ) from e
+            raise
 
     async def disconnect(self) -> None:
         if self._follower:

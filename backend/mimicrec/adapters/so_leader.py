@@ -19,12 +19,21 @@ class SOLeaderAdapter:
 
     async def connect(self) -> None:
         import functools
+        from mimicrec.errors import HardwareError
         from lerobot.teleoperators.so_leader.so_leader import SOLeader
         from lerobot.teleoperators.so_leader.config_so_leader import SOLeaderTeleopConfig
         cfg = SOLeaderTeleopConfig(port=self._port, id=self._id)
         self._leader = SOLeader(cfg)
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, functools.partial(self._leader.connect, calibrate=False))
+        try:
+            await loop.run_in_executor(None, functools.partial(self._leader.connect, calibrate=False))
+        except RuntimeError as e:
+            if "no calibration" in str(e).lower():
+                raise HardwareError(
+                    f"SO leader '{self._id}' on {self._port} has no calibration. "
+                    f"Run: python scripts/calibrate_so101.py --port {self._port} --id {self._id} --type leader"
+                ) from e
+            raise
 
     async def disconnect(self) -> None:
         if self._leader:
