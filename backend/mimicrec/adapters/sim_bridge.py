@@ -47,45 +47,59 @@ class SimBridgeAdapter:
         self._address = address
         self.dof = dof
         self.joint_names = joint_names or [f"j{i}" for i in range(dof)]
-        self._socket = None
         self._ctx = None
         self._mode = RobotMode.POSITION
+
+    async def _send_recv(self, msg: dict) -> dict:
+        """Send a message and wait for reply with timeout.
+
+        Uses a fresh REQ socket per call to avoid ZMQ state machine issues
+        (REQ sockets cannot send again if a previous recv timed out).
+        """
+        import zmq
+        import zmq.asyncio
+
+        sock = self._ctx.socket(zmq.REQ)
+        sock.setsockopt(zmq.LINGER, 0)
+        sock.connect(self._address)
+        try:
+            await sock.send_json(msg)
+            return await asyncio.wait_for(sock.recv_json(), timeout=10.0)
+        finally:
+            sock.close()
 
     async def connect(self) -> None:
         import zmq
         import zmq.asyncio
 
         self._ctx = zmq.asyncio.Context()
-        self._socket = self._ctx.socket(zmq.REQ)
-        self._socket.setsockopt(zmq.RCVTIMEO, 5000)
-        self._socket.setsockopt(zmq.SNDTIMEO, 1000)
-        self._socket.connect(self._address)
 
-        # Handshake
-        await self._socket.send_json({"cmd": "connect"})
-        reply = await self._socket.recv_json()
+        # Handshake with retry
+        for attempt in range(5):
+            try:
+                reply = await self._send_recv({"cmd": "connect"})
+                break
+            except (asyncio.TimeoutError, Exception):
+                if attempt == 4:
+                    raise
+                await asyncio.sleep(1.0)
         if reply.get("dof"):
             self.dof = reply["dof"]
         if reply.get("joint_names"):
             self.joint_names = reply["joint_names"]
 
     async def disconnect(self) -> None:
-        if self._socket:
+        if self._ctx:
             try:
-                await self._socket.send_json({"cmd": "disconnect"})
-                await self._socket.recv_json()
+                await self._send_recv({"cmd": "disconnect"})
             except Exception:
                 pass
-            self._socket.close()
-            self._socket = None
-        if self._ctx:
             self._ctx.term()
             self._ctx = None
 
     async def read_state(self) -> RobotState:
-        assert self._socket is not None
-        await self._socket.send_json({"cmd": "read_state"})
-        reply = await self._socket.recv_json()
+        assert self._ctx is not None
+        reply = await self._send_recv({"cmd": "read_state"})
         return RobotState(
             joint_pos=np.array(reply["joint_pos"], dtype=np.float32),
             joint_vel=np.array(reply.get("joint_vel", [0.0] * self.dof), dtype=np.float32),
@@ -93,14 +107,12 @@ class SimBridgeAdapter:
         )
 
     async def send_joint_command(self, q: np.ndarray) -> None:
-        assert self._socket is not None
-        await self._socket.send_json({"cmd": "send_command", "q": q.tolist()})
-        await self._socket.recv_json()
+        assert self._ctx is not None
+        await self._send_recv({"cmd": "send_command", "q": q.tolist()})
 
     async def set_mode(self, mode: RobotMode) -> None:
-        assert self._socket is not None
-        await self._socket.send_json({"cmd": "set_mode", "mode": mode.value})
-        await self._socket.recv_json()
+        assert self._ctx is not None
+        await self._send_recv({"cmd": "set_mode", "mode": mode.value})
         self._mode = mode
 
     def supports_mode(self, mode: RobotMode) -> bool:
