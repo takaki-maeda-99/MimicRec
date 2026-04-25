@@ -44,10 +44,21 @@ class SO101Adapter:
 
     async def disconnect(self) -> None:
         if self._follower:
+            import logging
             loop = asyncio.get_running_loop()
-            async with self._bus_lock:
-                await loop.run_in_executor(None, self._follower.disconnect)
-            self._follower = None
+            try:
+                async with self._bus_lock:
+                    await loop.run_in_executor(None, self._follower.disconnect)
+            except Exception as e:
+                # Motors may be unresponsive (alarm state, loose cable, etc.).
+                # Don't let a torque-off failure block session teardown — log
+                # it and clear state so the next session can re-init cleanly.
+                logging.getLogger(__name__).warning(
+                    "SO101 disconnect failed (motors may be in fault state — "
+                    "power-cycle the arm): %s", e,
+                )
+            finally:
+                self._follower = None
 
     async def read_state(self) -> RobotState:
         assert self._follower is not None
