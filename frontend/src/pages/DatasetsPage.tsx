@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { useDatasets, useCreateDataset, useDeleteDataset } from "../api/queries";
+import { apiFetch } from "../api/client";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 
@@ -8,6 +9,23 @@ export default function DatasetsPage() {
   const { data: datasets, isLoading } = useDatasets();
   const createMutation = useCreateDataset();
   const deleteMutation = useDeleteDataset();
+  const [annotating, setAnnotating] = useState<string | null>(null);
+
+  const handleAnnotateAll = async (dsName: string) => {
+    if (!confirm(`Annotate all episodes in "${dsName}" with Gemma 4?\nThis may take a while.`)) return;
+    setAnnotating(dsName);
+    try {
+      const res = await apiFetch<{ annotated: number; total: number }>(
+        `/api/datasets/${dsName}/annotate-all`,
+        { method: "POST", body: JSON.stringify({}) }
+      );
+      alert(`Done: ${res.annotated}/${res.total} episodes annotated`);
+    } catch (e) {
+      alert(`Error: ${(e as Error).message}`);
+    } finally {
+      setAnnotating(null);
+    }
+  };
   const [name, setName] = useState("");
   const [fps, setFps] = useState(30);
 
@@ -87,6 +105,13 @@ export default function DatasetsPage() {
                   >
                     Download
                   </a>
+                  <button
+                    className="text-sm text-purple-600 hover:text-purple-800"
+                    onClick={() => handleAnnotateAll(ds.name)}
+                    disabled={annotating === ds.name}
+                  >
+                    {annotating === ds.name ? "Annotating..." : "Annotate"}
+                  </button>
                   <button
                     className="text-sm text-red-600 hover:text-red-800"
                     onClick={() => {
