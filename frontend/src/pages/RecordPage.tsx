@@ -117,10 +117,12 @@ export default function RecordPage() {
         </div>
       )}
 
-      {/* Keyboard teleop */}
-      <div className="mb-6">
-        <KeyboardTeleop enabled={sessionState !== "review"} />
-      </div>
+      {/* Keyboard teleop (only when web_keyboard adapter is selected) */}
+      {teleop === "web_keyboard" && (
+        <div className="mb-6">
+          <KeyboardTeleop enabled={sessionState !== "review"} />
+        </div>
+      )}
 
       {/* Recording controls */}
       <RecordingControls />

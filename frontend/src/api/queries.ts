@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "./client.ts";
-import type { DatasetSummary, EpisodeSummary, SessionStatePayload } from "./types.ts";
+import type { DatasetSummary, EpisodeSummary, SessionStatePayload, TaskSummary } from "./types.ts";
 
 // --------------- Datasets ---------------
 
@@ -36,6 +36,14 @@ export function useCreateDataset() {
         body: JSON.stringify(body),
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["datasets"] }),
+  });
+}
+
+export function useTasks(ds: string) {
+  return useQuery({
+    queryKey: ["tasks", ds],
+    queryFn: () => apiFetch<TaskSummary[]>(`/api/datasets/${ds}/tasks`),
+    enabled: !!ds,
   });
 }
 
