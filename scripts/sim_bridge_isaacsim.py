@@ -45,7 +45,7 @@ def main():
 
     # --- Spawn robot ---
     if args.robot == "franka":
-        asset_path = get_assets_root_path() + "/Isaac/Robots/Franka/franka_instanceable.usd"
+        asset_path = get_assets_root_path() + "/Isaac/Robots/FrankaRobotics/FrankaPanda/franka.usd"
         prim_path = args.robot_prim or "/World/Franka"
         stage_utils.add_reference_to_stage(asset_path, prim_path)
         robot = SingleArticulation(prim_path=prim_path, name="robot")
