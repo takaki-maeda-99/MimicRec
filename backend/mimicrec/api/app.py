@@ -1,6 +1,7 @@
 from __future__ import annotations
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from mimicrec.api.routes import configs, datasets, episode, replay, session
 from mimicrec.api.ws import session_hub, state_hub, camera_hub
 from mimicrec.api.errors import register_exception_handlers
@@ -16,6 +17,13 @@ async def lifespan(app: FastAPI):
 
 def create_app() -> FastAPI:
     app = FastAPI(title="MimicRec", version="0.1.0", lifespan=lifespan)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],  # MVP: allow all origins
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
     app.state.session_manager = None
     app.state.error_bus = None
     app.state.camera_manager = None
@@ -33,3 +41,6 @@ def create_app() -> FastAPI:
     app.include_router(camera_hub.router)
     register_exception_handlers(app)
     return app
+
+
+app = create_app()
