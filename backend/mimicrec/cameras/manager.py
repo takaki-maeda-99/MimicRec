@@ -43,6 +43,13 @@ class CameraManager:
         self._tasks.clear()
 
     async def _run_camera(self, name: str, cam) -> None:
+        # Connect camera if it has a connect method (OpenCVCamera needs it, MockCamera doesn't)
+        if hasattr(cam, "connect"):
+            try:
+                await cam.connect()
+            except Exception as e:
+                await self._errors.publish(HardwareError(f"camera {name} connect failed: {e}"))
+                return
         while not self._stopped.is_set():
             try:
                 frame = await cam.read()
