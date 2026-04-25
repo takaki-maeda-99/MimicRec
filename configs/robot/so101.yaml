@@ -3,15 +3,16 @@ port: /dev/ttyACM2
 id: my_awesome_follower_arm
 replay:
   # All thresholds are in DEGREES (and deg/s, deg/s²) — SO-101 reports
-  # joint positions in degrees via LeRobot.
+  # joint positions in degrees via LeRobot. Sized so a recorded teleop
+  # trajectory replays cleanly: gripper close-fast events alone hit
+  # ~445 deg/s and ~11000 deg/s² in real captures.
   ramp_duration_sec: 2.0
-  max_joint_velocity: 360.0          # deg/s (≈ 1 rev/s)
+  max_joint_velocity: 720.0          # deg/s (2 rev/s)
   # Accel limit is mostly a smoothness check, not a safety gate (the real
   # safety gates are position_jump + velocity). Hand-teleop trajectories at
   # 30 Hz amplify position jitter by 900x via discrete second derivative,
   # so a 1° per-frame wobble shows up as ~900 deg/s² on this metric.
-  # Set generously to let recorded human motion through.
-  max_joint_acceleration: 8000.0     # deg/s²
+  max_joint_acceleration: 30000.0    # deg/s²
   max_joint_position_jump: 15.0      # deg between command and measured per tick
   command_timeout_sec: 0.2
   watchdog_hz: 20
