@@ -46,7 +46,6 @@ def _extract_frames(video_path: Path, sample_fps: float = 1.0) -> list[tuple[int
         cap.set(cv2.CAP_PROP_POS_FRAMES, i)
         ret, frame = cap.read()
         if ret:
-            # Convert BGR to RGB, resize for VLM
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             h, w = rgb.shape[:2]
             if max(h, w) > 512:
@@ -55,6 +54,42 @@ def _extract_frames(video_path: Path, sample_fps: float = 1.0) -> list[tuple[int
             frames.append((i, rgb))
     cap.release()
     return frames
+
+
+def _select_keyframes(frames: list[tuple[int, np.ndarray]], max_frames: int = 8) -> list[tuple[int, np.ndarray]]:
+    """Select keyframes based on visual change — like a storyboard.
+
+    Always includes first and last frame. Remaining slots go to frames
+    with the largest visual difference from their predecessor.
+    """
+    if len(frames) <= max_frames:
+        return frames
+
+    # Compute frame-to-frame difference scores
+    diffs = []
+    for i in range(1, len(frames)):
+        prev = frames[i - 1][1].astype(np.float32)
+        curr = frames[i][1].astype(np.float32)
+        # Resize to same small size for fast comparison
+        prev_small = cv2.resize(prev, (64, 64))
+        curr_small = cv2.resize(curr, (64, 64))
+        diff = np.mean(np.abs(curr_small - prev_small))
+        diffs.append((i, diff))
+
+    # Sort by difference (largest change first)
+    diffs.sort(key=lambda x: x[1], reverse=True)
+
+    # Always include first and last
+    selected_indices = {0, len(frames) - 1}
+
+    # Fill remaining slots with highest-change frames
+    for idx, _ in diffs:
+        if len(selected_indices) >= max_frames:
+            break
+        selected_indices.add(idx)
+
+    # Return in original order
+    return [frames[i] for i in sorted(selected_indices)]
 
 
 def _build_prompt(num_frames: int) -> str:
@@ -115,15 +150,35 @@ def annotate_episode(
 
     logger.info(f"Annotating episode {episode_idx}: {total_frames} frames, camera={camera_name}")
 
-    # Extract sample frames (cap at 8 to fit in GPU memory)
+    # Sample frames evenly across entire episode (storyboard style)
     MAX_FRAMES = 8
-    sampled = _extract_frames(video_path, sample_fps=sample_fps)
+    cap = cv2.VideoCapture(str(video_path))
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    cap.release()
+
+    # Pick MAX_FRAMES indices spread evenly across the video
+    if total <= MAX_FRAMES:
+        indices = list(range(total))
+    else:
+        indices = [int(i * (total - 1) / (MAX_FRAMES - 1)) for i in range(MAX_FRAMES)]
+
+    sampled = []
+    cap = cv2.VideoCapture(str(video_path))
+    for idx in indices:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+        ret, frame = cap.read()
+        if ret:
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            h, w = rgb.shape[:2]
+            if max(h, w) > 512:
+                scale = 512 / max(h, w)
+                rgb = cv2.resize(rgb, (int(w * scale), int(h * scale)))
+            sampled.append((idx, rgb))
+    cap.release()
+
     if not sampled:
         raise RuntimeError("no frames extracted")
-    if len(sampled) > MAX_FRAMES:
-        step = len(sampled) / MAX_FRAMES
-        sampled = [sampled[int(i * step)] for i in range(MAX_FRAMES)]
-    logger.info(f"Sampled {len(sampled)} frames from video")
+    logger.info(f"Sampled {len(sampled)} frames evenly from {total} total (indices: {indices})")
 
     # Load model
     from transformers import AutoProcessor, AutoModelForImageTextToText
