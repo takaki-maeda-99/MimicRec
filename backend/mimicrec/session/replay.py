@@ -14,8 +14,14 @@ from mimicrec.util.latest_value import LatestValue
 
 @dataclass
 class ReplayTrajectory:
-    """Simplest possible trajectory: list of joint-target vectors at the session fps."""
+    """Joint-target sequence + the rate at which it was captured.
+
+    `fps` is the trajectory's native rate. Replay should iterate at that rate
+    so playback tempo matches the recording. If None, falls back to the
+    session's fps.
+    """
     joint_targets: np.ndarray   # shape (T, dof)
+    fps: int | None = None
 
 
 async def run_replay(
@@ -39,9 +45,18 @@ async def run_replay(
     session.replay_active = True
     session.sub_state = SubState.REPLAYING
 
-    tick_interval_ns = 1_000_000_000 // fps
+    # Iterate at the trajectory's native rate when known — keeps playback
+    # tempo right even if the active session was started at a different fps.
+    effective_fps = trajectory.fps or fps
+    tick_interval_ns = 1_000_000_000 // effective_fps
     next_tick_ns = clock.monotonic_ns() + tick_interval_ns
 
+    # Sync the watchdog's dt_sec with the trajectory's native fps so vel/accel
+    # checks compute with the correct timebase (otherwise a 15Hz recording
+    # replayed in a 30Hz-configured session would report 2x velocity).
+    if safety is not None and trajectory.fps is not None:
+        from dataclasses import replace as _replace
+        safety = _replace(safety, dt_sec=1.0 / trajectory.fps)
     wd = ReplayWatchdog(safety) if safety is not None else None
     prev_q: np.ndarray | None = None
     prev_prev_q: np.ndarray | None = None
@@ -62,7 +77,7 @@ async def run_replay(
         if m0 is not None:
             start = m0.value.joint_pos.astype(np.float32)
             goal = np.asarray(targets[0], dtype=np.float32)
-            n_ramp = max(1, int(safety.ramp_duration_sec * fps))
+            n_ramp = max(1, int(safety.ramp_duration_sec * effective_fps))
             ramp = [
                 start + (goal - start) * (i / n_ramp)
                 for i in range(1, n_ramp + 1)
