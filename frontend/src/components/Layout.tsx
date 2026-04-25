@@ -1,5 +1,6 @@
 import { NavLink, Outlet } from "react-router-dom";
 import { useSessionStore } from "../state/session-store";
+import { Badge } from "./ui/badge";
 
 const navItems = [
   { to: "/datasets", label: "Datasets" },
@@ -8,16 +9,16 @@ const navItems = [
 
 function SessionBadge() {
   const state = useSessionStore((s) => s.state);
-  const colors: Record<string, string> = {
-    idle: "bg-gray-100 text-gray-700",
-    ready: "bg-green-100 text-green-700",
-    recording: "bg-red-100 text-red-700",
-    review: "bg-yellow-100 text-yellow-700",
+  const variantMap: Record<string, "outline" | "success" | "destructive" | "warning"> = {
+    idle: "outline",
+    ready: "success",
+    recording: "destructive",
+    review: "warning",
   };
   return (
-    <span className={`px-2 py-1 rounded-full text-xs font-medium ${colors[state] || colors.idle}`}>
+    <Badge variant={variantMap[state] || "outline"}>
       {state.toUpperCase()}
-    </span>
+    </Badge>
   );
 }
 

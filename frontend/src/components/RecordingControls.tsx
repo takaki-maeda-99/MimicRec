@@ -1,6 +1,8 @@
 import { useEffect, useCallback, useState } from "react";
 import { useEpisodeStart, useEpisodeStop, useEpisodeSave, useEpisodeDiscard } from "../api/queries.ts";
 import { useSessionStore } from "../state/session-store.ts";
+import { Button } from "./ui/button";
+import { Badge } from "./ui/badge";
 
 export default function RecordingControls() {
   const sessionState = useSessionStore(s => s.state);
@@ -41,9 +43,9 @@ export default function RecordingControls() {
 
   if (sessionState === "ready") {
     return (
-      <button className="bg-red-600 text-white px-8 py-3 rounded-lg text-lg font-medium hover:bg-red-700" onClick={() => episodeStart.mutate()}>
+      <Button variant="destructive" size="lg" onClick={() => episodeStart.mutate()}>
         Start Recording (Space)
-      </button>
+      </Button>
     );
   }
 
@@ -52,19 +54,19 @@ export default function RecordingControls() {
     return (
       <div className="space-y-3">
         <div className="flex items-center gap-4">
-          <span className="inline-flex items-center gap-2">
-            <span className="w-3 h-3 bg-red-500 rounded-full animate-pulse" />
-            <span className="text-red-600 font-medium">Recording</span>
-          </span>
+          <Badge variant="destructive" className="gap-2">
+            <span className="w-2 h-2 bg-red-500 rounded-full animate-pulse" />
+            Recording
+          </Badge>
           {progress && (
             <span className="text-sm text-gray-600">
               {progress.num_frames} frames &middot; {(progress.num_frames / effectiveFps).toFixed(1)}s
             </span>
           )}
         </div>
-        <button className="bg-gray-800 text-white px-8 py-3 rounded-lg text-lg font-medium hover:bg-gray-900" onClick={() => episodeStop.mutate()}>
+        <Button size="lg" className="bg-gray-800 hover:bg-gray-900" onClick={() => episodeStop.mutate()}>
           Stop Recording (Space)
-        </button>
+        </Button>
       </div>
     );
   }
@@ -74,13 +76,13 @@ export default function RecordingControls() {
       <div className="space-y-4">
         <div className="text-lg font-medium text-gray-700">Review Episode</div>
         <div className="flex gap-2">
-          <button onClick={() => setSuccessLabel(true)} className={`px-3 py-1 rounded text-sm ${successLabel === true ? "bg-green-600 text-white" : "bg-gray-100 text-gray-700"}`}>1: Success</button>
-          <button onClick={() => setSuccessLabel(false)} className={`px-3 py-1 rounded text-sm ${successLabel === false ? "bg-red-600 text-white" : "bg-gray-100 text-gray-700"}`}>2: Failure</button>
-          <button onClick={() => setSuccessLabel(null)} className={`px-3 py-1 rounded text-sm ${successLabel === null ? "bg-yellow-600 text-white" : "bg-gray-100 text-gray-700"}`}>3: Skip</button>
+          <Button size="sm" onClick={() => setSuccessLabel(true)} className={successLabel === true ? "bg-green-600 text-white hover:bg-green-700" : ""} variant={successLabel === true ? "default" : "outline"}>1: Success</Button>
+          <Button size="sm" onClick={() => setSuccessLabel(false)} className={successLabel === false ? "bg-red-600 text-white hover:bg-red-700" : ""} variant={successLabel === false ? "destructive" : "outline"}>2: Failure</Button>
+          <Button size="sm" onClick={() => setSuccessLabel(null)} className={successLabel === null ? "bg-yellow-600 text-white hover:bg-yellow-700" : ""} variant={successLabel === null ? "default" : "outline"}>3: Skip</Button>
         </div>
         <div className="flex gap-3">
-          <button className="bg-green-600 text-white px-6 py-2 rounded-md font-medium hover:bg-green-700" onClick={handleSave}>Save (S)</button>
-          <button className="bg-gray-600 text-white px-6 py-2 rounded-md font-medium hover:bg-gray-700" onClick={handleDiscard}>Discard (D)</button>
+          <Button className="bg-green-600 hover:bg-green-700" onClick={handleSave}>Save (S)</Button>
+          <Button variant="outline" className="bg-gray-600 text-white hover:bg-gray-700" onClick={handleDiscard}>Discard (D)</Button>
         </div>
       </div>
     );

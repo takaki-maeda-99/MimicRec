@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { useDatasets, useCreateDataset } from "../api/queries";
+import { Button } from "../components/ui/button";
+import { Input } from "../components/ui/input";
 
 export default function DatasetsPage() {
   const { data: datasets, isLoading } = useDatasets();
@@ -24,8 +26,7 @@ export default function DatasetsPage() {
       <div className="flex gap-3 mb-6 items-end">
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Name</label>
-          <input
-            className="border border-gray-300 rounded-md px-3 py-2 text-sm"
+          <Input
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="my_dataset"
@@ -34,20 +35,19 @@ export default function DatasetsPage() {
         </div>
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">FPS</label>
-          <input
+          <Input
             type="number"
-            className="border border-gray-300 rounded-md px-3 py-2 text-sm w-20"
+            className="w-20"
             value={fps}
             onChange={(e) => setFps(Number(e.target.value))}
           />
         </div>
-        <button
-          className="bg-blue-600 text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
+        <Button
           onClick={handleCreate}
           disabled={createMutation.isPending || !name.trim()}
         >
           Create
-        </button>
+        </Button>
       </div>
 
       {/* Dataset list */}
