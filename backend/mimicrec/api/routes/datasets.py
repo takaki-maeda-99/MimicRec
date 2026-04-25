@@ -273,9 +273,9 @@ async def annotate_all_episodes(
     request: Request, ds: str,
     body: BatchAnnotateRequest = BatchAnnotateRequest(),
 ):
-    """Annotate ALL episodes in a dataset with subtask labels."""
-    import asyncio
+    """Start batch annotation. Returns immediately, progress via GET."""
     from mimicrec.annotator.subtask import annotate_episode, save_annotations
+    import threading
 
     root = get_datasets_root(request.app)
     ds_root = root / ds
@@ -283,33 +283,50 @@ async def annotate_all_episodes(
         raise FileNotFoundError(f"dataset '{ds}' not found")
 
     episodes = list(iter_episodes(ds_root, include_deleted=False))
-    results = []
 
-    for ep in episodes:
-        ep_idx = ep.get("episode_index", 0)
-        try:
-            loop = asyncio.get_running_loop()
-            segments = await loop.run_in_executor(
-                None, annotate_episode, ds_root, ep_idx, body.camera, body.model,
-                body.sample_fps, "cuda", body.prompt,
-            )
-            save_annotations(ds_root, ep_idx, segments)
-            results.append({
-                "episode_index": ep_idx,
-                "status": "ok",
-                "num_subtasks": len(segments),
-                "subtasks": [s.name for s in segments],
-            })
-        except Exception as e:
-            results.append({
-                "episode_index": ep_idx,
-                "status": "error",
-                "error": str(e),
-            })
-
-    return {
+    # Store progress on app.state
+    progress = {
         "dataset": ds,
         "total": len(episodes),
-        "annotated": sum(1 for r in results if r["status"] == "ok"),
-        "results": results,
+        "done": 0,
+        "current_episode": None,
+        "status": "running",
+        "results": [],
     }
+    request.app.state.annotate_progress = progress
+
+    def run():
+        for ep in episodes:
+            ep_idx = ep.get("episode_index", 0)
+            progress["current_episode"] = ep_idx
+            try:
+                segments = annotate_episode(
+                    ds_root, ep_idx, body.camera, body.model,
+                    body.sample_fps, "cuda", body.prompt,
+                )
+                save_annotations(ds_root, ep_idx, segments)
+                progress["results"].append({
+                    "episode_index": ep_idx, "status": "ok",
+                    "num_subtasks": len(segments),
+                    "subtasks": [s.name for s in segments],
+                })
+            except Exception as e:
+                progress["results"].append({
+                    "episode_index": ep_idx, "status": "error", "error": str(e),
+                })
+            progress["done"] += 1
+        progress["status"] = "done"
+        progress["current_episode"] = None
+
+    threading.Thread(target=run, daemon=True).start()
+
+    return {"message": "started", "total": len(episodes)}
+
+
+@router.get("/datasets/{ds}/annotate-progress")
+async def get_annotate_progress(request: Request, ds: str):
+    """Get batch annotation progress."""
+    progress = getattr(request.app.state, "annotate_progress", None)
+    if not progress or progress.get("dataset") != ds:
+        return {"status": "idle", "total": 0, "done": 0}
+    return progress
