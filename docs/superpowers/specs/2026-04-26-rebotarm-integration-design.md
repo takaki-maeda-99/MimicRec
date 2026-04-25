@@ -182,12 +182,18 @@ Daemon is started manually:
     t_mono_ns: ...
   }
   ```
-- The writer (existing) maps the payload into parquet rows via the
-  unchanged `sample_bundle_to_row` path. Because the daemon already
-  computed EE pose, the backend does NOT need a local FKService for
-  this robot — the writer's `fk` parameter stays `None` for reBotArm,
-  and the `state_hub` includes `ee_pos / ee_rotvec / gripper_pos`
-  directly from the most recent state payload.
+- **EE pose path (decided):** the daemon computes EE in the
+  `read_state` payload, so the backend does NOT load an FKService for
+  reBotArm. To carry this through the existing pipeline, `RobotState`
+  is extended with optional `ee_pos: np.ndarray | None`,
+  `ee_rotvec: np.ndarray | None`, `gripper_pos: float | None` fields
+  (default None). `ReBotArmZmqAdapter.read_state()` populates them
+  from the payload; `SO101Adapter.read_state()` leaves them None and
+  the existing writer-side FKService fills them in. The writer-row
+  builder prefers the values already on `RobotState` and falls back
+  to `fk.pose(...)` only when they are None. The state_hub does the
+  same. This keeps a single column schema regardless of which path
+  produced the EE values.
 
 ### Replay
 
@@ -241,8 +247,13 @@ samples it every tick:
 ### E-stop API
 
 - `{"cmd":"estop"}` → immediate `disable_torque`, `safety_state = "estop"`
-- `{"cmd":"clear_estop"}` → only succeeds if temperature OK and motor
-  fault registers clear
+- `{"cmd":"clear_estop"}` → succeeds only when ALL of these hold:
+  - max motor temperature < `temperature_recover_c` (60 °C)
+  - no active heartbeat timeout (heartbeats have resumed)
+  - motor fault registers (motorbridge SDK) are clear
+  - no active torque-limit fault from the latest control tick
+  Otherwise responds `{ok:false, reason:"..."}` with the failing
+  condition; the operator (or the UI) decides whether to retry.
 - UI exposes a large red E-stop button in the Record page when robot
   is `rebotarm`
 
@@ -301,12 +312,10 @@ samples it every tick:
   limits in MimicRec's daemon YAML, redundant with reBotArm's own YAML.
   This is intentional for independence but means two places to update.
   Could fold into a single source if it becomes painful.
-- **EE columns in `state_hub`.** SO-101 computes EE in MimicRec via
-  `FKService`. reBotArm receives EE in the state payload from the
-  daemon. The state_hub will need a small branch: if the active
-  adapter exposes EE in its read_state payload, pass it through;
-  otherwise fall back to the FKService path. The cleanest path is to
-  make the adapter optionally return EE pose alongside RobotState.
+- ~~**EE columns in `state_hub`.**~~ Resolved in §5: `RobotState`
+  carries optional EE fields; the writer / state_hub prefer them over
+  the FKService when present. SO-101 leaves them None (FKService
+  fills in), reBotArm always populates them from the daemon payload.
 - **Hardware E-stop (option 9).** Deferred. When implemented, the
   daemon will gain a GPIO monitor task and the relay will cut motor
   power directly — no software path involved.
