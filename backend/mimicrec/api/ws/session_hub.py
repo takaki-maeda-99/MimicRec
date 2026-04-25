@@ -19,6 +19,10 @@ def _build_ws_state(app) -> dict:
         "dataset": meta.get("dataset"),
         "task": meta.get("task"),
         "robot": meta.get("robot"),
+        "teleop": meta.get("teleop"),
+        "mapper": meta.get("mapper"),
+        "cameras": meta.get("cameras", []),
+        "fps": meta.get("fps"),
     }
 
 
