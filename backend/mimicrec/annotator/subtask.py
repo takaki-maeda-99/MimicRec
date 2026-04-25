@@ -81,7 +81,7 @@ def annotate_episode(
     ds_root: Path,
     episode_idx: int,
     camera_name: str = "front",
-    model_name: str = "google/gemma-4-E4B",
+    model_name: str = "google/gemma-4-E2B-it",
     sample_fps: float = 1.0,
     device: str = "cuda",
     custom_prompt: str | None = None,

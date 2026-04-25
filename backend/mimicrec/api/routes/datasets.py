@@ -219,14 +219,14 @@ async def get_episode_frames(request: Request, ds: str, idx: int):
 
 class AnnotateRequest(_BaseModel):
     camera: str = "front"
-    model: str = "google/gemma-4-E4B"
+    model: str = "google/gemma-4-E2B-it"
     sample_fps: float = 1.0
     prompt: str | None = None
 
 
 class BatchAnnotateRequest(_BaseModel):
     camera: str = "front"
-    model: str = "google/gemma-4-E4B"
+    model: str = "google/gemma-4-E2B-it"
     sample_fps: float = 1.0
     prompt: str | None = None
 

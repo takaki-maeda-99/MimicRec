@@ -36,7 +36,7 @@ Return ONLY the JSON array, no other text.`;
 export default function SubtaskAnnotator({ ds, idx, cameras }: Props) {
   const [prompt, setPrompt] = useState(DEFAULT_PROMPT);
   const [camera, setCamera] = useState(cameras[0] || "front");
-  const [model, setModel] = useState("google/gemma-4-E4B");
+  const [model, setModel] = useState("google/gemma-4-E2B-it");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<AnnotateResult | null>(null);
   const [error, setError] = useState<string | null>(null);
