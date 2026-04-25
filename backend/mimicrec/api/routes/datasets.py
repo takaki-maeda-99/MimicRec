@@ -42,6 +42,16 @@ async def list_datasets(request: Request):
     return result
 
 
+@router.delete("/datasets/{ds}", status_code=204)
+async def delete_dataset(request: Request, ds: str):
+    import shutil
+    root = get_datasets_root(request.app)
+    ds_root = root / ds
+    if not ds_root.exists():
+        raise FileNotFoundError(f"dataset '{ds}' not found")
+    shutil.rmtree(ds_root)
+
+
 @router.post("/datasets")
 async def create_dataset(request: Request, body: CreateDatasetRequest):
     root = get_datasets_root(request.app)

@@ -4,6 +4,17 @@ import type { DatasetSummary, EpisodeSummary, SessionStatePayload } from "./type
 
 // --------------- Datasets ---------------
 
+export function useDeleteDataset() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (name: string) =>
+      fetch(`/api/datasets/${name}`, { method: "DELETE" }).then((r) => {
+        if (!r.ok) throw new Error("delete failed");
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["datasets"] }),
+  });
+}
+
 export function useDatasets() {
   return useQuery({
     queryKey: ["datasets"],

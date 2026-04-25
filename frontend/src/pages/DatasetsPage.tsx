@@ -1,12 +1,13 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { useDatasets, useCreateDataset } from "../api/queries";
+import { useDatasets, useCreateDataset, useDeleteDataset } from "../api/queries";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 
 export default function DatasetsPage() {
   const { data: datasets, isLoading } = useDatasets();
   const createMutation = useCreateDataset();
+  const deleteMutation = useDeleteDataset();
   const [name, setName] = useState("");
   const [fps, setFps] = useState(30);
 
@@ -78,7 +79,7 @@ export default function DatasetsPage() {
                 </td>
                 <td className="py-3 text-gray-600">{ds.num_episodes}</td>
                 <td className="py-3 text-gray-600">{ds.total_frames}</td>
-                <td className="py-3">
+                <td className="py-3 flex gap-3">
                   <a
                     href={`/api/datasets/${ds.name}/archive`}
                     className="text-sm text-gray-600 hover:text-gray-900"
@@ -86,6 +87,16 @@ export default function DatasetsPage() {
                   >
                     Download
                   </a>
+                  <button
+                    className="text-sm text-red-600 hover:text-red-800"
+                    onClick={() => {
+                      if (confirm(`Delete dataset "${ds.name}" and all its episodes?`)) {
+                        deleteMutation.mutate(ds.name);
+                      }
+                    }}
+                  >
+                    Delete
+                  </button>
                 </td>
               </tr>
             ))}
