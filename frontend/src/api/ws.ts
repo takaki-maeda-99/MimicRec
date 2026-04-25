@@ -30,7 +30,9 @@ export class WsConnection {
         }
       }
     };
-    this.ws.onclose = () => {
+    this.ws.onclose = (ev) => {
+      // Don't reconnect if server explicitly rejected (1008 = policy violation)
+      if (ev.code === 1008) return;
       this.reconnectTimer = setTimeout(() => this.connect(), 2000);
     };
     this.ws.onerror = () => this.ws?.close();
