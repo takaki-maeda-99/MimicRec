@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { useSessionStore } from "../state/session-store.ts";
-import { useEndSession } from "../api/queries.ts";
+import { useEndSession, useSessionState } from "../api/queries.ts";
 import { WsConnection } from "../api/ws.ts";
 import SessionConfigForm from "../components/SessionConfigForm.tsx";
 import CameraPreview from "../components/CameraPreview.tsx";
@@ -9,14 +9,26 @@ import KeyboardTeleop from "../components/KeyboardTeleop.tsx";
 import type { EpisodeProgress, ReplayProgress } from "../api/types.ts";
 
 export default function RecordPage() {
-  const sessionState = useSessionStore(s => s.state);
-  const subState = useSessionStore(s => s.subState);
-  const cameras = useSessionStore(s => s.cameras);
-  const setSessionState = useSessionStore(s => s.setSessionState);
-  const setEpisodeProgress = useSessionStore(s => s.setEpisodeProgress);
-  const setReplayProgress = useSessionStore(s => s.setReplayProgress);
-  const setError = useSessionStore(s => s.setError);
+  const sessionState = useSessionStore((s) => s.state);
+  const subState = useSessionStore((s) => s.subState);
+  const cameras = useSessionStore((s) => s.cameras);
+  const dataset = useSessionStore((s) => s.dataset);
+  const robot = useSessionStore((s) => s.robot);
+  const teleop = useSessionStore((s) => s.teleop);
+  const mode = useSessionStore((s) => s.mode);
+  const setSessionState = useSessionStore((s) => s.setSessionState);
+  const setEpisodeProgress = useSessionStore((s) => s.setEpisodeProgress);
+  const setReplayProgress = useSessionStore((s) => s.setReplayProgress);
+  const setError = useSessionStore((s) => s.setError);
   const endSession = useEndSession();
+
+  // Restore session state from API on mount (survives page navigation / refresh)
+  const { data: apiState } = useSessionState();
+  useEffect(() => {
+    if (apiState && apiState.state !== "idle") {
+      setSessionState(apiState as unknown as Record<string, unknown>);
+    }
+  }, [apiState, setSessionState]);
 
   // Connect to /ws/session when session is active
   const isIdle = sessionState === "idle";
@@ -28,9 +40,12 @@ export default function RecordPage() {
       const msgData = msg.data as Record<string, unknown> | undefined;
       if (!msgType || !msgData) return;
       if (msgType === "session_state") setSessionState(msgData);
-      if (msgType === "episode_progress") setEpisodeProgress(msgData as unknown as EpisodeProgress);
-      if (msgType === "replay_progress") setReplayProgress(msgData as unknown as ReplayProgress);
-      if (msgType === "error") setError(msgData as unknown as { error: string; message: string });
+      if (msgType === "episode_progress")
+        setEpisodeProgress(msgData as unknown as EpisodeProgress);
+      if (msgType === "replay_progress")
+        setReplayProgress(msgData as unknown as ReplayProgress);
+      if (msgType === "error")
+        setError(msgData as unknown as { error: string; message: string });
     });
     conn.connect();
     return () => conn.disconnect();
@@ -47,16 +62,17 @@ export default function RecordPage() {
 
   return (
     <div className="p-6">
-      <div className="flex items-center justify-between mb-6">
+      {/* Session info bar */}
+      <div className="flex items-center justify-between mb-4">
         <h2 className="text-2xl font-bold">Record</h2>
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-3">
           {subState === "replaying" && (
             <span className="bg-purple-100 text-purple-700 px-3 py-1 rounded-full text-sm font-medium">
-              Replaying... leader-arm input ignored
+              Replaying...
             </span>
           )}
           <button
-            className="text-sm text-gray-600 hover:text-gray-900 border border-gray-300 px-3 py-1 rounded-md"
+            className="text-sm text-red-600 hover:text-red-800 border border-red-300 px-3 py-1 rounded-md"
             onClick={() => endSession.mutate()}
           >
             End Session
@@ -64,10 +80,38 @@ export default function RecordPage() {
         </div>
       </div>
 
+      {/* Active session summary */}
+      <div className="bg-gray-100 rounded-lg px-4 py-2 mb-6 flex gap-6 text-sm text-gray-600">
+        <span>
+          <span className="text-gray-400">Robot:</span>{" "}
+          <span className="font-medium text-gray-800">{robot}</span>
+        </span>
+        <span>
+          <span className="text-gray-400">Mode:</span>{" "}
+          <span className="font-medium text-gray-800">{mode}</span>
+        </span>
+        <span>
+          <span className="text-gray-400">Teleop:</span>{" "}
+          <span className="font-medium text-gray-800">{teleop || "—"}</span>
+        </span>
+        <span>
+          <span className="text-gray-400">Dataset:</span>{" "}
+          <span className="font-medium text-gray-800">{dataset}</span>
+        </span>
+        {cameras.length > 0 && (
+          <span>
+            <span className="text-gray-400">Cameras:</span>{" "}
+            <span className="font-medium text-gray-800">
+              {cameras.join(", ")}
+            </span>
+          </span>
+        )}
+      </div>
+
       {/* Camera previews */}
       {cameras.length > 0 && sessionState !== "review" && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
-          {cameras.map(cam => (
+          {cameras.map((cam) => (
             <CameraPreview key={cam} camName={cam} />
           ))}
         </div>

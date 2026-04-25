@@ -1,5 +1,7 @@
+import { useEffect } from "react";
 import { NavLink, Outlet } from "react-router-dom";
 import { useSessionStore } from "../state/session-store";
+import { useSessionState } from "../api/queries";
 import { Badge } from "./ui/badge";
 
 const navItems = [
@@ -9,6 +11,7 @@ const navItems = [
 
 function SessionBadge() {
   const state = useSessionStore((s) => s.state);
+  const robot = useSessionStore((s) => s.robot);
   const variantMap: Record<string, "outline" | "success" | "destructive" | "warning"> = {
     idle: "outline",
     ready: "success",
@@ -16,13 +19,28 @@ function SessionBadge() {
     review: "warning",
   };
   return (
-    <Badge variant={variantMap[state] || "outline"}>
-      {state.toUpperCase()}
-    </Badge>
+    <div className="flex flex-col items-end gap-0.5">
+      <Badge variant={variantMap[state] || "outline"}>
+        {state.toUpperCase()}
+      </Badge>
+      {state !== "idle" && robot && (
+        <span className="text-[10px] text-gray-400">{robot}</span>
+      )}
+    </div>
   );
 }
 
 export default function Layout() {
+  // Sync session state from API on app load (survives refresh)
+  const { data: apiState } = useSessionState();
+  const setSessionState = useSessionStore((s) => s.setSessionState);
+
+  useEffect(() => {
+    if (apiState) {
+      setSessionState(apiState as unknown as Record<string, unknown>);
+    }
+  }, [apiState, setSessionState]);
+
   return (
     <div className="flex h-screen bg-gray-50">
       <aside className="w-56 bg-white border-r border-gray-200 flex flex-col">

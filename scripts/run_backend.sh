@@ -10,5 +10,5 @@ export MIMICREC_DATASETS_ROOT="$REPO_ROOT/datasets"
 mkdir -p "$MIMICREC_DATASETS_ROOT"
 
 exec "$REPO_ROOT/.venv/bin/python" -m uvicorn mimicrec.api.app:app \
-    --host 0.0.0.0 --port 8000 --reload \
+    --host 0.0.0.0 --port 8000 \
     --app-dir "$REPO_ROOT/backend"
