@@ -66,9 +66,9 @@ export default function ReplayPage() {
 
         {/* Video + replay controls */}
         <div className="lg:col-span-2 space-y-4">
-          {/* Video players — tries common camera names and hides any that 404 */}
+          {/* Video players — show cameras that were used in this episode */}
           <div className="space-y-4">
-            {["front", "wrist", "mock_cam"].map((cam) => (
+            {(episode?.cameras || ["front"]).map((cam: string) => (
               <VideoPlayer key={cam} ds={ds} idx={episodeIdx} cam={cam} />
             ))}
           </div>

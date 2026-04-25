@@ -27,6 +27,7 @@ export interface EpisodeSummary {
   teleop: string | null;
   mode: string;
   recorded_at: string | null;
+  cameras: string[];
 }
 
 export interface TaskSummary {

@@ -80,6 +80,7 @@ class EpisodeSummary(BaseModel):
     teleop: str | None = None
     mode: str
     recorded_at: str | None = None
+    cameras: list[str] = []
 
 
 class TaskSummary(BaseModel):

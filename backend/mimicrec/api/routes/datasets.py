@@ -81,6 +81,7 @@ async def list_episodes(request: Request, ds: str, include_deleted: bool = False
             teleop=ep.get("teleop"),
             mode=ep.get("mode", ""),
             recorded_at=ep.get("recorded_at"),
+            cameras=ep.get("cameras", []),
         )
         for ep in episodes
     ]
@@ -104,6 +105,7 @@ async def get_episode(request: Request, ds: str, idx: int):
                 teleop=ep.get("teleop"),
                 mode=ep.get("mode", ""),
                 recorded_at=ep.get("recorded_at"),
+                cameras=ep.get("cameras", []),
             )
     raise FileNotFoundError(f"episode {idx} not found in dataset '{ds}'")
 
