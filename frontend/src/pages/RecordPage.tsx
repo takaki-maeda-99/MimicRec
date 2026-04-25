@@ -6,6 +6,7 @@ import SessionConfigForm from "../components/SessionConfigForm.tsx";
 import CameraPreview from "../components/CameraPreview.tsx";
 import RecordingControls from "../components/RecordingControls.tsx";
 import KeyboardTeleop from "../components/KeyboardTeleop.tsx";
+import EEMonitor from "../components/EEMonitor.tsx";
 import type { EpisodeProgress, ReplayProgress } from "../api/types.ts";
 
 export default function RecordPage() {
@@ -123,6 +124,11 @@ export default function RecordPage() {
           <KeyboardTeleop enabled={sessionState !== "review"} />
         </div>
       )}
+
+      {/* Live end-effector pose (shows only if backend sends ee_pos) */}
+      <div className="mb-6">
+        <EEMonitor enabled />
+      </div>
 
       {/* Recording controls */}
       <RecordingControls />

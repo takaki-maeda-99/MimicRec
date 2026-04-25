@@ -15,12 +15,25 @@ async def ws_state(websocket: WebSocket):
             if sm:
                 s = sm._robot_state_slot.peek()
                 if s is not None:
-                    await websocket.send_json({
+                    payload: dict = {
                         "joint_pos": s.value.joint_pos.tolist(),
                         "joint_vel": s.value.joint_vel.tolist(),
                         "joint_effort": s.value.joint_effort.tolist(),
                         "t_mono_ns": s.t_mono_ns,
-                    })
+                    }
+                    fk = getattr(sm, "_fk", None)
+                    if fk is not None:
+                        try:
+                            n = fk.n_kin_joints
+                            ee_pos, ee_rotvec = fk.pose(s.value.joint_pos[:n])
+                            payload["ee_pos"] = ee_pos.tolist()
+                            payload["ee_rotvec"] = ee_rotvec.tolist()
+                            if s.value.joint_pos.shape[0] > n:
+                                payload["gripper_pos"] = float(s.value.joint_pos[n])
+                        except Exception:
+                            # FK errors here shouldn't kill the state stream
+                            pass
+                    await websocket.send_json(payload)
             # Use receive with timeout for clean disconnect handling
             try:
                 await asyncio.wait_for(websocket.receive_text(), timeout=1 / 15)
