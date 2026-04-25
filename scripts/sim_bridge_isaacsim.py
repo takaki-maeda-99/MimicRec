@@ -1,22 +1,22 @@
 #!/usr/bin/env python
 """Isaac Sim bridge server for MimicRec.
 
-Run this script *inside* Isaac Sim's Python environment:
+Run inside Isaac Sim's Python:
+    ~/isaacsim/python.sh scripts/sim_bridge_isaacsim.py
 
-    ~/isaacsim/python.sh scripts/sim_bridge_isaacsim.py --usd_path /path/to/scene.usd
+This spawns a Franka robot (or any specified robot) in Isaac Sim and
+bridges it to MimicRec via ZMQ.
 
-It starts a ZMQ REP server on port 5556 (robot) and a ZMQ PUB server
-on port 5557 (cameras), bridging MimicRec's adapter protocol to Isaac Sim's
-Articulation API.
-
-Requirements:
-    - Isaac Sim 5.0+ with a scene containing an ArticulationRootAPI prim
-    - zmq (pip install pyzmq inside Isaac Sim's python)
+Options:
+    --robot franka          Use built-in Franka Panda (default)
+    --robot usd:/path.usd   Load a custom USD scene
+    --headless              Run without GUI
+    --robot_port 5556       ZMQ REP port for robot commands
+    --camera_port 5557      ZMQ PUB port for camera frames
 """
 from __future__ import annotations
 
 import argparse
-import json
 import time
 
 import numpy as np
@@ -24,137 +24,111 @@ import numpy as np
 
 def main():
     parser = argparse.ArgumentParser(description="Isaac Sim bridge for MimicRec")
-    parser.add_argument("--usd_path", required=True, help="Path to USD scene with robot")
-    parser.add_argument("--robot_prim", default="/World/Robot", help="Prim path to the robot articulation root")
-    parser.add_argument("--robot_port", type=int, default=5556, help="ZMQ REP port for robot commands")
-    parser.add_argument("--camera_port", type=int, default=5557, help="ZMQ PUB port for camera frames")
-    parser.add_argument("--camera_prims", nargs="*", default=[], help="Prim paths for cameras (e.g. /World/Camera_front)")
-    parser.add_argument("--headless", action="store_true", help="Run headless (no GUI)")
+    parser.add_argument("--robot", default="franka", help="'franka' or 'usd:/path/to/scene.usd'")
+    parser.add_argument("--robot_prim", default=None, help="Articulation prim path (auto-detected if omitted)")
+    parser.add_argument("--robot_port", type=int, default=5556)
+    parser.add_argument("--camera_port", type=int, default=5557)
+    parser.add_argument("--headless", action="store_true")
     args = parser.parse_args()
 
-    # --- Isaac Sim setup ---
+    # --- Isaac Sim startup ---
     from isaacsim import SimulationApp
     sim_app = SimulationApp({"headless": args.headless})
 
-    import omni.usd
     from isaacsim.core.api import World
-    from isaacsim.core.prims import Articulation
+    from isaacsim.core.prims import SingleArticulation
+    import isaacsim.core.utils.stage as stage_utils
+    from isaacsim.storage.native import get_assets_root_path
 
-    # Load scene
-    omni.usd.get_context().open_stage(args.usd_path)
     world = World(stage_units_in_meters=1.0)
     world.scene.add_default_ground_plane()
 
-    # Get robot articulation
-    robot = Articulation(prim_paths_expr=args.robot_prim)
+    # --- Spawn robot ---
+    if args.robot == "franka":
+        asset_path = get_assets_root_path() + "/Isaac/Robots/Franka/franka_instanceable.usd"
+        prim_path = args.robot_prim or "/World/Franka"
+        stage_utils.add_reference_to_stage(asset_path, prim_path)
+        robot = SingleArticulation(prim_path=prim_path, name="robot")
+    elif args.robot.startswith("usd:"):
+        usd_path = args.robot[4:]
+        import omni.usd
+        omni.usd.get_context().open_stage(usd_path)
+        prim_path = args.robot_prim or "/World/Robot"
+        robot = SingleArticulation(prim_path=prim_path, name="robot")
+    else:
+        print(f"Unknown robot: {args.robot}")
+        return
+
     world.reset()
     robot.initialize()
 
     dof = robot.num_dof
-    joint_names = [f"joint_{i}" for i in range(dof)]  # Override with actual names if available
+    joint_names = [f"joint_{i}" for i in range(dof)]
     try:
         joint_names = list(robot.dof_names)
     except Exception:
         pass
 
-    print(f"Robot: {args.robot_prim}, DOF: {dof}, Joints: {joint_names}")
+    print(f"Robot: {prim_path}, DOF: {dof}, Joints: {joint_names}")
 
-    # --- ZMQ setup ---
+    # --- ZMQ ---
     import zmq
     ctx = zmq.Context()
 
-    # Robot command socket (REQ/REP)
     robot_sock = ctx.socket(zmq.REP)
     robot_sock.bind(f"tcp://*:{args.robot_port}")
-    robot_sock.setsockopt(zmq.RCVTIMEO, 100)  # 100ms timeout for non-blocking polling
-    print(f"Robot bridge listening on port {args.robot_port}")
+    robot_sock.setsockopt(zmq.RCVTIMEO, 50)
 
-    # Camera socket (PUB)
     cam_sock = ctx.socket(zmq.PUB)
     cam_sock.bind(f"tcp://*:{args.camera_port}")
-    print(f"Camera bridge publishing on port {args.camera_port}")
 
-    # Camera setup
-    cameras = {}
-    if args.camera_prims:
-        import omni.replicator.core as rep
-        for cam_prim in args.camera_prims:
-            cam_name = cam_prim.split("/")[-1].lower()
-            try:
-                rp = rep.create.render_product(cam_prim, (640, 480))
-                cameras[cam_name] = rp
-                print(f"Camera: {cam_name} ({cam_prim})")
-            except Exception as e:
-                print(f"Warning: could not create camera for {cam_prim}: {e}")
+    print(f"Bridge: robot={args.robot_port}, camera={args.camera_port}")
+    print("Ready. Ctrl+C to stop.")
 
-    # --- Main loop ---
-    print("Bridge running. Ctrl+C to stop.")
     frame_count = 0
     try:
         while sim_app.is_running():
             world.step(render=not args.headless)
 
-            # Handle robot commands (non-blocking)
             try:
                 msg = robot_sock.recv_json(zmq.NOBLOCK)
                 cmd = msg.get("cmd")
 
                 if cmd == "connect":
-                    robot_sock.send_json({
-                        "ok": True,
-                        "dof": dof,
-                        "joint_names": joint_names,
-                    })
-
+                    robot_sock.send_json({"ok": True, "dof": dof, "joint_names": joint_names})
                 elif cmd == "read_state":
-                    pos = robot.get_joint_positions().flatten().tolist()
-                    vel = robot.get_joint_velocities().flatten().tolist()
-                    effort = [0.0] * dof  # Isaac Sim doesn't always expose effort
-                    try:
-                        eff = robot.get_applied_joint_efforts()
-                        if eff is not None:
-                            effort = eff.flatten().tolist()
-                    except Exception:
-                        pass
+                    pos = robot.get_joint_positions()
+                    vel = robot.get_joint_velocities()
                     robot_sock.send_json({
-                        "joint_pos": pos,
-                        "joint_vel": vel,
-                        "joint_effort": effort,
+                        "joint_pos": pos.flatten().tolist() if pos is not None else [0.0] * dof,
+                        "joint_vel": vel.flatten().tolist() if vel is not None else [0.0] * dof,
+                        "joint_effort": [0.0] * dof,
                     })
-
                 elif cmd == "send_command":
                     q = np.array(msg["q"], dtype=np.float32)
                     robot.set_joint_position_targets(q.reshape(1, -1))
                     robot_sock.send_json({"ok": True})
-
                 elif cmd == "set_mode":
                     robot_sock.send_json({"ok": True})
-
                 elif cmd == "disconnect":
                     robot_sock.send_json({"ok": True})
-
                 else:
-                    robot_sock.send_json({"error": f"unknown command: {cmd}"})
-
+                    robot_sock.send_json({"error": f"unknown: {cmd}"})
             except zmq.Again:
-                pass  # No message waiting
+                pass
 
-            # Publish camera frames at ~15 Hz
-            if frame_count % 4 == 0 and cameras:
-                import cv2
-                for cam_name, rp in cameras.items():
-                    try:
-                        frame = rep.AnnotatorRegistry.get_annotator("rgb").attach(rp)
-                        rgb = frame.get_data()
-                        if rgb is not None:
-                            bgr = cv2.cvtColor(rgb[:, :, :3], cv2.COLOR_RGB2BGR)
-                            _, jpeg = cv2.imencode(".jpg", bgr, [cv2.IMWRITE_JPEG_QUALITY, 70])
-                            cam_sock.send_multipart([
-                                cam_name.encode(),
-                                jpeg.tobytes(),
-                            ])
-                    except Exception:
-                        pass
+            # Camera: publish viewport render at ~15 Hz
+            if frame_count % 4 == 0:
+                try:
+                    from isaacsim.core.utils.viewports import get_viewport_data
+                    rgba = get_viewport_data()
+                    if rgba is not None:
+                        import cv2
+                        bgr = cv2.cvtColor(rgba[:, :, :3], cv2.COLOR_RGB2BGR)
+                        _, jpeg = cv2.imencode(".jpg", bgr, [cv2.IMWRITE_JPEG_QUALITY, 70])
+                        cam_sock.send_multipart([b"sim_front", jpeg.tobytes()])
+                except Exception:
+                    pass
 
             frame_count += 1
 
