@@ -320,7 +320,8 @@ class SessionManager:
                 "start_t_mono_ns": self._episode_start_t_mono_ns or 0,
                 "end_t_mono_ns": now_mono,
                 "duration_sec": (now_mono - (self._episode_start_t_mono_ns or now_mono)) / 1e9,
-                "num_frames": self._metrics.get("writer_rows_written"),
+                # Per-episode count (writer_rows_written is session-cumulative).
+                "num_frames": self._pending.num_frames,
                 "session_boot_t_unix": 0,
                 "session_boot_t_mono_ns": 0,
                 "resolved_config": self._resolved_config,

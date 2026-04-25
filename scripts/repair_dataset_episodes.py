@@ -39,14 +39,17 @@ def main() -> int:
     rows = pq.read_table(meta_pq).to_pylist()
     data_dir = ds / "data" / "chunk-000"
 
-    # Find the most recent metadata entry for each on-disk parquet.
-    # On-disk filename = episode_NNNNNN.parquet → idx = the file's basename.
-    on_disk_idxs = set()
+    # Find the actual row count per on-disk parquet file. We use this to
+    # repair the metadata's `length` / `num_frames` fields, which an older
+    # bug populated with the session-cumulative writer counter instead of
+    # the per-episode count.
+    on_disk: dict[int, int] = {}
     for f in data_dir.glob("episode_*.parquet"):
         try:
-            on_disk_idxs.add(int(f.stem.split("_", 1)[1]))
+            idx = int(f.stem.split("_", 1)[1])
         except ValueError:
-            pass
+            continue
+        on_disk[idx] = pq.read_table(f).num_rows
 
     # Keep last metadata row per (episode_index) — most recent wins.
     # In write order, append-only metadata has the most recent row last.
@@ -55,10 +58,20 @@ def main() -> int:
         idx = int(r["episode_index"])
         by_idx[idx] = r  # last write wins
 
-    # Drop any whose data files don't exist
-    surviving = [r for idx, r in sorted(by_idx.items()) if idx in on_disk_idxs]
+    # Drop any whose data files don't exist; repair length to actual row count.
+    surviving = []
+    for idx, r in sorted(by_idx.items()):
+        if idx not in on_disk:
+            continue
+        actual = on_disk[idx]
+        old = r.get("length", r.get("num_frames", -1))
+        if old != actual:
+            print(f"  ep{idx}: length {old} -> {actual} (corrected)")
+            r["length"] = actual
+            r["num_frames"] = actual
+        surviving.append(r)
     print(f"original rows: {len(rows)}")
-    print(f"unique on-disk indices: {len(on_disk_idxs)}")
+    print(f"unique on-disk indices: {len(on_disk)}")
     print(f"surviving metadata rows: {len(surviving)}")
 
     if args.dry_run:

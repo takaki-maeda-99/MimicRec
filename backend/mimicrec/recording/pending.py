@@ -36,6 +36,11 @@ class PendingEpisode:
     def episode_index(self) -> int:
         return self._episode_index
 
+    @property
+    def num_frames(self) -> int:
+        """Number of rows recorded for THIS episode (resets per pending)."""
+        return len(self._rows)
+
     def open_video_writers(self, fps: int, cameras: dict[str, tuple[int, int]]) -> None:
         """Open one Mp4EpisodeWriter per camera. `cameras` maps name -> (width, height)."""
         from mimicrec.cameras.recording import Mp4EpisodeWriter
