@@ -150,19 +150,25 @@ def annotate_episode(
         )
 
     # Build prompt with images
-    prompt = custom_prompt if custom_prompt else _build_prompt(len(sampled))
+    text_prompt = custom_prompt if custom_prompt else _build_prompt(len(sampled))
     images = [Image.fromarray(frame) for _, frame in sampled]
 
-    # Create conversation format for Gemma 4
-    image_tokens = "\n".join([f"<start_of_image>" for _ in images])
-    full_prompt = f"{image_tokens}\n\n{prompt}"
-
+    # Use chat template for Gemma 4
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                *[{"type": "image", "image": img} for img in images],
+                {"type": "text", "text": text_prompt},
+            ],
+        }
+    ]
+    full_prompt = processor.apply_chat_template(messages, add_generation_prompt=True)
     inputs = processor(
         text=full_prompt,
         images=images,
         return_tensors="pt",
     )
-    # Move inputs to the same device as the model (handles device_map="auto")
     target_device = next(model.parameters()).device
     inputs = inputs.to(target_device)
 
