@@ -115,10 +115,14 @@ def annotate_episode(
 
     logger.info(f"Annotating episode {episode_idx}: {total_frames} frames, camera={camera_name}")
 
-    # Extract sample frames
+    # Extract sample frames (cap at 8 to fit in GPU memory)
+    MAX_FRAMES = 8
     sampled = _extract_frames(video_path, sample_fps=sample_fps)
     if not sampled:
         raise RuntimeError("no frames extracted")
+    if len(sampled) > MAX_FRAMES:
+        step = len(sampled) / MAX_FRAMES
+        sampled = [sampled[int(i * step)] for i in range(MAX_FRAMES)]
     logger.info(f"Sampled {len(sampled)} frames from video")
 
     # Load model
@@ -131,7 +135,7 @@ def annotate_episode(
         free_vram = 0
         if torch.cuda.is_available():
             free_vram = torch.cuda.mem_get_info()[0] / 1e9
-        device = "cuda" if free_vram > 12.0 else "cpu"
+        device = "cuda" if free_vram > 6.0 else "cpu"
 
     logger.info(f"Loading {model_name} on {device} (free VRAM: {free_vram:.1f}GB)...")
     processor = AutoProcessor.from_pretrained(model_name)
