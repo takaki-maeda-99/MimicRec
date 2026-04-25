@@ -145,7 +145,10 @@ def annotate_episode(
         text=full_prompt,
         images=images,
         return_tensors="pt",
-    ).to(device)
+    )
+    # Move inputs to the same device as the model (handles device_map="auto")
+    target_device = next(model.parameters()).device
+    inputs = inputs.to(target_device)
 
     # Generate
     logger.info("Running inference...")
