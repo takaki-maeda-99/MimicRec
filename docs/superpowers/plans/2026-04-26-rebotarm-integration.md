@@ -6,7 +6,7 @@
 
 **Architecture:** MimicRec backend (3.12) sends `connect / read_state / send_command / set_mode / heartbeat / estop / clear_estop / get_safety_status` over ZMQ REQ/REP on `:5558`. The daemon (3.10) owns the 500 Hz control loop, all safety responsibility, the motorbridge SDK, the reBotArm URDF + Pinocchio FK, and ramps torque safely on disconnect. EE pose is computed in the daemon and rides in the `read_state` payload via new optional fields on `RobotState`. The mock daemon (3.12) implements the same protocol with synthesized state for CI tests.
 
-**Tech Stack:** Python 3.12 (backend), Python 3.10 (daemon), ZMQ + msgpack, FastAPI, asyncio, pytest, motorbridge SDK, reBotArm_control_py, Pinocchio, React + TypeScript (UI).
+**Tech Stack:** Python 3.12 (backend), Python 3.10 (daemon), ZMQ (JSON wire format), FastAPI, asyncio, pytest, motorbridge SDK, reBotArm_control_py, Pinocchio, React + TypeScript (UI).
 
 **Spec:** `docs/superpowers/specs/2026-04-26-rebotarm-integration-design.md`
 
@@ -1225,8 +1225,14 @@ def main() -> int:
                 state["last_cmd_q"] = msg.get("q", [])
                 sock.send_json({"ok": True})
         elif cmd == CMD_SET_MODE:
-            state["mode"] = msg.get("mode", MODE_GRAVITY_COMP)
-            sock.send_json({"ok": True, "mode": state["mode"]})
+            m = msg.get("mode", MODE_GRAVITY_COMP)
+            # Validate to match the real daemon's behavior so misuse is
+            # caught in integration tests.
+            if m not in (MODE_POSITION, MODE_GRAVITY_COMP):
+                sock.send_json({"ok": False, "error": f"unknown mode: {m}"})
+            else:
+                state["mode"] = m
+                sock.send_json({"ok": True, "mode": m})
         elif cmd == CMD_ESTOP:
             state["fault"] = SAFETY_ESTOP
             sock.send_json({"ok": True})
@@ -1421,7 +1427,6 @@ exchanges JSON messages with it.
 from __future__ import annotations
 
 import asyncio
-import functools
 
 import numpy as np
 import zmq
@@ -1774,7 +1779,10 @@ request_timeout_ms: 500
     pytest.skip("executor: complete this against the existing API harness")
 ```
 
-> **Executor note:** the harness for spawning a `SessionManager` from a config differs slightly between this codebase's existing API tests; rather than guess, the executor should read `tests/api/test_*.py` to find the closest existing pattern and mirror it. The skip is intentional until that pattern is determined; remove it after wiring.
+> **Executor note — concrete patterns to mirror:**
+> - For SessionManager-direct construction (no API layer): see `tests/integration/test_session_lifecycle_mock.py` — the `_make_sm(...)` helper / equivalent shows how to build a SessionManager against a mock adapter.
+> - For HTTP-API-driven tests: see `tests/api/test_session_routes.py` — uses an `httpx.AsyncClient` against `mimicrec.api.app:app` with a temporary `MIMICREC_DATASETS_ROOT`.
+> Pick whichever fits — the assertion target (parquet has EE columns) is the same. The skip below should be removed once wired.
 
 - [ ] **Step 2: Run with the test enabled, verify pass**
 
@@ -1941,11 +1949,12 @@ async def test_estop_returns_404_when_no_session():
         assert r.status_code in (404, 409)
 
 
-# Executor note: a "happy path" test for /api/robot/estop requires a
-# session running with the rebotarm adapter pointing at the mock
-# daemon. Mirror tests/api/test_session*.py for the session-start
-# pattern. Not stubbed here because the project's API test fixtures
-# evolve.
+# Executor note: a happy-path test for /api/robot/estop requires a
+# running session with the rebotarm adapter against the mock daemon.
+# Pattern to mirror: tests/api/test_session_routes.py — set up a
+# session via POST /api/session/start with a temp robot YAML pointing
+# at the mock daemon's port (same as Task 11), then POST /api/robot/
+# estop and assert 200 + side effect (subsequent send_command rejects).
 ```
 
 - [ ] **Step 2: Run, expect FAIL or 404 from missing route**
@@ -2123,6 +2132,21 @@ This is the only Python 3.10 code. Imports `motorbridge`, `reBotArm_control_py.a
 > - `reBotArm_control_py/example/9_gravity_compensation.py`
 > - `reBotArm_control_py/example/10_gravity_compensation_lock.py`
 > - `reBotArm_control_py/example/4_pos_vel_control.py`
+>
+> **Verify before writing:** the SDK API names assumed below
+> (`reBotArm_control_py.kinematics.load_robot_model`,
+> `reBotArm_control_py.dynamics.load_dynamics_model` /
+> `compute_generalized_gravity`, `arm.get_temperatures()`,
+> `arm.get_torques()`) are best-effort guesses from the examples.
+> Confirm they exist in the actual SDK; substitute the real names.
+>
+> **Threading model:** `arm.start_control_loop(callback, rate=...)` —
+> example 9 lets the main thread spin in `time.sleep(0.01)` while the
+> control loop runs in its own thread. Confirm this in the example;
+> if `start_control_loop` is in fact blocking, wrap the ZMQ REP loop
+> below in a `threading.Thread(daemon=True).start()` and run the
+> control loop on the main thread instead. The plan assumes the
+> example-9 pattern (control loop is non-blocking after start).
 
 - [ ] **Step 1: Implement `ee_pose.py`**
 
