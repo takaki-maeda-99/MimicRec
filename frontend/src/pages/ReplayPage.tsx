@@ -2,6 +2,7 @@ import { useParams, Link } from "react-router-dom";
 import { useEpisodes, useReplayStart, useReplayStop } from "../api/queries";
 import { useSessionStore } from "../state/session-store";
 import VideoPlayer from "../components/VideoPlayer";
+import JointPlot from "../components/JointPlot";
 
 export default function ReplayPage() {
   const { ds, idx } = useParams<{ ds: string; idx: string }>();
@@ -106,6 +107,12 @@ export default function ReplayPage() {
             <p className="text-red-600 text-sm">{(replayStart.error as Error).message}</p>
           )}
         </div>
+      </div>
+
+      {/* Joint angle plot */}
+      <div className="mt-8 bg-white rounded-lg border border-gray-200 p-4">
+        <h3 className="text-sm font-medium text-gray-500 mb-3">Joint Data</h3>
+        <JointPlot ds={ds} idx={episodeIdx} />
       </div>
     </div>
   );
