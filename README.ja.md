@@ -20,7 +20,7 @@
 |-------|-----------------|----------------|------|
 | SO-101 | LeRobot `SOFollower` (Feetech STS3215) | 非対応（重力補償なし） | 動作確認済み |
 | SO Leader | LeRobot `SOLeader` テレオペ | — | 動作確認済み |
-| reBot Arm B601-DM | `reBotArm_control_py` | 対応 | スタブ実装 (Python 3.10 必要) |
+| reBot Arm B601-DM | `reBotArm_control_py` via ZMQ デーモン | 対応 (重力補償ロック) | 動作確認済み — モックデーモンは CI、実機 smoke は手動 |
 | Mock | 内蔵モックアダプタ | 対応 | テスト用 |
 | Isaac Sim (任意ロボット) | ZMQ ブリッジ | 対応 | 動作確認済み (Franka) |
 
@@ -34,7 +34,7 @@ Browser (React)  ←→  FastAPI + WebSocket  ←→  SessionManager  ←→  Ha
 
 - **Backend**: Python 3.12, FastAPI, asyncio 制御ループ, LeRobot v3 形式
 - **Frontend**: React 19, TypeScript, Vite, TailwindCSS, TanStack Query
-- **88 backend テスト** 全件パス
+- **119 backend テスト** 全件パス
 
 ## クイックスタート
 
