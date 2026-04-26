@@ -1,0 +1,13 @@
+_target_: mimicrec.adapters.rebotarm_zmq.ReBotArmZmqAdapter
+address: tcp://localhost:5558
+heartbeat_interval_ms: 200
+request_timeout_ms: 1000
+replay:
+  ramp_duration_sec: 2
+  max_joint_velocity: 1
+  max_joint_acceleration: 5
+  max_joint_position_jump: 0.3
+  command_timeout_sec: 0.2
+  watchdog_hz: 20
+# No `kinematics:` block needed — the daemon supplies EE pose directly
+# in the read_state payload (RobotState.ee_*).
