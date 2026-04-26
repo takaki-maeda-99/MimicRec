@@ -36,6 +36,12 @@ class RobotState:
     joint_vel: np.ndarray      # float32[dof]
     joint_effort: np.ndarray   # float32[dof]
     t_mono_ns: int = 0
+    # Optional EE pose carried alongside joints. Adapters that compute EE
+    # locally (e.g. a ZMQ daemon holding its own FK) populate these; for
+    # adapters that don't, the writer / state_hub falls back to FKService.
+    ee_pos: np.ndarray | None = None       # float32[3]
+    ee_rotvec: np.ndarray | None = None    # float32[3] axis-angle
+    gripper_pos: float | None = None
 
 
 @dataclass
