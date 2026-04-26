@@ -86,3 +86,27 @@ async def test_estop_blocks_send_command(daemon_port):
         await a.send_joint_command(np.zeros(6, dtype=np.float32))
     finally:
         await a.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_clear_estop_returns_ok_dict(daemon_port):
+    a = ReBotArmZmqAdapter(address=f"tcp://localhost:{daemon_port}",
+                           heartbeat_interval_ms=100)
+    await a.connect()
+    try:
+        result = await a.clear_estop()
+        assert result.get("ok") is True
+    finally:
+        await a.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_double_connect_raises(daemon_port):
+    a = ReBotArmZmqAdapter(address=f"tcp://localhost:{daemon_port}",
+                           heartbeat_interval_ms=100)
+    await a.connect()
+    try:
+        with pytest.raises(Exception):
+            await a.connect()
+    finally:
+        await a.disconnect()

@@ -56,6 +56,8 @@ class ReBotArmZmqAdapter:
     # ---- lifecycle --------------------------------------------------
 
     async def connect(self) -> None:
+        if self._socket is not None:
+            raise HardwareError("ReBotArmZmqAdapter is already connected; call disconnect() first")
         self._ctx = zmq.Context()
         self._socket = self._ctx.socket(zmq.REQ)
         self._socket.setsockopt(zmq.RCVTIMEO, self._request_timeout_ms)
@@ -147,8 +149,20 @@ class ReBotArmZmqAdapter:
 
     # ---- safety ------------------------------------------------------
 
-    async def estop(self) -> None:
-        await self._request({"cmd": CMD_ESTOP})
+    async def estop(self) -> dict:
+        """Trigger E-stop on the daemon. Raises HardwareError if the daemon
+        refuses (e.g. socket dead or daemon-side fault)."""
+        reply = await self._request({"cmd": CMD_ESTOP})
+        if not reply.get("ok"):
+            raise HardwareError(f"daemon refused estop: {reply}")
+        return reply
 
     async def clear_estop(self) -> dict:
-        return await self._request({"cmd": CMD_CLEAR_ESTOP})
+        """Try to clear all latched faults. Returns the daemon reply
+        (callers may need to inspect ``ok`` and ``reason`` because clear
+        gates on temperature / heartbeat / torque). Raises HardwareError
+        only on a transport / unknown-cmd failure (i.e. ``ok`` absent)."""
+        reply = await self._request({"cmd": CMD_CLEAR_ESTOP})
+        if "ok" not in reply:
+            raise HardwareError(f"malformed clear_estop reply: {reply}")
+        return reply
