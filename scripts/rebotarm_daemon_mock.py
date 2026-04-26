@@ -33,7 +33,7 @@ JOINT_NAMES = [f"j{i}" for i in range(1, 7)]
 DOF = 6
 
 
-def _make_payload(t0: float, mode: str) -> dict:
+def _make_payload(t0: float) -> dict:
     t = time.monotonic() - t0
     q = np.array([0.3 * math.sin(t * 0.5 + i * 0.7) for i in range(DOF)], dtype=np.float32)
     qd = np.array([0.15 * math.cos(t * 0.5 + i * 0.7) for i in range(DOF)], dtype=np.float32)
@@ -85,6 +85,17 @@ def main() -> int:
             msg = sock.recv_json()
         except zmq.Again:
             continue
+        except (ValueError, zmq.ZMQError) as e:
+            # REP state machine requires a reply before the next recv,
+            # otherwise the socket desyncs.
+            try:
+                sock.send_json({"ok": False, "error": f"bad request: {e}"})
+            except zmq.ZMQError:
+                pass
+            continue
+        if not isinstance(msg, dict):
+            sock.send_json({"ok": False, "error": "request must be a JSON object"})
+            continue
         cmd = msg.get("cmd")
 
         if cmd == CMD_CONNECT:
@@ -99,7 +110,7 @@ def main() -> int:
             state["last_hb"] = time.monotonic()
             sock.send_json({"ok": True})
         elif cmd == CMD_READ_STATE:
-            payload = _make_payload(state["t0"], state["mode"])
+            payload = _make_payload(state["t0"])
             payload["safety_state"] = state["fault"] or SAFETY_OK
             sock.send_json(payload)
         elif cmd == CMD_SEND_COMMAND:
