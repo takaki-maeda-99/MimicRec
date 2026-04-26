@@ -108,11 +108,17 @@ class SafetyManager:
         return self._estop_active or self._thermal_active or self._torque_active
 
     def try_clear_estop(self, current_temps_c: np.ndarray) -> bool:
-        """Return True if all fault conditions are clear and we can resume.
+        """Try to clear ALL latched faults (estop + thermal + torque).
 
-        Conditions:
+        The name is "estop" because the externally-visible recovery action
+        is "operator clears E-stop" — but a single try_clear_estop call
+        gates on every fault source, since they share the same recovery
+        procedure: confirm the robot is in a safe state and resume.
+
+        Returns True if all gates pass and faults were cleared:
           - max temp < temperature_recover_c
           - heartbeat is fresh (heartbeat_state == OK)
+          - (no torque-fault-specific gate today; it clears alongside the others)
         """
         if float(np.max(current_temps_c)) >= self._limits.temperature_recover_c:
             return False
@@ -127,6 +133,15 @@ class SafetyManager:
     # ---- aggregate state for status payload --------------------------
 
     def overall_state(self, temps_c: Optional[np.ndarray] = None) -> str:
+        """Aggregate the current fault / warning state for status payloads.
+
+        Side effect: when ``temps_c`` is provided, this calls
+        :meth:`evaluate_thermal`, which can latch ``_thermal_active``. That's
+        intentional — a robot whose temperature crossed the fault threshold
+        must be considered faulted, even if the read happened during a
+        "status check" rather than the main control loop. Callers that want
+        a non-mutating read should pass ``temps_c=None``.
+        """
         # priority: estop > thermal > torque > heartbeat > warn > ok
         if self._estop_active:
             return _ESTOP
