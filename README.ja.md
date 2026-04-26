@@ -186,6 +186,18 @@ Isaac Sim なしでテストしたい場合:
 .venv/bin/python scripts/sim_bridge_dummy.py  # ダミーシム on :5556
 ```
 
+### 4. reBotArm (任意)
+
+`reBotArm_control_py` は Python 3.10 必須で、3.12 のバックエンド venv とは
+共有できません。`setup.sh` は `reBotArm_control_py` submodule が存在するときに
+`.venv-rebotarm` を自動で作成します。デーモンは別ターミナルで起動してください:
+
+    .venv-rebotarm/bin/python -m rebotarm_daemon \
+        --config configs/rebotarm_daemon.yaml
+
+その後 MimicRec UI で `robot=rebotarm` を選択すると、Record ページに
+大きな赤い E-stop ボタンが表示されます。
+
 ## キーボードショートカット (Record ページ)
 
 | キー | 動作 |

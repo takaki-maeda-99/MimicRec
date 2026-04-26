@@ -209,6 +209,19 @@ For testing without Isaac Sim:
 .venv/bin/python scripts/sim_bridge_dummy.py  # Fake sim on :5556
 ```
 
+### 4. reBotArm (optional)
+
+`reBotArm_control_py` requires Python 3.10 (cannot share the 3.12
+backend venv). `setup.sh` creates `.venv-rebotarm` automatically when
+the `reBotArm_control_py` submodule is present. Start the daemon in
+a separate terminal:
+
+    .venv-rebotarm/bin/python -m rebotarm_daemon \
+        --config configs/rebotarm_daemon.yaml
+
+Then in MimicRec UI choose `robot=rebotarm`. The Record page will
+show a big red E-stop button.
+
 ## Keyboard shortcuts (Record page)
 
 | Key | Action |
