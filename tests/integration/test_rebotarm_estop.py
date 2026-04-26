@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 
 from mimicrec.adapters.rebotarm_zmq import ReBotArmZmqAdapter
+from mimicrec.adapters.robot import RobotMode
 from mimicrec.errors import HardwareError
 
 REPO = Path(__file__).resolve().parents[2]
@@ -45,6 +46,11 @@ async def test_estop_blocks_and_clear_resumes(mock_daemon):
                            heartbeat_interval_ms=100)
     await a.connect()
     try:
+        # The daemon defaults to gravity-comp mode and rejects send_command
+        # in that mode (mode contract); flip to POSITION first so this test
+        # exercises the estop -> reject -> clear -> accept transitions and
+        # not the orthogonal mode-contract rejection.
+        await a.set_mode(RobotMode.POSITION)
         # baseline: send_command works
         await a.send_joint_command(np.zeros(6, dtype=np.float32))
         # estop

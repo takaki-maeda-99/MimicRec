@@ -110,6 +110,12 @@ class SessionManager:
         self._pending: PendingEpisode | None = None
         self._episode_start_t_mono_ns: int | None = None
 
+        # Replay needs the daemon in POSITION mode; remember what mode the
+        # session was running in so replay_stop can restore it. None = no
+        # mode switch was performed (e.g. adapter doesn't support modes /
+        # set_mode failed soft).
+        self._mode_before_replay: RobotMode | None = None
+
     # ------------------------------------------------------------------
     # Properties
     # ------------------------------------------------------------------
@@ -246,6 +252,27 @@ class SessionManager:
         if self._teleop:
             await self._teleop.connect()
         await self._cameras.start()
+
+        # Align the robot mode with the session's intent. Adapters that
+        # gate send_joint_command on mode (notably the reBotArm daemon)
+        # will silently or noisily refuse otherwise. Hand-teach is the only
+        # mode that wants the controller to leave the arm compliant; all
+        # other session modes need POSITION so the dispatcher can issue
+        # joint commands.
+        target_mode = (
+            RobotMode.GRAVITY_COMP
+            if self.session.mode == SessionMode.HAND_TEACH
+            else RobotMode.POSITION
+        )
+        try:
+            await self._robot.set_mode(target_mode)
+        except (HardwareError, NotImplementedError):
+            # Adapters that don't support set_mode (or fail soft) will
+            # surface mode mismatches via downstream dispatch errors.
+            logger.warning(
+                "robot adapter %r refused set_mode(%s); proceeding",
+                self._robot.name, target_mode,
+            )
 
         # Set current_pending to None initially
         self._current_pending.set(None, t_mono_ns=0)
@@ -394,6 +421,21 @@ class SessionManager:
             )
         if self.session.replay_active:
             raise InvalidTransitionError("another replay is already active")
+
+        # Flip the adapter into POSITION mode BEFORE spawning the replay
+        # task, otherwise the daemon's control loop ignores the position
+        # targets we feed via command_goal_slot. Hand-teach sessions sit in
+        # GRAVITY_COMP, so without this the replay path silently no-ops.
+        # We remember the prior mode and restore it in replay_stop.
+        await self._robot.set_mode(RobotMode.POSITION)
+        # Track what we need to restore. Hand-teach sessions came from
+        # GRAVITY_COMP; teleop already runs in POSITION.
+        self._mode_before_replay = (
+            RobotMode.GRAVITY_COMP
+            if self.session.mode == SessionMode.HAND_TEACH
+            else RobotMode.POSITION
+        )
+
         self._replay_task = asyncio.create_task(run_replay(
             session=self.session,
             trajectory=trajectory,
@@ -406,7 +448,7 @@ class SessionManager:
         ))
 
     async def replay_stop(self) -> None:
-        """Clear replay_active, await replay task."""
+        """Clear replay_active, await replay task, restore prior robot mode."""
         self.session.replay_active = False
         if self._replay_task and not self._replay_task.done():
             self._replay_task.cancel()
@@ -415,6 +457,21 @@ class SessionManager:
             except (asyncio.CancelledError, Exception):
                 pass
         self._replay_task = None
+
+        # Restore the robot mode we flipped in replay_start. We do this in a
+        # separate try block so a transient mode-restore failure on the
+        # adapter doesn't leave _mode_before_replay set (which would mis-
+        # restore on a subsequent replay_stop).
+        if self._mode_before_replay is not None:
+            prev = self._mode_before_replay
+            self._mode_before_replay = None
+            try:
+                await self._robot.set_mode(prev)
+            except (HardwareError, Exception) as e:
+                logger.warning(
+                    "replay_stop: failed to restore robot mode %s: %s",
+                    prev, e,
+                )
 
     async def end(self) -> None:
         """Any -> IDLE. Shut down everything in order."""

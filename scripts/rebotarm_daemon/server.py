@@ -59,6 +59,48 @@ MODE_GRAVITY_COMP = "gravity_comp"
 SAFETY_OK = "ok"
 
 
+def _ramp_disable(arm: RobotArm, n: int, secs: float = 1.0, rate_hz: int = 100) -> None:
+    """Ramp ``kp`` -> 0 over ``secs`` seconds while keeping ``tau_g`` active.
+
+    A QDD arm has no mechanical brakes — calling ``arm.disable()`` while the
+    arm is held against gravity makes it drop. This helper softens the
+    landing by ramping kp to zero (so the position-error term goes away)
+    while still feeding the gravity-comp torque, then returns. The caller
+    is expected to invoke ``arm.disable()``/``arm.disconnect()`` after.
+
+    Race note: ``arm.start_control_loop`` runs its callback on a daemon
+    thread (verified in actuator/arm.py). The reBotArm SDK does not expose
+    a ``stop_control_loop`` API, so the callback may continue issuing its
+    own ``arm.mit(...)`` calls in parallel with this ramp. The SDK's
+    per-call ``try/except CallError`` papers over conflicts; the ramp will
+    still mostly converge. If the SDK adds a stop API, gate that here.
+    """
+    import time as _time  # local import — keep top-of-file lean
+    from reBotArm_control_py.dynamics import compute_generalized_gravity
+    steps = max(1, int(secs * rate_hz))
+    try:
+        q_hold = arm.get_positions().copy()
+    except Exception:
+        return
+    for i in range(steps + 1):
+        kp_scale = 1.0 - (i / steps)
+        kp = np.full(n, 2.0 * kp_scale)
+        kd = np.full(n, 1.0)
+        try:
+            tau_g = compute_generalized_gravity(q=arm.get_positions())
+            arm.mit(
+                pos=q_hold,
+                vel=np.zeros(n),
+                kp=kp,
+                kd=kd,
+                tau=tau_g,
+                request_feedback=True,
+            )
+        except Exception:
+            return
+        _time.sleep(1.0 / rate_hz)
+
+
 def _switch_arm_mode(arm: RobotArm, target_mode: str, gravity_kp, gravity_kd) -> None:
     """Switch the underlying arm controller mode if needed.
 
@@ -86,7 +128,7 @@ def run_server(cfg: DaemonConfig) -> None:
     state = SharedRobotState(dof=n)
     ee = EEPose()
 
-    grav = GravityCompLockController(cfg.gravity_comp, n)
+    grav = GravityCompLockController(cfg.gravity_comp, n, safety=safety)
     posctl = PositionController(n)
 
     # Start in gravity-comp mode (matches the backend default and lets
@@ -211,9 +253,28 @@ def run_server(cfg: DaemonConfig) -> None:
             elif cmd == CMD_SEND_COMMAND:
                 if safety.is_active_fault() or safety.heartbeat_state() != SAFETY_OK:
                     sock.send_json({"ok": False, "error": "safety fault active"})
+                elif mode["current"] != MODE_POSITION:
+                    # The control callback only feeds posctl.set_target() into
+                    # the arm when mode == POSITION; in gravity-comp mode the
+                    # request would silently no-op. Reject so callers (e.g.
+                    # the replay path) hit a loud error instead of a ghost.
+                    sock.send_json({
+                        "ok": False,
+                        "error": "send_command requires position mode",
+                    })
                 else:
+                    snap = state.snapshot()
                     q_req = np.asarray(msg.get("q", [0.0] * n), dtype=float)
+                    # Multi-layer safety: clamp pos -> ramp velocity -> ramp
+                    # accel. Velocity is enforced against the most recent
+                    # measured q (one tick behind the control loop, ~2 ms at
+                    # 500 Hz). The accel ramp keeps its own internal
+                    # `_last_q`, so it bounds command jerk vs. its own
+                    # previous output.
+                    dt = 1.0 / cfg.control_rate_hz
                     q_req = safety.clamp_joint_pos(q_req)
+                    q_req = safety.ramp_velocity(snap["joint_pos"], q_req, dt)
+                    q_req = safety.ramp_accel(q_req, dt)
                     posctl.set_target(q_req)
                     sock.send_json({"ok": True})
             elif cmd == CMD_SET_MODE:
@@ -264,6 +325,14 @@ def run_server(cfg: DaemonConfig) -> None:
             else:
                 sock.send_json({"ok": False, "error": f"unknown cmd: {cmd}"})
     finally:
+        # Soft-stop: ramp kp to zero while holding tau_g so the QDD arm
+        # doesn't drop when we cut torque. The SDK's start_control_loop
+        # thread is still running here (no SDK stop API), but the per-call
+        # CallError handling papers over the resulting parallel mit() calls.
+        try:
+            _ramp_disable(arm, n)
+        except Exception:
+            pass
         try:
             arm.disconnect()
         except Exception:

@@ -116,6 +116,14 @@ def main() -> int:
         elif cmd == CMD_SEND_COMMAND:
             if state["fault"]:
                 sock.send_json({"ok": False, "error": f"fault active: {state['fault']}"})
+            elif state["mode"] != MODE_POSITION:
+                # Mirror the real daemon: in gravity-comp mode the control
+                # loop ignores the position target, so accepting the command
+                # silently would mask the bug. Reject loudly instead.
+                sock.send_json({
+                    "ok": False,
+                    "error": "send_command requires position mode",
+                })
             else:
                 state["last_cmd_q"] = msg.get("q", [])
                 sock.send_json({"ok": True})

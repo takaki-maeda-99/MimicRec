@@ -9,6 +9,7 @@ import pytest
 import numpy as np
 
 from mimicrec.adapters.rebotarm_zmq import ReBotArmZmqAdapter
+from mimicrec.adapters.robot import RobotMode
 
 REPO = Path(__file__).resolve().parents[2]
 MOCK = REPO / "scripts" / "rebotarm_daemon_mock.py"
@@ -67,6 +68,9 @@ async def test_send_joint_command_round_trips(daemon_port):
                            heartbeat_interval_ms=100)
     await a.connect()
     try:
+        # Daemon defaults to gravity-comp mode and rejects send_command in
+        # that mode by contract; flip to POSITION first.
+        await a.set_mode(RobotMode.POSITION)
         await a.send_joint_command(np.zeros(6, dtype=np.float32))
     finally:
         await a.disconnect()
@@ -78,6 +82,7 @@ async def test_estop_blocks_send_command(daemon_port):
                            heartbeat_interval_ms=100)
     await a.connect()
     try:
+        await a.set_mode(RobotMode.POSITION)
         await a.estop()
         with pytest.raises(Exception):
             await a.send_joint_command(np.zeros(6, dtype=np.float32))

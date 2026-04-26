@@ -31,7 +31,7 @@ class GravityCompLockController:
     holds and ``kp/kd`` plus gravity feed-forward keep the arm in place.
     """
 
-    def __init__(self, params, num_joints: int):
+    def __init__(self, params, num_joints: int, safety=None):
         self._params = params
         self._n = num_joints
         # Pre-load the dynamics model so the first control tick doesn't
@@ -40,6 +40,10 @@ class GravityCompLockController:
         # dependency explicit.
         self._dyn_model = load_dynamics_model()
         self._target: np.ndarray | None = None  # locked joint target
+        # Optional SafetyManager — when provided, tau_g is run through
+        # clamp_torque() before being fed to arm.mit() so a runaway
+        # gravity feed-forward can't issue an out-of-bounds torque.
+        self._safety = safety
 
     def reset(self) -> None:
         """Drop the lock target so the next ``step`` re-anchors at ``q``."""
@@ -64,6 +68,8 @@ class GravityCompLockController:
             self._target = q.copy()
 
         tau_g = compute_generalized_gravity(q=q)
+        if self._safety is not None:
+            tau_g = self._safety.clamp_torque(tau_g)
         arm.mit(
             pos=self._target,
             vel=np.zeros(self._n),
