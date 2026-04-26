@@ -39,7 +39,8 @@ class DaemonConfig:
 
 
 def load_daemon_config(path: str | Path) -> DaemonConfig:
-    raw = yaml.safe_load(Path(path).read_text())
+    """Load daemon config from YAML; missing sections fall back to dataclass defaults."""
+    raw = yaml.safe_load(Path(path).read_text()) or {}
     safety_raw = raw.get("safety", {})
     grav_raw = raw.get("gravity_comp", {})
     return DaemonConfig(

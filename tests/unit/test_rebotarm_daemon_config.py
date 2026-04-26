@@ -23,3 +23,12 @@ def test_loads_yaml(tmp_path):
     assert len(cfg.safety.joint_pos_min_rad) == 6
     assert cfg.safety.heartbeat_timeout_ms == 500
     assert cfg.gravity_comp.push_velocity_threshold_m_s == 0.02
+
+
+def test_loads_empty_yaml_yields_full_defaults(tmp_path):
+    p = tmp_path / "empty.yaml"
+    p.write_text("")
+    cfg = load_daemon_config(p)
+    assert cfg.zmq_address == "tcp://*:5558"
+    assert cfg.safety.heartbeat_timeout_ms == 500
+    assert cfg.gravity_comp.kp == [2.0, 2.0, 2.0, 2.0, 2.0, 2.0]
