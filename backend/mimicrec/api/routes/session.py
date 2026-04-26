@@ -73,3 +73,25 @@ async def session_config(request: Request):
     if cfg is None:
         raise InvalidTransitionError("no active session")
     return cfg
+
+
+@router.post("/robot/estop")
+async def robot_estop(request: Request):
+    sm = get_session_manager_or_none(request.app)
+    if sm is None:
+        raise InvalidTransitionError("no active session")
+    adapter = sm._robot
+    if not hasattr(adapter, "estop"):
+        raise InvalidTransitionError("active robot adapter has no estop()")
+    return await adapter.estop()
+
+
+@router.post("/robot/clear_estop")
+async def robot_clear_estop(request: Request):
+    sm = get_session_manager_or_none(request.app)
+    if sm is None:
+        raise InvalidTransitionError("no active session")
+    adapter = sm._robot
+    if not hasattr(adapter, "clear_estop"):
+        raise InvalidTransitionError("active robot adapter has no clear_estop()")
+    return await adapter.clear_estop()
