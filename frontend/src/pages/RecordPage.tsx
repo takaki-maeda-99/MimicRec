@@ -7,6 +7,7 @@ import CameraPreview from "../components/CameraPreview.tsx";
 import RecordingControls from "../components/RecordingControls.tsx";
 import KeyboardTeleop from "../components/KeyboardTeleop.tsx";
 import EEMonitor from "../components/EEMonitor.tsx";
+import EStopButton from "../components/EStopButton.tsx";
 import type { EpisodeProgress, ReplayProgress } from "../api/types.ts";
 
 export default function RecordPage() {
@@ -129,6 +130,13 @@ export default function RecordPage() {
       <div className="mb-6">
         <EEMonitor enabled />
       </div>
+
+      {/* E-stop button (only for rebotarm adapter) */}
+      {robot === "rebotarm" && (
+        <div className="mb-6">
+          <EStopButton />
+        </div>
+      )}
 
       {/* Recording controls */}
       <RecordingControls />
