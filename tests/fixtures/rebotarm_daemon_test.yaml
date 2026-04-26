@@ -1,0 +1,18 @@
+arm_config: configs/rebotarm/arm.yaml
+zmq_address: tcp://*:5558
+control_rate_hz: 500
+safety:
+  joint_pos_min_rad: [-3.14, -3.14, -3.14, -3.14, -3.14, -3.14]
+  joint_pos_max_rad: [3.14, 3.14, 3.14, 3.14, 3.14, 3.14]
+  joint_vel_max_rad_s: 3.14
+  joint_accel_max_rad_s2: 20.0
+  torque_max_nm: [10, 10, 8, 5, 5, 3]
+  temperature_warn_c: 70
+  temperature_fault_c: 80
+  temperature_recover_c: 60
+  heartbeat_timeout_ms: 500
+gravity_comp:
+  push_velocity_threshold_m_s: 0.02
+  push_omega_threshold_rad_s: 0.3
+  kp: [2, 2, 2, 2, 2, 2]
+  kd: [1, 1, 1, 1, 1, 1]
