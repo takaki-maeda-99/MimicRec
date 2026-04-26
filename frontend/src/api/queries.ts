@@ -156,6 +156,22 @@ export function useEpisodeDiscard() {
   });
 }
 
+// --------------- Robot ---------------
+
+export function useEstop() {
+  return useMutation({
+    mutationFn: () =>
+      apiFetch("/api/robot/estop", { method: "POST" }),
+  });
+}
+
+export function useClearEstop() {
+  return useMutation({
+    mutationFn: () =>
+      apiFetch<{ ok: boolean; reason?: string }>("/api/robot/clear_estop", { method: "POST" }),
+  });
+}
+
 // --------------- Replay ---------------
 
 export function useReplayStart() {

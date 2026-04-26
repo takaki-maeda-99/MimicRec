@@ -20,7 +20,7 @@
 |-------|-----------------|----------------|------|
 | SO-101 | LeRobot `SOFollower` (Feetech STS3215) | 非対応（重力補償なし） | 動作確認済み |
 | SO Leader | LeRobot `SOLeader` テレオペ | — | 動作確認済み |
-| reBot Arm B601-DM | `reBotArm_control_py` | 対応 | スタブ実装 (Python 3.10 必要) |
+| reBot Arm B601-DM | `reBotArm_control_py` via ZMQ デーモン | 対応 (重力補償ロック) | 動作確認済み — モックデーモンは CI、実機 smoke は手動 |
 | Mock | 内蔵モックアダプタ | 対応 | テスト用 |
 | Isaac Sim (任意ロボット) | ZMQ ブリッジ | 対応 | 動作確認済み (Franka) |
 
@@ -34,7 +34,7 @@ Browser (React)  ←→  FastAPI + WebSocket  ←→  SessionManager  ←→  Ha
 
 - **Backend**: Python 3.12, FastAPI, asyncio 制御ループ, LeRobot v3 形式
 - **Frontend**: React 19, TypeScript, Vite, TailwindCSS, TanStack Query
-- **88 backend テスト** 全件パス
+- **119 backend テスト** 全件パス
 
 ## クイックスタート
 
@@ -185,6 +185,18 @@ Isaac Sim なしでテストしたい場合:
 ```bash
 .venv/bin/python scripts/sim_bridge_dummy.py  # ダミーシム on :5556
 ```
+
+### 4. reBotArm (任意)
+
+`reBotArm_control_py` は Python 3.10 必須で、3.12 のバックエンド venv とは
+共有できません。`setup.sh` は `reBotArm_control_py` submodule が存在するときに
+`.venv-rebotarm` を自動で作成します。デーモンは別ターミナルで起動してください:
+
+    .venv-rebotarm/bin/python -m rebotarm_daemon \
+        --config configs/rebotarm_daemon.yaml
+
+その後 MimicRec UI で `robot=rebotarm` を選択すると、Record ページに
+大きな赤い E-stop ボタンが表示されます。
 
 ## キーボードショートカット (Record ページ)
 

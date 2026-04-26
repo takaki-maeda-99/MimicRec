@@ -32,21 +32,37 @@ def sample_bundle_to_row(
         "index": global_index,
         "task_index": task_index,
     }
+    # Observation EE: prefer values already on RobotState (e.g. supplied by a
+    # daemon-side FK). Fall back to local fk only when state has no EE.
+    obs_ee_pos = state.ee_pos
+    obs_ee_rotvec = state.ee_rotvec
+    obs_gripper = state.gripper_pos
+    if obs_ee_pos is None and fk is not None:
+        n = fk.n_kin_joints
+        obs_ee_pos, obs_ee_rotvec = fk.pose(state.joint_pos[:n])
+        if state.joint_pos.shape[0] > n:
+            obs_gripper = float(state.joint_pos[n])
+
+    # Action EE: derived from commanded q. Action has no "ee_pos" field today,
+    # so always use FK when fk is set; otherwise omit.
+    act_ee_pos = act_ee_rotvec = None
+    act_gripper = None
     if fk is not None:
         n = fk.n_kin_joints
-        # Observation = current follower pose; Action = commanded follower pose.
-        obs_pos, obs_rotvec = fk.pose(state.joint_pos[:n])
-        act_pos, act_rotvec = fk.pose(bundle.action.q[:n])
-        row["observation.state.ee_pos"] = obs_pos
-        row["observation.state.ee_rotvec"] = obs_rotvec
-        row["action.ee_pos"] = act_pos
-        row["action.ee_rotvec"] = act_rotvec
-        # Gripper is the joint after the kinematic chain; record it explicitly
-        # so consumers don't have to slice joint_pos.
-        if state.joint_pos.shape[0] > n:
-            row["observation.state.gripper_pos"] = float(state.joint_pos[n])
+        act_ee_pos, act_ee_rotvec = fk.pose(bundle.action.q[:n])
         if bundle.action.q.shape[0] > n:
-            row["action.gripper_pos"] = float(bundle.action.q[n])
+            act_gripper = float(bundle.action.q[n])
+
+    if obs_ee_pos is not None:
+        row["observation.state.ee_pos"] = obs_ee_pos
+        row["observation.state.ee_rotvec"] = obs_ee_rotvec
+        if obs_gripper is not None:
+            row["observation.state.gripper_pos"] = float(obs_gripper)
+    if act_ee_pos is not None:
+        row["action.ee_pos"] = act_ee_pos
+        row["action.ee_rotvec"] = act_ee_rotvec
+        if act_gripper is not None:
+            row["action.gripper_pos"] = act_gripper
     for cam_name, frame_idx in video_frame_index.items():
         row[f"observation.images.{cam_name}.video_frame_index"] = frame_idx
         stamped = bundle.frames.get(cam_name)

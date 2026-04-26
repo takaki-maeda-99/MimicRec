@@ -20,7 +20,7 @@ Local-first web application for collecting imitation-learning datasets from phys
 |-------|-----------|------------|--------|
 | SO-101 | LeRobot `SOFollower` via Feetech STS3215 | Not supported (no gravity comp) | Verified |
 | SO Leader | LeRobot `SOLeader` teleoperator | — | Verified |
-| reBot Arm B601-DM | `reBotArm_control_py` | Supported | Stub (Python 3.10 req) |
+| reBot Arm B601-DM | `reBotArm_control_py` via ZMQ daemon | Supported (gravity-comp lock) | Verified — mock daemon in CI, hardware smoke pending |
 | Mock | Built-in mock adapters | Supported | For testing |
 | Isaac Sim (any robot) | ZMQ bridge | Supported | Verified (Franka) |
 
@@ -34,7 +34,7 @@ Browser (React)  ←→  FastAPI + WebSocket  ←→  SessionManager  ←→  Ha
 
 - **Backend**: Python 3.12, FastAPI, asyncio control loop, LeRobot v3 format
 - **Frontend**: React 19, TypeScript, Vite, TailwindCSS, TanStack Query
-- **88 backend tests**, all passing
+- **119 backend tests**, all passing
 
 ## Quick start
 
@@ -208,6 +208,19 @@ For testing without Isaac Sim:
 ```bash
 .venv/bin/python scripts/sim_bridge_dummy.py  # Fake sim on :5556
 ```
+
+### 4. reBotArm (optional)
+
+`reBotArm_control_py` requires Python 3.10 (cannot share the 3.12
+backend venv). `setup.sh` creates `.venv-rebotarm` automatically when
+the `reBotArm_control_py` submodule is present. Start the daemon in
+a separate terminal:
+
+    .venv-rebotarm/bin/python -m rebotarm_daemon \
+        --config configs/rebotarm_daemon.yaml
+
+Then in MimicRec UI choose `robot=rebotarm`. The Record page will
+show a big red E-stop button.
 
 ## Keyboard shortcuts (Record page)
 

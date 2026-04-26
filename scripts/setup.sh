@@ -97,6 +97,23 @@ log "installing lerobot + feetech extra"
 uv pip install --python "$PY" -e "$REPO_ROOT/lerobot"
 uv pip install --python "$PY" "lerobot[feetech]"
 
+# ---------- 3b. reBotArm daemon venv (Python 3.10) ----------
+# reBotArm_control_py is pinned to Python 3.10 and ships its own
+# motorbridge / pinocchio dependencies.
+if [[ -d "$REPO_ROOT/reBotArm_control_py" ]]; then
+    log "creating .venv-rebotarm (Python 3.10) for reBotArm daemon"
+    if [[ ! -d "$REPO_ROOT/.venv-rebotarm" ]]; then
+        uv venv "$REPO_ROOT/.venv-rebotarm" --python 3.10
+    fi
+    PY_REBOT="$REPO_ROOT/.venv-rebotarm/bin/python"
+    log "installing reBotArm + daemon deps"
+    uv pip install --python "$PY_REBOT" \
+        -e "$REPO_ROOT/reBotArm_control_py" \
+        pyzmq numpy pyyaml pinocchio
+else
+    log "reBotArm_control_py submodule absent — skipping rebotarm daemon venv"
+fi
+
 # ---------- 4. Frontend (Node + pnpm) ----------
 if [[ $DO_FRONTEND -eq 1 ]]; then
     NEED_NODE=1
