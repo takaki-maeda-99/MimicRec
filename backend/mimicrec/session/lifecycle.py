@@ -205,24 +205,23 @@ class SessionManager:
                 evt = await asyncio.wait_for(sub.get(), timeout=0.1)
             except asyncio.TimeoutError:
                 continue
+            # Only escalate to a full session end on FATAL hardware errors
+            # (e.g. persistent reader failure declared by the robot reader
+            # after MAX_CONSECUTIVE_READER_ERRORS, or an explicit operator
+            # E-stop). Plain HardwareErrors are transient by definition —
+            # the camera manager publishes one whenever a single V4L2 read
+            # times out, and the camera task immediately continues. The
+            # parquet writer skips that tick's video frame and moves on,
+            # so the episode stays well-formed even with a few drops.
+            # Auto-discarding the in-flight episode on every transient
+            # error meant 30 seconds of hand-teach got thrown away because
+            # of one missed USB frame; we now log and let the user decide.
+            if isinstance(evt, FatalHardwareError):
+                logger.error("FatalHardwareError received — ending session: %s", evt)
+                asyncio.create_task(self.end())
+                return
             if isinstance(evt, HardwareError):
-                if self.session.state == SessionState.RECORDING:
-                    # Auto-discard the in-flight episode so the user doesn't
-                    # end up with half-written parquets.
-                    self.session.state = SessionState.REVIEW
-                    self._current_pending.set(None, t_mono_ns=time.monotonic_ns())
-                    if self._pending:
-                        self._pending.finalize()
-                        self._pending.discard()
-                        self._pending = None
-                    self.session.state = SessionState.READY
-                # Only escalate to a full session end on FATAL hardware errors
-                # (e.g. persistent reader failure). Transient HardwareErrors
-                # — like a single dropped camera frame — recover on their own.
-                if isinstance(evt, FatalHardwareError):
-                    logger.error("FatalHardwareError received — ending session: %s", evt)
-                    asyncio.create_task(self.end())
-                    return
+                logger.warning("transient HardwareError (recording continues): %s", evt)
 
     # ------------------------------------------------------------------
     # State transitions
