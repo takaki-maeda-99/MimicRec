@@ -122,7 +122,21 @@ async def run_handteach_control_loop(
             metrics.inc("stale_sample_count")
 
         if phase == SessionState.RECORDING:
-            synthesized = RobotCommand(q=state.value.joint_pos.copy(), t_mono_ns=tick_t)
+            # Hand-teach has no commanded action — synthesize one from the
+            # measured state. Append gripper_pos when present so the
+            # parquet writer emits action.gripper_pos alongside the joint
+            # action (parquet_row.py treats q.shape > kinematic_dof as
+            # "joints + gripper").
+            import numpy as _np  # local — keep top-of-file lean
+            measured_q = state.value.joint_pos
+            gripper_pos = state.value.gripper_pos
+            if gripper_pos is not None:
+                action_q = _np.concatenate(
+                    [measured_q, _np.asarray([gripper_pos], dtype=measured_q.dtype)]
+                )
+            else:
+                action_q = measured_q.copy()
+            synthesized = RobotCommand(q=action_q, t_mono_ns=tick_t)
             frames = {name: slot.peek() for name, slot in camera_slots.items()}
             enqueue(SampleBundle(
                 tick_t_mono_ns=tick_t,

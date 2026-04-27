@@ -4,9 +4,15 @@ heartbeat_interval_ms: 200
 request_timeout_ms: 1000
 replay:
   ramp_duration_sec: 2
-  max_joint_velocity: 1
-  max_joint_acceleration: 5
-  max_joint_position_jump: 0.3
+  # Match the daemon's own safety clamps (joint_vel/accel_max in
+  # configs/rebotarm_daemon.yaml) so the watchdog doesn't trip on motion
+  # the daemon itself permits. ``max_joint_position_jump`` is the tolerated
+  # gap between commanded target and measured arm — bumped to 0.5 rad so
+  # the initial ramp-from-current to trajectory[0] doesn't false-trigger
+  # when the recording started far from the arm's current pose.
+  max_joint_velocity: 3.14
+  max_joint_acceleration: 20
+  max_joint_position_jump: 0.5
   command_timeout_sec: 0.2
   watchdog_hz: 20
 # No `kinematics:` block needed — the daemon supplies EE pose directly

@@ -436,16 +436,44 @@ class SessionManager:
             else RobotMode.POSITION
         )
 
-        self._replay_task = asyncio.create_task(run_replay(
-            session=self.session,
-            trajectory=trajectory,
-            fps=self._fps,
-            command_goal_slot=self._command_goal_slot,
-            clock=RealClock(),
-            measured_state_slot=self._robot_state_slot,
-            safety=self._replay_safety,
-            error_bus=self._error_bus,
-        ))
+        async def _run_with_restore() -> None:
+            # Wrap run_replay so the prior mode is restored on ANY exit —
+            # normal completion, ReplaySafetyError, cancellation. Without
+            # this, a safety trip leaves the daemon in POSITION holding
+            # pose, which the operator perceives as the arm "stiffening".
+            try:
+                await run_replay(
+                    session=self.session,
+                    trajectory=trajectory,
+                    fps=self._fps,
+                    command_goal_slot=self._command_goal_slot,
+                    clock=RealClock(),
+                    measured_state_slot=self._robot_state_slot,
+                    safety=self._replay_safety,
+                    error_bus=self._error_bus,
+                )
+            finally:
+                await self._restore_mode_after_replay()
+
+        self._replay_task = asyncio.create_task(_run_with_restore())
+
+    async def _restore_mode_after_replay(self) -> None:
+        """Restore the robot mode captured in replay_start.
+
+        Called from both the replay task's ``finally`` (so safety trips
+        auto-recover) and from ``replay_stop`` (user-initiated stop).
+        Idempotent: clears ``_mode_before_replay`` on first call.
+        """
+        if self._mode_before_replay is None:
+            return
+        prev = self._mode_before_replay
+        self._mode_before_replay = None
+        try:
+            await self._robot.set_mode(prev)
+        except (HardwareError, Exception) as e:
+            logger.warning(
+                "replay restore: failed to set robot mode %s: %s", prev, e,
+            )
 
     async def replay_stop(self) -> None:
         """Clear replay_active, await replay task, restore prior robot mode."""
@@ -457,21 +485,10 @@ class SessionManager:
             except (asyncio.CancelledError, Exception):
                 pass
         self._replay_task = None
-
-        # Restore the robot mode we flipped in replay_start. We do this in a
-        # separate try block so a transient mode-restore failure on the
-        # adapter doesn't leave _mode_before_replay set (which would mis-
-        # restore on a subsequent replay_stop).
-        if self._mode_before_replay is not None:
-            prev = self._mode_before_replay
-            self._mode_before_replay = None
-            try:
-                await self._robot.set_mode(prev)
-            except (HardwareError, Exception) as e:
-                logger.warning(
-                    "replay_stop: failed to restore robot mode %s: %s",
-                    prev, e,
-                )
+        # Idempotent: the replay task's finally already calls this on its
+        # way out, but in race cases (cancel before the finally fires) we
+        # call it again here to make sure mode is restored.
+        await self._restore_mode_after_replay()
 
     async def end(self) -> None:
         """Any -> IDLE. Shut down everything in order."""
