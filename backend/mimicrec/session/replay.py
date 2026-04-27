@@ -75,7 +75,24 @@ async def run_replay(
     # the arm happens to be away from the recorded start), then the recorded
     # trajectory. Without this ramp, replay only works when the arm starts
     # already at trajectory[0] — usually false.
-    targets = list(trajectory.joint_targets)
+    raw_targets = trajectory.joint_targets
+    # Recordings made after gripper integration carry [arm_q..., gripper_q]
+    # in action.joint_pos. The send-command path here only addresses the
+    # arm DoF, so slice the gripper component off before ramping. (Once the
+    # daemon accepts a gripper target via send_joint_command, this slice
+    # becomes a split that feeds the gripper its own track.)
+    arm_dof: int | None = None
+    if measured_state_slot is not None:
+        m_init = measured_state_slot.peek()
+        if m_init is not None:
+            arm_dof = int(m_init.value.joint_pos.shape[0])
+    if arm_dof is not None and raw_targets.shape[1] > arm_dof:
+        logger.warning(
+            "[replay] trajectory has %d cols; arm dof=%d — slicing gripper off",
+            raw_targets.shape[1], arm_dof,
+        )
+        raw_targets = raw_targets[:, :arm_dof]
+    targets = list(raw_targets)
     if (
         safety is not None
         and measured_state_slot is not None

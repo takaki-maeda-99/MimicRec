@@ -422,6 +422,23 @@ class SessionManager:
         if self.session.replay_active:
             raise InvalidTransitionError("another replay is already active")
 
+        # Validate trajectory shape BEFORE flipping the daemon into POSITION:
+        # mode transitions briefly drop motor torque (~200 ms stabilize per
+        # motor), so a validation failure after set_mode would leave the arm
+        # falling under gravity for the round-trip. Trajectories with extra
+        # columns (e.g. gripper appended by hand-teach recording) are tolerated
+        # — run_replay slices to arm dof. Trajectories with fewer columns than
+        # arm dof can't be played and we abort here.
+        if (
+            trajectory.joint_targets.ndim != 2
+            or trajectory.joint_targets.shape[1] < self._robot.dof
+        ):
+            from mimicrec.errors import ReplaySafetyError
+            raise ReplaySafetyError(
+                f"replay trajectory has {trajectory.joint_targets.shape} cols; "
+                f"need at least {self._robot.dof} for arm dof"
+            )
+
         # Flip the adapter into POSITION mode BEFORE spawning the replay
         # task, otherwise the daemon's control loop ignores the position
         # targets we feed via command_goal_slot. Hand-teach sessions sit in
