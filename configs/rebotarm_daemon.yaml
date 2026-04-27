@@ -4,8 +4,13 @@ control_rate_hz: 500
 safety:
   joint_pos_min_rad: [-3.14, -3.14, -3.14, -3.14, -3.14, -3.14]
   joint_pos_max_rad: [3.14, 3.14, 3.14, 3.14, 3.14, 3.14]
-  joint_vel_max_rad_s: 3.14
-  joint_accel_max_rad_s2: 20.0
+  # Smoothing clamps applied per-tick to incoming send_joint_command
+  # targets. Hand-teach recordings have jerky frames that the daemon
+  # ramps down to physical motion limits — the actual arm never sees a
+  # raw target that exceeds these. Bump if replay tracks too sluggishly,
+  # lower for stricter safety.
+  joint_vel_max_rad_s: 6.28
+  joint_accel_max_rad_s2: 100.0
   torque_max_nm: [10, 10, 8, 5, 5, 3]
   temperature_warn_c: 70
   temperature_fault_c: 80
