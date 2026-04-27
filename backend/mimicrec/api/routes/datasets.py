@@ -1,4 +1,5 @@
 from __future__ import annotations
+import asyncio
 import io
 import json
 import time
@@ -369,7 +370,8 @@ async def export_dataset(request: Request, ds: str, body: ExportRequest) -> Expo
     dest_root = get_vla_dest_root(request.app)
     dest_root.mkdir(parents=True, exist_ok=True)
     try:
-        result = export_dataset_to_local(
+        result = await asyncio.to_thread(
+            export_dataset_to_local,
             ds_root=ds_root,
             dest_root=dest_root,
             format=body.format,
