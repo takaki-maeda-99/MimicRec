@@ -98,6 +98,15 @@ class SafetyManager:
 
     # ---- estop / fault state ----------------------------------------
 
+    def reset_ramp_state(self) -> None:
+        """Forget the accel-ramp's running ``_last_q``.
+
+        Called when entering POSITION mode so the first incoming command
+        is evaluated against the real measured pose, not whatever target
+        the ramp tracked the last time POSITION was active.
+        """
+        self._last_q = None
+
     def trigger_estop(self) -> None:
         self._estop_active = True
 

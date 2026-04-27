@@ -160,6 +160,13 @@ def run_server(cfg: DaemonConfig) -> None:
         kd=np.asarray(cfg.gravity_comp.kd, dtype=float),
     )
     mode = {"current": MODE_GRAVITY_COMP}
+    # Wall-clock timestamp of the last CMD_SEND_COMMAND we accepted, used
+    # to compute the real elapsed dt for safety.ramp_velocity/ramp_accel.
+    # Replay sends commands at the trajectory's native rate (~28-30 Hz),
+    # not at the daemon's 500 Hz tick — using control_rate_hz here would
+    # over-clamp by ~17x, leaving the arm lagging the command until the
+    # watchdog trips on joint_position_jump.
+    last_cmd_t: list = [None]  # mutable cell so the message loop can rebind
 
     def control_callback(arm: RobotArm, dt: float) -> None:
         q = arm.get_positions()
@@ -283,12 +290,17 @@ def run_server(cfg: DaemonConfig) -> None:
                     snap = state.snapshot()
                     q_req = np.asarray(msg.get("q", [0.0] * n), dtype=float)
                     # Multi-layer safety: clamp pos -> ramp velocity -> ramp
-                    # accel. Velocity is enforced against the most recent
-                    # measured q (one tick behind the control loop, ~2 ms at
-                    # 500 Hz). The accel ramp keeps its own internal
-                    # `_last_q`, so it bounds command jerk vs. its own
-                    # previous output.
-                    dt = 1.0 / cfg.control_rate_hz
+                    # accel. Use the real elapsed wall time since the last
+                    # accepted command so the velocity/accel limits express
+                    # genuine rad/s and rad/s² regardless of how often the
+                    # client sends. Cap at 100 ms to avoid letting a long
+                    # gap (e.g., session reconnect) authorize a giant step.
+                    now_t = time.monotonic()
+                    if last_cmd_t[0] is None:
+                        dt = 1.0 / cfg.control_rate_hz
+                    else:
+                        dt = min(max(now_t - last_cmd_t[0], 1e-3), 0.1)
+                    last_cmd_t[0] = now_t
                     q_req = safety.clamp_joint_pos(q_req)
                     q_req = safety.ramp_velocity(snap["joint_pos"], q_req, dt)
                     q_req = safety.ramp_accel(q_req, dt)
@@ -303,9 +315,13 @@ def run_server(cfg: DaemonConfig) -> None:
                     # control_callback dispatch picks grav.step (kp=0) or
                     # posctl.step (kp=high) per tick. Reset the inactive
                     # controller's target so it re-anchors at the current
-                    # pose when it next runs.
+                    # pose when it next runs. Also clear ramp state /
+                    # last-command timestamp so the first command after
+                    # entering POSITION uses a fresh baseline.
                     if m == MODE_POSITION:
                         posctl.reset()
+                        safety.reset_ramp_state()
+                        last_cmd_t[0] = None
                     else:
                         grav.reset()
                     mode["current"] = m
@@ -342,6 +358,8 @@ def run_server(cfg: DaemonConfig) -> None:
                 mode["current"] = MODE_GRAVITY_COMP
                 grav.reset()
                 posctl.reset()
+                safety.reset_ramp_state()
+                last_cmd_t[0] = None
                 sock.send_json({"ok": True})
             else:
                 sock.send_json({"ok": False, "error": f"unknown cmd: {cmd}"})
