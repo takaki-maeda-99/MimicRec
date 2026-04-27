@@ -371,11 +371,12 @@ class SessionManager:
         # been balanced by a task_done. ``queue.empty()`` would lie
         # while the writer is mid-encode in the executor thread.
         try:
-            await asyncio.wait_for(self._recorder_queue.join(), timeout=30.0)
+            await asyncio.wait_for(self._recorder_queue.join(), timeout=60.0)
         except asyncio.TimeoutError:
             logger.warning(
-                "episode_stop: writer drain timed out; pending episode "
-                "may be missing trailing frames"
+                "episode_stop: writer drain timed out after 60 s; pending "
+                "episode is missing trailing frames. Encoder is likely "
+                "falling behind realtime — check Mp4EpisodeWriter preset."
             )
         # Drained — safe to clear the pending slot and finalize.
         self._current_pending.set(None, t_mono_ns=time.monotonic_ns())
