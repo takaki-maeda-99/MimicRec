@@ -41,7 +41,13 @@ position:
 # the gripper still feels sticky; decrease if it drifts on its own.
 gripper:
   cfg_path: configs/rebotarm/gripper.yaml
+  # Compliance-mode gains (active in GRAVITY_COMP)
   kd: 0.0
   friction_tau_nm: 0.10
   vel_deadband_rad_s: 0.10
   control_rate_hz: 100
+  # Position-mode gains (active in POSITION while a target is set via
+  # CMD_SEND_GRIPPER_COMMAND — i.e., during replay/teleop). Default to
+  # the gripper.yaml MIT defaults shipped with reBotArm_control_py.
+  position_kp: 8.0
+  position_kd: 1.0

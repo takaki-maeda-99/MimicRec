@@ -23,6 +23,7 @@ import zmq
 
 from mimicrec.adapters.rebotarm_protocol import (
     CMD_CONNECT, CMD_DISCONNECT, CMD_READ_STATE, CMD_SEND_COMMAND,
+    CMD_SEND_GRIPPER_COMMAND,
     CMD_SET_MODE, CMD_HEARTBEAT, CMD_ESTOP, CMD_CLEAR_ESTOP,
     CMD_GET_SAFETY_STATUS, MODE_POSITION, MODE_GRAVITY_COMP,
     SAFETY_OK, SAFETY_ESTOP,
@@ -126,6 +127,15 @@ def main() -> int:
                 })
             else:
                 state["last_cmd_q"] = msg.get("q", [])
+                sock.send_json({"ok": True})
+        elif cmd == CMD_SEND_GRIPPER_COMMAND:
+            if state["mode"] != MODE_POSITION:
+                sock.send_json({
+                    "ok": False,
+                    "error": "send_gripper_command requires position mode",
+                })
+            else:
+                state["last_cmd_gripper"] = msg.get("gripper")
                 sock.send_json({"ok": True})
         elif cmd == CMD_SET_MODE:
             m = msg.get("mode", MODE_GRAVITY_COMP)

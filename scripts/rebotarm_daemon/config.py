@@ -53,17 +53,27 @@ class PositionParams:
 
 @dataclass
 class GripperParams:
-    # Optional gripper running on the same bus as the arm. Mirrors the
-    # compliance loop from reBotArm_control_py/data_collect/11_gravity_compensation_record.py:
-    # kp=0 fully free, kd damps oscillation, and a small velocity-direction
-    # friction-compensation torque overcomes static friction so the gripper
-    # feels light to the operator. Set to ``None`` (omit the YAML section)
-    # if the hardware has no gripper.
+    # Optional gripper running on the same bus as the arm. Set to ``None``
+    # (omit the YAML section) if the hardware has no gripper.
+    #
+    # In GRAVITY_COMP mode the daemon runs a compliance loop based on
+    # reBotArm_control_py/data_collect/11_gravity_compensation_record.py:
+    # kp=0 (fully free), ``kd`` damps oscillation, and a small velocity-
+    # direction friction-compensation torque (``friction_tau_nm`` past
+    # ``vel_deadband_rad_s``) overcomes static friction so the gripper
+    # feels light to the operator.
+    #
+    # In POSITION mode (replay / teleop) the same 100 Hz loop instead
+    # tracks the latest target sent via CMD_SEND_GRIPPER_COMMAND with
+    # MIT gains ``position_kp / position_kd``. Defaults match the
+    # gripper.yaml MIT defaults (8 / 1) shipped with reBotArm_control_py.
     cfg_path: str = "configs/rebotarm/gripper.yaml"
     kd: float = 0.0
     friction_tau_nm: float = 0.10
     vel_deadband_rad_s: float = 0.10
     control_rate_hz: int = 100
+    position_kp: float = 8.0
+    position_kd: float = 1.0
 
 
 @dataclass

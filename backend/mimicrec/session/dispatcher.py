@@ -32,6 +32,18 @@ async def run_command_dispatcher(
         last_seen_seq = goal.seq
         try:
             await robot.send_joint_command(current.value.q)
+            # Forward the gripper target if the command has one and the
+            # adapter exposes ``send_gripper_command`` (currently only
+            # ReBotArmZmqAdapter when the daemon has a configured gripper).
+            grip = current.value.gripper
+            if grip is not None and hasattr(robot, "send_gripper_command"):
+                try:
+                    await robot.send_gripper_command(float(grip))
+                except HardwareError as e:
+                    # Don't kill the whole dispatch loop on a gripper-only
+                    # failure — the arm command already went through.
+                    logger.warning("dispatcher gripper send failed: %s", e)
+                    await errors.publish(e)
             consecutive_errors = 0
         except HardwareError as e:
             logger.warning("dispatcher HardwareError: %s", e)

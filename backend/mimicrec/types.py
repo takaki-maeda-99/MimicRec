@@ -46,7 +46,15 @@ class RobotState:
 
 @dataclass
 class RobotCommand:
-    q: np.ndarray              # float32[dof]
+    q: np.ndarray              # float32[dof] — arm joints only
+    # Optional gripper target in radians. None = "no gripper command this
+    # tick" (typical for arms with no gripper / for adapters that don't
+    # support it). Adapters that do support it (e.g. ReBotArmZmqAdapter
+    # talking to the daemon's gripper position controller) read this and
+    # forward via send_gripper_command. Keeping the gripper out of ``q``
+    # means the existing 6-DoF send path stays unchanged for arm-only
+    # adapters and code paths that introspect dof.
+    gripper: float | None = None
     t_mono_ns: int = 0
 
 

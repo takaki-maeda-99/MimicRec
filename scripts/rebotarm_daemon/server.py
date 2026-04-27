@@ -47,6 +47,7 @@ CMD_CONNECT = "connect"
 CMD_DISCONNECT = "disconnect"
 CMD_READ_STATE = "read_state"
 CMD_SEND_COMMAND = "send_command"
+CMD_SEND_GRIPPER_COMMAND = "send_gripper_command"
 CMD_SET_MODE = "set_mode"
 CMD_HEARTBEAT = "heartbeat"
 CMD_ESTOP = "estop"
@@ -122,12 +123,25 @@ def run_server(cfg: DaemonConfig) -> None:
     grav = GravityCompController(cfg.gravity_comp, n, safety=safety)
     posctl = PositionController(cfg.position, n, safety=safety)
 
+    # Define ``mode`` BEFORE the gripper control loop is spawned — the
+    # gripper callback closes over it and the loop thread starts firing
+    # ticks immediately on start_control_loop, so a NameError lookup is
+    # possible if mode isn't bound yet. Initial value is set here and
+    # overwritten unconditionally in the arm.mode_mit block below.
+    mode = {"current": MODE_GRAVITY_COMP}
+
     # Optional gripper sharing the arm's CAN/serial bus. When configured,
     # we inject the arm's Controller into the Gripper so both sides talk
-    # over the same bus instead of fighting for /dev/ttyACM0. The Gripper
-    # runs its own 100 Hz compliance loop (kp=0 + velocity-direction
-    # friction comp) that mirrors data_collect/11_gravity_compensation_record.py.
+    # over the same bus instead of fighting for /dev/ttyACM0. The 100 Hz
+    # gripper loop dispatches by daemon mode:
+    #   - GRAVITY_COMP → compliance loop (kp=0 + velocity-direction
+    #     friction comp), mirroring data_collect/11_gravity_compensation_record.py
+    #   - POSITION    → MIT position-tracking with cfg.gripper.position_kp/kd,
+    #     following the latest target set via CMD_SEND_GRIPPER_COMMAND
     gripper: Optional[Gripper] = None
+    # ``gripper_target[0] = float | None``. Mutable cell so the message
+    # loop can rebind without ``nonlocal`` gymnastics in the closure.
+    gripper_target: list = [None]
     if cfg.gripper is not None:
         shared_ctrl = next(iter(arm._ctrl_map.values()))
         gripper = Gripper(cfg_path=cfg.gripper.cfg_path, controller=shared_ctrl)
@@ -135,7 +149,22 @@ def run_server(cfg: DaemonConfig) -> None:
         gripper.mode_mit(kp=0.0, kd=cfg.gripper.kd)
         gripper_params = cfg.gripper
 
-        def _gripper_compliance(g: Gripper, _dt: float) -> None:
+        def _gripper_callback(g: Gripper, _dt: float) -> None:
+            if (
+                mode["current"] == MODE_POSITION
+                and gripper_target[0] is not None
+            ):
+                # Position-tracking: follow the replay/teleop target.
+                g.mit(
+                    pos=float(gripper_target[0]),
+                    vel=0.0,
+                    kp=float(gripper_params.position_kp),
+                    kd=float(gripper_params.position_kd),
+                    tau=0.0,
+                )
+                return
+            # Compliance fallback (GRAVITY_COMP, or POSITION before any
+            # target has arrived — stay free instead of locking at zero).
             pos, vel, _ = g.get_state(request=False)
             if abs(vel) > gripper_params.vel_deadband_rad_s:
                 tau = gripper_params.friction_tau_nm * (1.0 if vel > 0 else -1.0)
@@ -144,7 +173,7 @@ def run_server(cfg: DaemonConfig) -> None:
             g.mit(pos=pos, vel=0.0, kp=0.0, kd=gripper_params.kd, tau=tau)
 
         gripper.start_control_loop(
-            _gripper_compliance, rate=float(gripper_params.control_rate_hz)
+            _gripper_callback, rate=float(gripper_params.control_rate_hz)
         )
 
     # Force the underlying motors into MIT mode at startup. RobotArm's
@@ -159,7 +188,7 @@ def run_server(cfg: DaemonConfig) -> None:
         kp=np.asarray(cfg.gravity_comp.kp, dtype=float),
         kd=np.asarray(cfg.gravity_comp.kd, dtype=float),
     )
-    mode = {"current": MODE_GRAVITY_COMP}
+    mode["current"] = MODE_GRAVITY_COMP
     # Wall-clock timestamp of the last CMD_SEND_COMMAND we accepted, used
     # to compute the real elapsed dt for safety.ramp_velocity/ramp_accel.
     # Replay sends commands at the trajectory's native rate (~28-30 Hz),
@@ -324,8 +353,31 @@ def run_server(cfg: DaemonConfig) -> None:
                         last_cmd_t[0] = None
                     else:
                         grav.reset()
+                        # Drop the gripper position target so the gripper
+                        # falls back to compliance once we leave POSITION.
+                        gripper_target[0] = None
                     mode["current"] = m
                     sock.send_json({"ok": True, "mode": m})
+            elif cmd == CMD_SEND_GRIPPER_COMMAND:
+                if gripper is None:
+                    sock.send_json({
+                        "ok": False,
+                        "error": "no gripper configured on this daemon",
+                    })
+                elif mode["current"] != MODE_POSITION:
+                    sock.send_json({
+                        "ok": False,
+                        "error": "send_gripper_command requires position mode",
+                    })
+                else:
+                    try:
+                        gripper_target[0] = float(msg["gripper"])
+                        sock.send_json({"ok": True})
+                    except (KeyError, TypeError, ValueError) as exc:
+                        sock.send_json({
+                            "ok": False,
+                            "error": f"bad gripper payload: {exc}",
+                        })
             elif cmd == CMD_ESTOP:
                 safety.trigger_estop()
                 try:
@@ -360,6 +412,7 @@ def run_server(cfg: DaemonConfig) -> None:
                 posctl.reset()
                 safety.reset_ramp_state()
                 last_cmd_t[0] = None
+                gripper_target[0] = None
                 sock.send_json({"ok": True})
             else:
                 sock.send_json({"ok": False, "error": f"unknown cmd: {cmd}"})

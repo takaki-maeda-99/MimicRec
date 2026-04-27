@@ -29,6 +29,18 @@ def load_replay_trajectory(ds_root: Path, episode_idx: int):
     table = pq.read_table(pq_path)
     col = table.column("action.joint_pos")
     joint_pos = np.stack([np.array(row.as_py(), dtype=np.float32) for row in col])
+    # Some hand-teach recordings made before the gripper field was split out
+    # of RobotCommand wrote the gripper as the 7th column of action.joint_pos
+    # rather than into action.gripper_pos. Detect that case and split.
+    gripper_targets: np.ndarray | None = None
+    if "action.gripper_pos" in table.column_names:
+        col_g = table.column("action.gripper_pos")
+        gripper_targets = np.array(
+            [float(r.as_py()) for r in col_g], dtype=np.float32
+        )
+    elif joint_pos.shape[1] > 6:
+        gripper_targets = joint_pos[:, 6].astype(np.float32)
+        joint_pos = joint_pos[:, :6]
     # Derive fps from consecutive timestamps (in seconds, since episode start).
     fps: int | None = None
     if "timestamp" in table.column_names and table.num_rows >= 2:
@@ -36,7 +48,9 @@ def load_replay_trajectory(ds_root: Path, episode_idx: int):
         dt = float(np.median(np.diff(ts)))
         if dt > 0:
             fps = int(round(1.0 / dt))
-    return ReplayTrajectory(joint_targets=joint_pos, fps=fps)
+    return ReplayTrajectory(
+        joint_targets=joint_pos, fps=fps, gripper_targets=gripper_targets,
+    )
 
 
 def read_dataset_info(ds_root: Path) -> dict:

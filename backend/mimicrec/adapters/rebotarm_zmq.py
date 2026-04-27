@@ -14,6 +14,7 @@ import zmq
 from mimicrec.adapters.robot import RobotMode
 from mimicrec.adapters.rebotarm_protocol import (
     CMD_CONNECT, CMD_DISCONNECT, CMD_READ_STATE, CMD_SEND_COMMAND,
+    CMD_SEND_GRIPPER_COMMAND,
     CMD_SET_MODE, CMD_HEARTBEAT, CMD_ESTOP, CMD_CLEAR_ESTOP,
     DEFAULT_ZMQ_ADDRESS,
 )
@@ -138,6 +139,23 @@ class ReBotArmZmqAdapter:
         reply = await self._request({"cmd": CMD_SEND_COMMAND, "q": q.tolist()})
         if not reply.get("ok"):
             raise HardwareError(f"daemon rejected send_command: {reply}")
+
+    async def send_gripper_command(self, gripper: float) -> None:
+        """Send a gripper position target (radians).
+
+        The daemon's gripper position controller takes over from the
+        compliance loop while the daemon is in POSITION mode and tracks
+        this target with kp/kd from ``configs/rebotarm_daemon.yaml``'s
+        ``gripper.position_kp/position_kd``. Calling this in GRAVITY_COMP
+        mode raises HardwareError (matches send_joint_command's contract).
+        """
+        if not np.isfinite(gripper):
+            raise HardwareError("non-finite gripper command")
+        reply = await self._request(
+            {"cmd": CMD_SEND_GRIPPER_COMMAND, "gripper": float(gripper)}
+        )
+        if not reply.get("ok"):
+            raise HardwareError(f"daemon rejected send_gripper_command: {reply}")
 
     async def set_mode(self, mode: RobotMode) -> None:
         reply = await self._request({"cmd": CMD_SET_MODE, "mode": mode.value})

@@ -44,14 +44,14 @@ def sample_bundle_to_row(
             obs_gripper = float(state.joint_pos[n])
 
     # Action EE: derived from commanded q. Action has no "ee_pos" field today,
-    # so always use FK when fk is set; otherwise omit.
+    # so always use FK when fk is set; otherwise omit. Gripper comes from
+    # ``bundle.action.gripper`` directly — RobotCommand carries the gripper
+    # target in its own field rather than appended to ``q``.
     act_ee_pos = act_ee_rotvec = None
-    act_gripper = None
+    act_gripper = bundle.action.gripper
     if fk is not None:
         n = fk.n_kin_joints
         act_ee_pos, act_ee_rotvec = fk.pose(bundle.action.q[:n])
-        if bundle.action.q.shape[0] > n:
-            act_gripper = float(bundle.action.q[n])
 
     if obs_ee_pos is not None:
         row["observation.state.ee_pos"] = obs_ee_pos

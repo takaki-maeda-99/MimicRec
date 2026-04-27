@@ -22,9 +22,14 @@ class ReplayTrajectory:
     `fps` is the trajectory's native rate. Replay should iterate at that rate
     so playback tempo matches the recording. If None, falls back to the
     session's fps.
+
+    `gripper_targets` is the per-frame gripper position (radians) when the
+    recording included one, otherwise None — the dispatcher only forwards
+    a gripper command when both the trajectory and the adapter support it.
     """
     joint_targets: np.ndarray   # shape (T, dof)
     fps: int | None = None
+    gripper_targets: np.ndarray | None = None  # shape (T,)
 
 
 async def run_replay(
@@ -76,23 +81,16 @@ async def run_replay(
     # trajectory. Without this ramp, replay only works when the arm starts
     # already at trajectory[0] — usually false.
     raw_targets = trajectory.joint_targets
-    # Recordings made after gripper integration carry [arm_q..., gripper_q]
-    # in action.joint_pos. The send-command path here only addresses the
-    # arm DoF, so slice the gripper component off before ramping. (Once the
-    # daemon accepts a gripper target via send_joint_command, this slice
-    # becomes a split that feeds the gripper its own track.)
-    arm_dof: int | None = None
-    if measured_state_slot is not None:
-        m_init = measured_state_slot.peek()
-        if m_init is not None:
-            arm_dof = int(m_init.value.joint_pos.shape[0])
-    if arm_dof is not None and raw_targets.shape[1] > arm_dof:
-        logger.warning(
-            "[replay] trajectory has %d cols; arm dof=%d — slicing gripper off",
-            raw_targets.shape[1], arm_dof,
-        )
-        raw_targets = raw_targets[:, :arm_dof]
+    # Trajectory is now arm-only; gripper is carried separately on
+    # ``trajectory.gripper_targets`` (None when the recording had none).
+    # The dataset reader handles legacy recordings where gripper was the
+    # 7th column of action.joint_pos by splitting them on read.
     targets = list(raw_targets)
+    grip_targets: list[float] | None = (
+        list(trajectory.gripper_targets)
+        if trajectory.gripper_targets is not None
+        else None
+    )
     if (
         safety is not None
         and measured_state_slot is not None
@@ -109,12 +107,18 @@ async def run_replay(
                 for i in range(1, n_ramp + 1)
             ]
             targets = ramp + targets
+            # Pad the gripper track with the recorded first value during
+            # the ramp so the gripper holds its initial pose while the
+            # arm moves into the start frame.
+            if grip_targets is not None:
+                grip_targets = [float(grip_targets[0])] * n_ramp + grip_targets
 
     n_ramp_used = len(targets) - len(trajectory.joint_targets)
     logger.warning(
-        "[replay] ramp=%d frames + traj=%d frames = %d total (~%.1fs at %dHz)",
+        "[replay] ramp=%d frames + traj=%d frames = %d total (~%.1fs at %dHz)  gripper=%s",
         n_ramp_used, len(trajectory.joint_targets), len(targets),
         len(targets) / effective_fps, effective_fps,
+        "yes" if grip_targets is not None else "no",
     )
 
     sent_count = 0
@@ -159,7 +163,15 @@ async def run_replay(
                     raise
 
             now3 = clock.monotonic_ns()
-            command_goal_slot.set(RobotCommand(q=target, t_mono_ns=now3), t_mono_ns=now3)
+            grip = (
+                float(grip_targets[tick_i])
+                if grip_targets is not None and tick_i < len(grip_targets)
+                else None
+            )
+            command_goal_slot.set(
+                RobotCommand(q=target, gripper=grip, t_mono_ns=now3),
+                t_mono_ns=now3,
+            )
             sent_count += 1
             if wd is not None:
                 wd.note_command_sent(now3)
