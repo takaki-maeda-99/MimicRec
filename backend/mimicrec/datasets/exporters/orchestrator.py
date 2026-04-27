@@ -12,6 +12,7 @@ Two formats:
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -48,20 +49,45 @@ def export_dataset_to_local(
     force: bool,
 ) -> ExportResult:
     out_dir = dest_root / ds_root.name
-    if out_dir.exists():
-        if not force:
-            raise DestinationExistsError(str(out_dir))
-        shutil.rmtree(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=False)
+    partial_dir = dest_root / (ds_root.name + ".partial")
 
-    if format == ExportFormat.LEROBOT_V3_NATIVE:
-        return _export_v3_native(ds_root=ds_root, out_dir=out_dir, format=format)
-    if format == ExportFormat.VLA_COMPAT:
-        return _export_vla_compat(
-            ds_root=ds_root, out_dir=out_dir, format=format,
-            instruction_template=instruction_template,
-        )
-    raise ValueError(f"unsupported export format: {format}")
+    if out_dir.exists() and not force:
+        raise DestinationExistsError(str(out_dir))
+
+    # Always clean up any stale partial from a previous failed run.
+    if partial_dir.exists():
+        shutil.rmtree(partial_dir)
+    partial_dir.mkdir(parents=True, exist_ok=False)
+
+    try:
+        if format == ExportFormat.LEROBOT_V3_NATIVE:
+            result = _export_v3_native(
+                ds_root=ds_root, out_dir=partial_dir, format=format,
+            )
+        elif format == ExportFormat.VLA_COMPAT:
+            result = _export_vla_compat(
+                ds_root=ds_root, out_dir=partial_dir, format=format,
+                instruction_template=instruction_template,
+            )
+        else:
+            raise ValueError(f"unsupported export format: {format}")
+    except BaseException:
+        shutil.rmtree(partial_dir, ignore_errors=True)
+        raise
+
+    # Success: swap in atomically.
+    if out_dir.exists():
+        shutil.rmtree(out_dir)
+    os.rename(partial_dir, out_dir)
+
+    # The result was constructed with partial_dir as dest_path; rebuild with out_dir.
+    return ExportResult(
+        dest_path=out_dir,
+        format=result.format,
+        num_episodes=result.num_episodes,
+        num_frames=result.num_frames,
+        warnings=result.warnings,
+    )
 
 
 def _export_v3_native(*, ds_root: Path, out_dir: Path, format: ExportFormat) -> ExportResult:

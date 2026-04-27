@@ -1,4 +1,3 @@
-import os
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -33,10 +32,8 @@ def test_vla_dest_root_state_override(tmp_path, monkeypatch):
 
 
 import json
-import shutil
 from pathlib import Path
 
-import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
@@ -199,3 +196,39 @@ def test_lerobot_v3_native_format_also_supported_via_local_path(tmp_path: Path):
     out = dest_root / "ds_in"
     assert (out / "meta" / "info.json").exists()
     assert (out / "data" / "chunk-000" / "episode_000000.parquet").exists()
+
+
+def test_export_cleans_up_partial_on_mid_loop_failure(tmp_path: Path, monkeypatch):
+    """If convert_episode_table raises on a later episode, no partial tree
+    should survive at <dest>/<ds_name> nor at <dest>/<ds_name>.partial."""
+    ds = tmp_path / "ds_in"
+    dest_root = tmp_path / "dest"
+    _seed_dataset(ds, num_episodes=3, num_frames=2,
+                  task_name="t1", instruction="i")
+
+    from mimicrec.datasets.exporters import orchestrator as orch_mod
+
+    real_convert = orch_mod.convert_episode_table
+    call_count = {"n": 0}
+
+    def flaky(*, table, instruction_text):
+        call_count["n"] += 1
+        if call_count["n"] == 2:
+            raise RuntimeError("synthetic mid-loop failure")
+        return real_convert(table=table, instruction_text=instruction_text)
+
+    monkeypatch.setattr(orch_mod, "convert_episode_table", flaky)
+
+    with pytest.raises(RuntimeError, match="synthetic"):
+        export_dataset_to_local(
+            ds_root=ds, dest_root=dest_root,
+            format=ExportFormat.VLA_COMPAT,
+            instruction_template=DEFAULT_INSTRUCTION_TEMPLATE,
+            force=False,
+        )
+
+    # No partial directory should remain after failure.
+    assert not (dest_root / "ds_in").exists(), \
+        "out_dir must not exist after mid-export failure"
+    assert not (dest_root / "ds_in.partial").exists(), \
+        "partial dir must be cleaned up on failure"
