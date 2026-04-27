@@ -6,14 +6,14 @@ replay:
   ramp_duration_sec: 2
   # Watchdog thresholds — only abort replay on truly out-of-bounds
   # commands. Hand-teach recordings naturally contain jerks (quick
-  # starts/stops) that produce 50-100+ rad/s² instantaneous acceleration
-  # samples; a 20 rad/s² limit false-tripped routinely. The daemon's own
-  # clamps (joint_vel/accel_max in configs/rebotarm_daemon.yaml) still
-  # smooth the command before it reaches the motors, so the arm itself
-  # never sees these spikes — the watchdog is the early-abort gate.
+  # starts/stops) producing 50-100+ rad/s² spikes and 8-12 rad/s velocity
+  # bursts on the proximal 4340P joints; tighter limits false-tripped on
+  # ordinary recordings. The daemon's own clamps still smooth the command
+  # before it reaches the motors, so the arm itself never sees these
+  # spikes — the watchdog is the early-abort gate.
   # ``max_joint_position_jump`` is the tolerated gap between commanded
   # target and measured arm.
-  max_joint_velocity: 6.28
+  max_joint_velocity: 15.0
   max_joint_acceleration: 200
   max_joint_position_jump: 0.5
   command_timeout_sec: 0.2
