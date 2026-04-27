@@ -108,7 +108,14 @@ class SessionManager:
         # Episode tracking
         self._episode_index = 0
         self._pending: PendingEpisode | None = None
+        # ``_episode_start_t_mono_ns`` is set when state→RECORDING.
+        # ``_episode_stop_t_mono_ns`` is set when state→REVIEW (i.e. the
+        # operator pressed Stop). The metadata's ``duration_sec`` uses the
+        # gap between these, NOT the gap to ``episode_save`` time — that
+        # would include the REVIEW window where the user decides to save
+        # or discard, and inflate every duration by several seconds.
         self._episode_start_t_mono_ns: int | None = None
+        self._episode_stop_t_mono_ns: int | None = None
 
         # Replay needs the daemon in POSITION mode; remember what mode the
         # session was running in so replay_stop can restore it. None = no
@@ -340,6 +347,7 @@ class SessionManager:
             self._pending.open_video_writers(fps=self._fps, cameras=cam_sizes)
         self._current_pending.set(self._pending, t_mono_ns=time.monotonic_ns())
         self._episode_start_t_mono_ns = time.monotonic_ns()
+        self._episode_stop_t_mono_ns = None
         self.session.state = SessionState.RECORDING
 
     async def episode_stop(self) -> None:
@@ -354,6 +362,7 @@ class SessionManager:
         # bundle on its next iteration, which truncated long recordings
         # to whatever the writer happened to have caught up to (e.g. 3 s
         # saved out of 10 s recorded).
+        self._episode_stop_t_mono_ns = time.monotonic_ns()
         self.session.state = SessionState.REVIEW
         # Wait for the writer to fully process every queued bundle —
         # both the get() and the executor-side append_row must complete
@@ -389,6 +398,11 @@ class SessionManager:
                 self._task,
                 self._instruction,
             )
+            # Use the stop timestamp (set when state→REVIEW), not now_mono,
+            # so duration reflects only the RECORDING window. Reviewing for
+            # 3 s before saving used to add 3 s to every duration_sec.
+            stop_t = self._episode_stop_t_mono_ns or now_mono
+            start_t = self._episode_start_t_mono_ns or stop_t
             self._pending.save(metadata_extra={
                 "episode_index": self._episode_index,
                 "task": self._task,
@@ -401,9 +415,9 @@ class SessionManager:
                 "fps": self._fps,
                 "success": success,
                 "comment": comment,
-                "start_t_mono_ns": self._episode_start_t_mono_ns or 0,
-                "end_t_mono_ns": now_mono,
-                "duration_sec": (now_mono - (self._episode_start_t_mono_ns or now_mono)) / 1e9,
+                "start_t_mono_ns": start_t,
+                "end_t_mono_ns": stop_t,
+                "duration_sec": (stop_t - start_t) / 1e9,
                 # Per-episode count (writer_rows_written is session-cumulative).
                 "num_frames": self._pending.num_frames,
                 "session_boot_t_unix": 0,
