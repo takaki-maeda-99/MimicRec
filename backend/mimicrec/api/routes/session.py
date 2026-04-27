@@ -1,4 +1,5 @@
 from __future__ import annotations
+import logging
 from typing import Annotated, Union
 from fastapi import APIRouter, Request
 from pydantic import Field
@@ -7,6 +8,24 @@ from mimicrec.api.schemas import (
 )
 from mimicrec.api.deps import create_session_from_request, get_session_manager, get_session_manager_or_none
 from mimicrec.errors import InvalidTransitionError
+from mimicrec.types import SessionState
+
+logger = logging.getLogger(__name__)
+
+
+def _clear_session_state(app) -> None:
+    """Drop every per-session reference held in ``app.state``.
+
+    Used by both ``/session/end`` (operator-initiated) and
+    ``/session/start`` when it finds a stale manager left over from a
+    session that ended on its own (e.g., FatalHardwareError → end() ran
+    in the background but app.state still pointed at the old instance).
+    """
+    app.state.session_manager = None
+    app.state.session_meta = None
+    app.state.resolved_config = None
+    app.state.error_bus = None
+    app.state.camera_manager = None
 
 router = APIRouter()
 
@@ -42,8 +61,37 @@ async def health():
 
 @router.post("/session/start")
 async def session_start(request: Request, body: StartSessionRequest):
-    if get_session_manager_or_none(request.app) is not None:
-        raise InvalidTransitionError("a session is already active")
+    existing = get_session_manager_or_none(request.app)
+    if existing is not None:
+        # A FatalHardwareError (daemon died, robot bus unresponsive, etc.)
+        # spawns ``end()`` in the background, which transitions state →
+        # IDLE but does not clear ``app.state.session_manager``. Treat a
+        # manager in IDLE — or one that has signalled stop and is past
+        # all the client-visible states — as logically gone, so the
+        # operator can start a fresh session without first calling
+        # /session/end manually. Anything else is a live session and we
+        # refuse to clobber it.
+        stopped = existing.session.stopped.is_set()
+        is_idle = existing.session.state == SessionState.IDLE
+        if not (is_idle or stopped):
+            raise InvalidTransitionError("a session is already active")
+        if not is_idle and stopped:
+            # ``end()`` is still running but the caller has signalled
+            # shutdown. Wait briefly for state to settle before clobbering.
+            import asyncio
+            for _ in range(50):  # up to ~5 s
+                if existing.session.state == SessionState.IDLE:
+                    break
+                await asyncio.sleep(0.1)
+            if existing.session.state != SessionState.IDLE:
+                raise InvalidTransitionError(
+                    "previous session is still ending; try again in a moment"
+                )
+        logger.info(
+            "session_start: dropping stale manager (state=%s); starting fresh",
+            existing.session.state.value,
+        )
+        _clear_session_state(request.app)
     sm = await create_session_from_request(request.app, body)
     await sm.start()
     request.app.state.session_manager = sm
@@ -54,11 +102,7 @@ async def session_start(request: Request, body: StartSessionRequest):
 async def session_end(request: Request):
     sm = get_session_manager(request.app)
     await sm.end()
-    request.app.state.session_manager = None
-    request.app.state.session_meta = None
-    request.app.state.resolved_config = None
-    request.app.state.error_bus = None
-    request.app.state.camera_manager = None
+    _clear_session_state(request.app)
     return build_state_payload(request.app)
 
 
