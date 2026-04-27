@@ -91,3 +91,28 @@ class TaskSummary(BaseModel):
 
 class ErrorPayload(BaseModel):
     detail: str
+
+
+from enum import Enum
+
+
+class ExportFormat(str, Enum):
+    LEROBOT_V3_NATIVE = "lerobot_v3_native"
+    VLA_COMPAT = "vla_compat"
+
+
+DEFAULT_INSTRUCTION_TEMPLATE = "What action should the robot take to {TASK}? A:"
+
+
+class ExportRequest(BaseModel):
+    format: ExportFormat
+    instruction_template: str = DEFAULT_INSTRUCTION_TEMPLATE
+    force: bool = False
+
+
+class ExportResponse(BaseModel):
+    dest_path: str
+    format: ExportFormat
+    num_episodes: int
+    num_frames: int
+    warnings: list[str] = []
