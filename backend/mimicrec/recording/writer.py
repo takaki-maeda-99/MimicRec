@@ -70,7 +70,19 @@ async def run_writer(
             task_index=0,
             fk=fk,
         )
-        pending.append_row(row, frames=bundle.frames)
+        # Defer append_row to a worker thread: H.264 encoding inside
+        # Mp4EpisodeWriter.write_frame is CPU-bound (libx264) and can
+        # take 30-50 ms per frame. Running it on the asyncio thread
+        # blocked the backend long enough that the recording loop tick
+        # missed by 100-260 ms — and once unblocked, several deferred
+        # ticks fired back-to-back with sub-millisecond gaps. That's
+        # exactly the jitter we observed (median 36 ms, min ~0 ms,
+        # max 260+ ms). Writes for a given episode still serialize here
+        # because we await each one, keeping writer state consistent.
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(
+            None, pending.append_row, row, bundle.frames
+        )
         frame_counter += 1
         metrics.inc("writer_rows_written")
 
