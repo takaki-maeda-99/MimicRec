@@ -1,5 +1,3 @@
-import pytest
-
 from mimicrec.datasets.exporters.instructions import (
     expand_instruction,
     InstructionWarning,

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from enum import Enum
 from typing import Annotated, Literal
 from pydantic import BaseModel, Field
 from mimicrec.types import SessionMode, SessionState, SubState
@@ -91,9 +92,6 @@ class TaskSummary(BaseModel):
 
 class ErrorPayload(BaseModel):
     detail: str
-
-
-from enum import Enum
 
 
 class ExportFormat(str, Enum):

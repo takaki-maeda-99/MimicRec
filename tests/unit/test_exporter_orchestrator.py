@@ -1,9 +1,17 @@
+import json
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 
 from mimicrec.api.deps import get_vla_dest_root
+from mimicrec.api.schemas import ExportFormat, DEFAULT_INSTRUCTION_TEMPLATE
+from mimicrec.datasets.exporters.errors import DestinationExistsError
+from mimicrec.datasets.exporters.orchestrator import export_dataset_to_local
+from mimicrec.recording.dataset_layout import init_dataset, dataset_paths
+from mimicrec.recording.metadata import append_episode, upsert_task
 
 
 def _fake_app(state_value=None):
@@ -29,23 +37,6 @@ def test_vla_dest_root_state_override(tmp_path, monkeypatch):
     monkeypatch.setenv("MIMICREC_VLA_DEST_ROOT", "/should/be/ignored")
     app = _fake_app(state_value=tmp_path)
     assert get_vla_dest_root(app) == tmp_path
-
-
-import json
-from pathlib import Path
-
-import pyarrow as pa
-import pyarrow.parquet as pq
-import pytest
-
-from mimicrec.api.schemas import ExportFormat, DEFAULT_INSTRUCTION_TEMPLATE
-from mimicrec.datasets.exporters.errors import (
-    DestinationExistsError,
-    DisallowedFormatError,
-)
-from mimicrec.datasets.exporters.orchestrator import export_dataset_to_local
-from mimicrec.recording.dataset_layout import init_dataset, dataset_paths
-from mimicrec.recording.metadata import append_episode, upsert_task
 
 
 def _seed_dataset(ds_root: Path, *, num_episodes: int, num_frames: int,

@@ -1,7 +1,3 @@
-import json
-
-import pytest
-
 from mimicrec.datasets.exporters.info_json import to_vla_info
 
 

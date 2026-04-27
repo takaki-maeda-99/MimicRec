@@ -10,12 +10,14 @@ from fastapi import APIRouter, Request, Query, HTTPException
 from fastapi.responses import StreamingResponse, FileResponse
 from pydantic import BaseModel as _BaseModel
 
-from mimicrec.api.deps import get_datasets_root, get_configs_root
+from mimicrec.api.deps import get_datasets_root, get_configs_root, get_vla_dest_root
 from mimicrec.api.schemas import (
     CreateDatasetRequest, CreateTaskRequest, DatasetSummary,
-    EpisodeSummary, ExportFormat, TaskSummary,
+    EpisodeSummary, ExportFormat, ExportRequest, ExportResponse, TaskSummary,
 )
 from mimicrec.datasets.archive import build_archive_stream
+from mimicrec.datasets.exporters.errors import DestinationExistsError
+from mimicrec.datasets.exporters.orchestrator import export_dataset_to_local
 from mimicrec.datasets.reader import iter_episodes, read_dataset_info
 from mimicrec.recording.dataset_layout import init_dataset, dataset_paths, resolve_chunk
 from mimicrec.recording.metadata import tombstone_episode, upsert_task
@@ -356,12 +358,6 @@ async def get_annotate_progress(request: Request, ds: str):
     if not progress or progress.get("dataset") != ds:
         return {"status": "idle", "total": 0, "done": 0}
     return progress
-
-
-from mimicrec.api.deps import get_vla_dest_root
-from mimicrec.api.schemas import ExportRequest, ExportResponse
-from mimicrec.datasets.exporters.errors import DestinationExistsError
-from mimicrec.datasets.exporters.orchestrator import export_dataset_to_local
 
 
 @router.post("/datasets/{ds}/export")
