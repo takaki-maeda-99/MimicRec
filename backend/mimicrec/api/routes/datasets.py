@@ -13,7 +13,7 @@ from pydantic import BaseModel as _BaseModel
 from mimicrec.api.deps import get_datasets_root, get_configs_root
 from mimicrec.api.schemas import (
     CreateDatasetRequest, CreateTaskRequest, DatasetSummary,
-    EpisodeSummary, TaskSummary,
+    EpisodeSummary, ExportFormat, TaskSummary,
 )
 from mimicrec.datasets.archive import build_archive_stream
 from mimicrec.datasets.reader import iter_episodes, read_dataset_info
@@ -158,7 +158,18 @@ async def create_task(request: Request, ds: str, body: CreateTaskRequest):
 
 
 @router.get("/datasets/{ds}/archive")
-async def download_archive(request: Request, ds: str):
+async def download_archive(
+    request: Request, ds: str,
+    format: ExportFormat = ExportFormat.LEROBOT_V3_NATIVE,
+):
+    if format != ExportFormat.LEROBOT_V3_NATIVE:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "format=vla_compat is not supported via the archive download. "
+                "Use POST /api/datasets/{ds}/export instead."
+            ),
+        )
     root = get_datasets_root(request.app)
     ds_root = root / ds
     if not ds_root.exists():
@@ -348,7 +359,7 @@ async def get_annotate_progress(request: Request, ds: str):
 
 
 from mimicrec.api.deps import get_vla_dest_root
-from mimicrec.api.schemas import ExportRequest, ExportResponse, ExportFormat
+from mimicrec.api.schemas import ExportRequest, ExportResponse
 from mimicrec.datasets.exporters.errors import DestinationExistsError
 from mimicrec.datasets.exporters.orchestrator import export_dataset_to_local
 
