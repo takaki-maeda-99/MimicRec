@@ -21,16 +21,16 @@ them in sync.
 from __future__ import annotations
 
 import time
-from typing import Optional
+from typing import Optional  # noqa: F401  (used by Gripper annotation below)
 
 import numpy as np
 import zmq
 
-from reBotArm_control_py.actuator import RobotArm
+from reBotArm_control_py.actuator import Gripper, RobotArm
 
 from rebotarm_daemon.config import DaemonConfig
 from rebotarm_daemon.controllers import (
-    GravityCompLockController,
+    GravityCompController,
     PositionController,
 )
 from rebotarm_daemon.ee_pose import EEPose
@@ -128,33 +128,51 @@ def run_server(cfg: DaemonConfig) -> None:
     state = SharedRobotState(dof=n)
     ee = EEPose()
 
-    grav = GravityCompLockController(cfg.gravity_comp, n, safety=safety)
+    grav = GravityCompController(cfg.gravity_comp, n, safety=safety)
     posctl = PositionController(n)
 
-    # Start in gravity-comp mode (matches the backend default and lets
-    # the operator move the arm before the first command).
-    _switch_arm_mode(
-        arm, MODE_GRAVITY_COMP, cfg.gravity_comp.kp, cfg.gravity_comp.kd
+    # Optional gripper sharing the arm's CAN/serial bus. When configured,
+    # we inject the arm's Controller into the Gripper so both sides talk
+    # over the same bus instead of fighting for /dev/ttyACM0. The Gripper
+    # runs its own 100 Hz compliance loop (kp=0 + velocity-direction
+    # friction comp) that mirrors data_collect/11_gravity_compensation_record.py.
+    gripper: Optional[Gripper] = None
+    if cfg.gripper is not None:
+        shared_ctrl = next(iter(arm._ctrl_map.values()))
+        gripper = Gripper(cfg_path=cfg.gripper.cfg_path, controller=shared_ctrl)
+        gripper.enable()
+        gripper.mode_mit(kp=0.0, kd=cfg.gripper.kd)
+        gripper_params = cfg.gripper
+
+        def _gripper_compliance(g: Gripper, _dt: float) -> None:
+            pos, vel, _ = g.get_state(request=False)
+            if abs(vel) > gripper_params.vel_deadband_rad_s:
+                tau = gripper_params.friction_tau_nm * (1.0 if vel > 0 else -1.0)
+            else:
+                tau = 0.0
+            g.mit(pos=pos, vel=0.0, kp=0.0, kd=gripper_params.kd, tau=tau)
+
+        gripper.start_control_loop(
+            _gripper_compliance, rate=float(gripper_params.control_rate_hz)
+        )
+
+    # Force the underlying motors into MIT mode at startup. RobotArm's
+    # __init__ sets self._mode = "mit" as a Python-side default, but the
+    # motor hardware may have been left in POS_VEL by a previous process
+    # (its mode persists across power-cycles). Without this explicit call,
+    # _switch_arm_mode below sees ``arm.mode == "mit"`` and skips
+    # mode_mit() — so motors stay in their residual mode and the kp/kd we
+    # send via arm.mit() get reinterpreted incorrectly. This was the
+    # cause of joints 1-3 (4340P) appearing locked in gravity-comp mode.
+    arm.mode_mit(
+        kp=np.asarray(cfg.gravity_comp.kp, dtype=float),
+        kd=np.asarray(cfg.gravity_comp.kd, dtype=float),
     )
     mode = {"current": MODE_GRAVITY_COMP}
 
-    last_q = arm.get_positions(request=True).astype(float)
-    last_t = time.monotonic()
-
     def control_callback(arm: RobotArm, dt: float) -> None:
-        nonlocal last_q, last_t
-
         q = arm.get_positions()
-
-        # Crude EE velocity via finite difference between successive
-        # control ticks. Refine with the analytic Jacobian (example 10)
-        # if the noise floor proves problematic in practice.
-        now = time.monotonic()
-        dt2 = max(now - last_t, 1e-3)
         ee_pos, ee_rotvec = ee.pose(q)
-        ee_pos_prev, _ = ee.pose(last_q)
-        ee_lin_vel = (ee_pos - ee_pos_prev) / dt2
-        ee_ang_vel = np.zeros(3, dtype=np.float32)
 
         # Motor temperatures aren't exposed by the current SDK; fall
         # back to zeros so the safety manager's thermal watchdog
@@ -174,30 +192,36 @@ def run_server(cfg: DaemonConfig) -> None:
         except AttributeError:
             qd = np.zeros(n, dtype=np.float32)
 
+        gripper_pos = None
+        if gripper is not None:
+            try:
+                gripper_pos = float(gripper.get_position(request=False))
+            except Exception:
+                gripper_pos = None
+
         state.set(
             joint_pos=q.astype(np.float32),
             joint_vel=qd,
             joint_effort=taus,
             ee_pos=ee_pos,
             ee_rotvec=ee_rotvec,
-            gripper_pos=None,
+            gripper_pos=gripper_pos,
             motor_temps_c=temps,
             motor_torques_nm=taus,
         )
 
-        # Safety state machine — freeze (gravity-only, zero ee velocity
-        # so the lock target doesn't drift) on any active fault or
-        # heartbeat timeout.
+        # Safety state machine — fall back to pure gravity comp on any
+        # active fault or heartbeat timeout, regardless of the requested
+        # mode.
         safety.evaluate_thermal(temps)
-        if safety.is_active_fault() or safety.heartbeat_state() != SAFETY_OK:
-            grav.step(arm, np.zeros(3), np.zeros(3))
-        elif mode["current"] == MODE_GRAVITY_COMP:
-            grav.step(arm, ee_lin_vel, ee_ang_vel)
+        if (
+            safety.is_active_fault()
+            or safety.heartbeat_state() != SAFETY_OK
+            or mode["current"] == MODE_GRAVITY_COMP
+        ):
+            grav.step(arm)
         else:
             posctl.step(arm)
-
-        last_q = q.copy()
-        last_t = now
 
     arm.start_control_loop(control_callback, rate=cfg.control_rate_hz)
 
@@ -207,9 +231,11 @@ def run_server(cfg: DaemonConfig) -> None:
     sock.setsockopt(zmq.RCVTIMEO, 100)
 
     print(f"[rebotarm-daemon] listening on {cfg.zmq_address}")
-    stopped = False
+    # Daemon survives client connect/disconnect cycles. The hardware loop
+    # runs once per process; clients (the backend) come and go via ZMQ.
+    # Process exits only on SIGINT/SIGTERM (KeyboardInterrupt) below.
     try:
-        while not stopped:
+        while True:
             try:
                 msg = sock.recv_json()
             except zmq.Again:
@@ -320,7 +346,21 @@ def run_server(cfg: DaemonConfig) -> None:
                     "mode": mode["current"],
                 })
             elif cmd == CMD_DISCONNECT:
-                stopped = True
+                # Soft disconnect — acknowledge but keep running. Reset to
+                # gravity_comp so the next client connects to a known-safe
+                # compliant state instead of inheriting whatever mode the
+                # previous client left behind (e.g., POSITION holding pose
+                # after a replay).
+                try:
+                    _switch_arm_mode(
+                        arm, MODE_GRAVITY_COMP,
+                        cfg.gravity_comp.kp, cfg.gravity_comp.kd,
+                    )
+                    mode["current"] = MODE_GRAVITY_COMP
+                    grav.reset()
+                    posctl.reset()
+                except Exception:
+                    pass
                 sock.send_json({"ok": True})
             else:
                 sock.send_json({"ok": False, "error": f"unknown cmd: {cmd}"})
@@ -333,6 +373,22 @@ def run_server(cfg: DaemonConfig) -> None:
             _ramp_disable(arm, n)
         except Exception:
             pass
+        # Stop gripper compliance loop and disable BEFORE arm.disconnect():
+        # the gripper shares the arm's Controller, so once arm.disconnect()
+        # closes the bus, gripper commands would call into a dead handle.
+        if gripper is not None:
+            try:
+                gripper.stop_control_loop()
+            except Exception:
+                pass
+            try:
+                gripper.disable()
+            except Exception:
+                pass
+            try:
+                gripper.disconnect()
+            except Exception:
+                pass
         try:
             arm.disconnect()
         except Exception:

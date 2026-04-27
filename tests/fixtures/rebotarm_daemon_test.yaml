@@ -12,7 +12,5 @@ safety:
   temperature_recover_c: 60
   heartbeat_timeout_ms: 500
 gravity_comp:
-  push_velocity_threshold_m_s: 0.02
-  push_omega_threshold_rad_s: 0.3
-  kp: [2, 2, 2, 2, 2, 2]
-  kd: [1, 1, 1, 1, 1, 1]
+  kp: [0, 0, 0, 0, 0, 0]
+  kd: [1.5, 1.5, 1.0, 0.6, 0.4, 0.2]

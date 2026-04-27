@@ -22,56 +22,41 @@ from reBotArm_control_py.dynamics import (
 )
 
 
-class GravityCompLockController:
-    """Example-10 style: lock pose when EE is stationary, follow when pushed.
+class GravityCompController:
+    """Pure-compliance gravity comp — kp=0, per-joint kd, tau_g feed-forward.
 
-    When the EE linear / angular velocity exceeds the configured push
-    thresholds, the lock target is updated to the current joint
-    configuration so the user can move the arm; otherwise the target
-    holds and ``kp/kd`` plus gravity feed-forward keep the arm in place.
+    Mirrors reBotArm_control_py/data_collect/11_gravity_compensation_record.py:
+    every tick we send ``pos=q``, ``vel=0``, the configured kp/kd, and
+    Pinocchio's gravity-balance torque. With kp=0 the arm offers no
+    position-hold force; per-joint kd (higher on the proximal 4340P
+    joints) damps oscillation so the arm settles instead of "flying away"
+    when released.
     """
 
     def __init__(self, params, num_joints: int, safety=None):
         self._params = params
         self._n = num_joints
-        # Pre-load the dynamics model so the first control tick doesn't
-        # pay the URDF parse cost. compute_generalized_gravity caches a
-        # default model internally, but we hold a reference to make the
-        # dependency explicit.
+        # Warm the dynamics-model cache so the first control tick doesn't
+        # pay the URDF parse cost. compute_generalized_gravity also caches
+        # internally; this just makes the dependency explicit.
         self._dyn_model = load_dynamics_model()
-        self._target: np.ndarray | None = None  # locked joint target
         # Optional SafetyManager — when provided, tau_g is run through
         # clamp_torque() before being fed to arm.mit() so a runaway
         # gravity feed-forward can't issue an out-of-bounds torque.
         self._safety = safety
 
     def reset(self) -> None:
-        """Drop the lock target so the next ``step`` re-anchors at ``q``."""
-        self._target = None
+        # No internal state under pure compliance; kept for API symmetry
+        # with PositionController.reset().
+        pass
 
-    def step(
-        self,
-        arm,
-        ee_lin_vel: np.ndarray,
-        ee_ang_vel: np.ndarray,
-    ) -> None:
+    def step(self, arm) -> None:
         q = arm.get_positions()
-        if self._target is None:
-            self._target = q.copy()
-
-        v_norm = float(np.linalg.norm(ee_lin_vel))
-        w_norm = float(np.linalg.norm(ee_ang_vel))
-        if (
-            v_norm > self._params.push_velocity_threshold_m_s
-            or w_norm > self._params.push_omega_threshold_rad_s
-        ):
-            self._target = q.copy()
-
         tau_g = compute_generalized_gravity(q=q)
         if self._safety is not None:
             tau_g = self._safety.clamp_torque(tau_g)
         arm.mit(
-            pos=self._target,
+            pos=q,
             vel=np.zeros(self._n),
             kp=np.asarray(self._params.kp, dtype=float),
             kd=np.asarray(self._params.kd, dtype=float),

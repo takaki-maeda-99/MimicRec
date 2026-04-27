@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 import yaml
 
@@ -23,10 +23,29 @@ class SafetyLimits:
 
 @dataclass
 class GravityCompParams:
-    push_velocity_threshold_m_s: float = 0.02
-    push_omega_threshold_rad_s: float = 0.3
-    kp: List[float] = field(default_factory=lambda: [2.0] * 6)
-    kd: List[float] = field(default_factory=lambda: [1.0] * 6)
+    # Per-joint MIT gains for pure-compliance hand-teaching. kp=0 leaves the
+    # arm fully free; kd damps motion, with higher values on the proximal
+    # 4340P joints (1-3) which carry more reflected inertia. Mirrors
+    # reBotArm_control_py/data_collect/11_gravity_compensation_record.py.
+    kp: List[float] = field(default_factory=lambda: [0.0] * 6)
+    kd: List[float] = field(
+        default_factory=lambda: [1.5, 1.5, 1.0, 0.6, 0.4, 0.2]
+    )
+
+
+@dataclass
+class GripperParams:
+    # Optional gripper running on the same bus as the arm. Mirrors the
+    # compliance loop from reBotArm_control_py/data_collect/11_gravity_compensation_record.py:
+    # kp=0 fully free, kd damps oscillation, and a small velocity-direction
+    # friction-compensation torque overcomes static friction so the gripper
+    # feels light to the operator. Set to ``None`` (omit the YAML section)
+    # if the hardware has no gripper.
+    cfg_path: str = "configs/rebotarm/gripper.yaml"
+    kd: float = 0.0
+    friction_tau_nm: float = 0.10
+    vel_deadband_rad_s: float = 0.10
+    control_rate_hz: int = 100
 
 
 @dataclass
@@ -36,6 +55,7 @@ class DaemonConfig:
     control_rate_hz: int = 500
     safety: SafetyLimits = field(default_factory=SafetyLimits)
     gravity_comp: GravityCompParams = field(default_factory=GravityCompParams)
+    gripper: Optional[GripperParams] = None
 
 
 def load_daemon_config(path: str | Path) -> DaemonConfig:
@@ -43,10 +63,13 @@ def load_daemon_config(path: str | Path) -> DaemonConfig:
     raw = yaml.safe_load(Path(path).read_text()) or {}
     safety_raw = raw.get("safety", {})
     grav_raw = raw.get("gravity_comp", {})
+    # Gripper is opt-in: omitting the ``gripper:`` section disables it.
+    gripper_raw = raw.get("gripper")
     return DaemonConfig(
         arm_config=raw.get("arm_config", "configs/rebotarm/arm.yaml"),
         zmq_address=raw.get("zmq_address", "tcp://*:5558"),
         control_rate_hz=int(raw.get("control_rate_hz", 500)),
         safety=SafetyLimits(**safety_raw) if safety_raw else SafetyLimits(),
         gravity_comp=GravityCompParams(**grav_raw) if grav_raw else GravityCompParams(),
+        gripper=GripperParams(**gripper_raw) if gripper_raw else None,
     )

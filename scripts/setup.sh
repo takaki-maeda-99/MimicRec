@@ -106,10 +106,23 @@ if [[ -d "$REPO_ROOT/reBotArm_control_py" ]]; then
         uv venv "$REPO_ROOT/.venv-rebotarm" --python 3.10
     fi
     PY_REBOT="$REPO_ROOT/.venv-rebotarm/bin/python"
-    log "installing reBotArm + daemon deps"
+    # The upstream reBotArm_control_py pyproject relies on setuptools flat-layout
+    # auto-discovery, which refuses to build when sibling dirs (config/, urdf/)
+    # look like top-level packages. Rather than patch the submodule, install its
+    # runtime deps directly and expose the package via a .pth file.
+    log "installing reBotArm daemon deps"
+    # NB: ``pin`` is the PyPI name for the real Pinocchio Python bindings
+    # (provides ``import pinocchio``). Do NOT add ``pinocchio`` as a separate
+    # dep — that's an unrelated PyPI squatter package that shadows the bindings.
     uv pip install --python "$PY_REBOT" \
-        -e "$REPO_ROOT/reBotArm_control_py" \
-        pyzmq numpy pyyaml pinocchio
+        "meshcat>=0.3.2" "pin>=3.9.0" "numpy>=1.24.0" \
+        "pyyaml>=6.0" "matplotlib>=3.10.8" "motorbridge>=0.1.7" \
+        pyzmq
+    SITE_PKGS=$("$PY_REBOT" -c "import sysconfig; print(sysconfig.get_paths()['purelib'])")
+    {
+        echo "$REPO_ROOT/reBotArm_control_py"
+        echo "$REPO_ROOT/scripts"
+    } > "$SITE_PKGS/rebotarm_control_py.pth"
 else
     log "reBotArm_control_py submodule absent — skipping rebotarm daemon venv"
 fi
