@@ -7,9 +7,9 @@
 ## 何ができる
 
 - **テレオペレーション**: リーダーアーム / キーボード / シミュレータからフォロワーを操作して軌道を録画
-- **ハンドティーチ**: 重力補償下でロボットを手で動かして教示（reBotArm 用）
+- **ハンドティーチ**: 純コンプライアンス重力補償でロボットを手で動かして教示（reBotArm）。グリッパも摩擦補償付きで軽く動かせます
 - **レビュー**: 録ったエピソードを保存／破棄／成功・失敗ラベル付け
-- **リプレイ**: 安全ウォッチドッグ付きでロボット上で再生
+- **リプレイ**: アーム＋グリッパ両方が録画通りに動作、安全ウォッチドッグ付き
 - **サブタスクアノテーション** (現状モック、本実装は `MimicAno/` で進行中)
 - **設定 UI**: デバイス検出・キャリブレーション状態・アダプタ config 編集
 - **ダウンロード**: LeRobot v3 互換 zip でデータセット書き出し
@@ -20,7 +20,7 @@
 |-------|-----------------|----------------|------|
 | SO-101 | LeRobot `SOFollower` (Feetech STS3215) | 非対応（重力補償なし） | 動作確認済み |
 | SO Leader | LeRobot `SOLeader` テレオペ | — | 動作確認済み |
-| reBot Arm B601-DM | `reBotArm_control_py` via ZMQ デーモン | 対応 (重力補償ロック) | 動作確認済み — モックデーモンは CI、実機 smoke は手動 |
+| reBot Arm B601-DM (+ グリッパ) | `reBotArm_control_py` via ZMQ デーモン | 純コンプライアンス重力補償 + グリッパ摩擦補償 | 動作確認済み |
 | Mock | 内蔵モックアダプタ | 対応 | テスト用 |
 | Isaac Sim (任意ロボット) | ZMQ ブリッジ | 対応 | 動作確認済み (Franka) |
 
@@ -197,6 +197,66 @@ Isaac Sim なしでテストしたい場合:
 
 その後 MimicRec UI で `robot=rebotarm` を選択すると、Record ページに
 大きな赤い E-stop ボタンが表示されます。
+
+デーモンが 500Hz アーム制御ループ + 100Hz グリッパループを保持し、
+ハンドティーチは [`reBotArm_control_py/data_collect/11_gravity_compensation_record.py`](reBotArm_control_py/data_collect/11_gravity_compensation_record.py)
+を踏襲、モータは常に MIT モードで動作します(リプレイ/テレオペ用の POSITION
+モードは MIT + 強い kp + 重力 FF というだけ)。モード切替で arm が
+落下する事故は起きません。デーモンはバックエンドの session start/end を
+跨いで生存するので、基本的には一度起動して放置で OK。
+
+#### 設定
+
+トップレベルの `configs/rebotarm_daemon.yaml` と、上流 submodule から
+コピーするハードウェア固有 config を編集します:
+
+```bash
+cp reBotArm_control_py/config/arm.yaml     configs/rebotarm/arm.yaml
+cp reBotArm_control_py/config/gripper.yaml configs/rebotarm/gripper.yaml
+```
+
+`configs/rebotarm/arm.yaml` のモータ ID / channel を実機に合わせます。
+MimicRec の daemon config 側でチューニングする主なパラメータ:
+
+- `gravity_comp.kd` — ハンドティーチ時の関節別ダンピング。慣性が大きい
+  近位 4340P (関節1〜3) ほど高く。デフォルト `[1.5, 1.5, 1.0, 0.6, 0.4, 0.2]`。
+  手放した瞬間に「飛んでいく」なら上げ、押し感が重ければ下げます。
+- `position.kp / position.kd` — リプレイ時の MIT ゲイン。デフォルトは
+  `arm.yaml` の MIT デフォルト (近位 120/8、遠位 18/2) 相当。トラッキング
+  をきつくしたければ上げ、コマンド着地を柔らかくしたければ下げます。
+- `gripper.friction_tau_nm / vel_deadband_rad_s` — グリッパを押した瞬間
+  に方向沿いに足す摩擦補償。粘るなら上げ、勝手に動くなら下げます。
+
+リプレイは録画から arm + gripper 両方を再生します。parquet の
+`action.gripper_pos` 列が読み込まれて別経路でデーモンに送信される
+仕組み。グリッパのない録画/ハードウェアでは arm のみ再生されます。
+
+#### 録画が止まる / リプレイが abort する場合
+
+リプレイ abort はほぼ safety watchdog の trip です。バックエンドログの
+`[replay] SAFETY TRIP` を見ると、どのゲート（`joint_position_jump` /
+`joint_velocity` / `joint_acceleration`）がどの値で発火したか出ます。
+`configs/robot/rebotarm.yaml` の `replay:` ブロックの該当しきい値を
+録画の自然な値に合わせて引き上げてください。デーモン側 clamp
+(`configs/rebotarm_daemon.yaml` の `safety:` ブロック) が実モータに
+届く前のスムージングを担当します。
+
+録画の cadence(フレーム間隔のばらつき)は parquet から確認できます:
+
+```python
+import pyarrow.parquet as pq, numpy as np
+ts = np.array([float(r.as_py()) for r in pq.read_table(
+    "datasets/<ds>/data/chunk-000/episode_000000.parquet"
+).column("timestamp")])
+dt = np.diff(ts)
+print(f"median {np.median(dt)*1000:.1f}ms  std {np.std(dt)*1000:.2f}ms  "
+      f"min {dt.min()*1000:.1f}ms  max {dt.max()*1000:.1f}ms")
+```
+
+健全な 30 fps 録画なら median ~33 ms、std < 1 ms。std が median と
+同等のレベルで暴れてる場合、H.264 エンコーダが追いついていません
+(writer はすでに asyncio ループ外でエンコード+`preset=ultrafast`
+を使ってますが、低スペック CPU だと更に軽いコーデックが必要かも)。
 
 ## キーボードショートカット (Record ページ)
 

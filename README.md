@@ -7,9 +7,9 @@ Local-first web application for collecting imitation-learning datasets from phys
 ## What it does
 
 - **Teleoperate** a follower arm with a leader arm, keyboard, or simulator and record trajectories
-- **Hand-teach** by moving the robot under gravity compensation (reBotArm)
+- **Hand-teach** by moving the robot under pure-compliance gravity compensation (reBotArm), with gripper friction compensation so the gripper feels light too
 - **Review** recorded episodes: save, discard, or label (success/failure)
-- **Replay** episodes on the robot with safety watchdog
+- **Replay** episodes on the robot — both arm and gripper follow the recorded trajectory, with a safety watchdog
 - **Annotate** episodes with subtask segments (Gemma 4 VLM; full pipeline lives in `MimicAno/`)
 - **Configure** devices, calibrations, and adapter configs from a Settings page
 - **Download** datasets as LeRobot v3 compatible zip archives
@@ -20,7 +20,7 @@ Local-first web application for collecting imitation-learning datasets from phys
 |-------|-----------|------------|--------|
 | SO-101 | LeRobot `SOFollower` via Feetech STS3215 | Not supported (no gravity comp) | Verified |
 | SO Leader | LeRobot `SOLeader` teleoperator | — | Verified |
-| reBot Arm B601-DM | `reBotArm_control_py` via ZMQ daemon | Supported (gravity-comp lock) | Verified — mock daemon in CI, hardware smoke pending |
+| reBot Arm B601-DM (+ gripper) | `reBotArm_control_py` via ZMQ daemon | Pure-compliance gravity comp + gripper friction comp | Verified |
 | Mock | Built-in mock adapters | Supported | For testing |
 | Isaac Sim (any robot) | ZMQ bridge | Supported | Verified (Franka) |
 
@@ -221,6 +221,73 @@ a separate terminal:
 
 Then in MimicRec UI choose `robot=rebotarm`. The Record page will
 show a big red E-stop button.
+
+The daemon owns the 500 Hz motor control loop and a 100 Hz gripper
+loop, mirrors `reBotArm_control_py/data_collect/11_gravity_compensation_record.py`
+for hand-teach, and stays in MIT mode throughout — POSITION mode for
+replay/teleop is just MIT with strong kp + gravity feed-forward, so
+mode swaps don't drop the arm under gravity. The daemon survives
+session start/end cycles in the backend, so you typically launch it
+once and leave it running.
+
+#### Configuration
+
+The daemon reads `configs/rebotarm_daemon.yaml` (top-level) and a
+hardware-specific arm config + optional gripper config you copy from
+the upstream submodule:
+
+```bash
+cp reBotArm_control_py/config/arm.yaml     configs/rebotarm/arm.yaml
+cp reBotArm_control_py/config/gripper.yaml configs/rebotarm/gripper.yaml
+```
+
+Edit `configs/rebotarm/arm.yaml` to match your motor IDs / channel.
+The MimicRec daemon config has three sections worth tuning:
+
+- `gravity_comp.kd` — per-joint damping during hand-teach. Higher on
+  the proximal 4340P joints (1-3) which carry more reflected inertia.
+  Default `[1.5, 1.5, 1.0, 0.6, 0.4, 0.2]`. Bump up if the arm "flies"
+  when released, down if it feels too heavy to push.
+- `position.kp / position.kd` — MIT gains used during replay. Defaults
+  match `arm.yaml`'s MIT defaults (120/8 for proximal, 18/2 for distal).
+  Bump up for tighter trajectory tracking, down for softer landings.
+- `gripper.friction_tau_nm / vel_deadband_rad_s` — friction-comp torque
+  applied when the operator pushes the gripper past the deadband.
+  Increase if the gripper still feels sticky; decrease if it drifts.
+
+Replay drives both arm and gripper from the recorded trajectory. The
+parquet `action.gripper_pos` column is read alongside `action.joint_pos`
+and forwarded via a separate gripper-command path; recordings made
+without a gripper (or on hardware that doesn't have one) just play
+back the arm.
+
+#### If recording stalls or replay aborts
+
+Replay aborts are usually safety-watchdog trips. Look for `[replay] SAFETY TRIP`
+in the backend log; the message tells you which gate fired
+(`joint_position_jump` / `joint_velocity` / `joint_acceleration`) and at
+what value. Bump the matching threshold in `configs/robot/rebotarm.yaml`'s
+`replay:` block if the recording's natural motion exceeds it. Daemon-side
+clamps in `configs/rebotarm_daemon.yaml`'s `safety:` block then smooth
+whatever you send before it reaches the motors.
+
+Recording cadence (per-episode jitter) can be checked from the parquet:
+
+```python
+import pyarrow.parquet as pq, numpy as np
+ts = np.array([float(r.as_py()) for r in pq.read_table(
+    "datasets/<ds>/data/chunk-000/episode_000000.parquet"
+).column("timestamp")])
+dt = np.diff(ts)
+print(f"median {np.median(dt)*1000:.1f}ms  std {np.std(dt)*1000:.2f}ms  "
+      f"min {dt.min()*1000:.1f}ms  max {dt.max()*1000:.1f}ms")
+```
+
+Healthy 30 fps recording: median ~33 ms, std < 1 ms. If you see std
+comparable to median (heavy jitter), the H.264 encoder is likely
+falling behind — the writer already runs encodes off the asyncio loop
+and uses `preset=ultrafast` by default, but slower hardware may need
+a lighter codec.
 
 ## Keyboard shortcuts (Record page)
 
