@@ -54,3 +54,19 @@ export interface WsMessage {
   type: "session_state" | "episode_progress" | "replay_progress" | "error";
   data: Record<string, unknown>;
 }
+
+export type ExportFormat = "lerobot_v3_native" | "vla_compat";
+
+export interface ExportRequest {
+  format: ExportFormat;
+  instruction_template?: string;
+  force?: boolean;
+}
+
+export interface ExportResponse {
+  dest_path: string;
+  format: ExportFormat;
+  num_episodes: number;
+  num_frames: number;
+  warnings: string[];
+}
