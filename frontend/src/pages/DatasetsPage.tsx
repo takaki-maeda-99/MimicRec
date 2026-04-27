@@ -4,6 +4,7 @@ import { useDatasets, useCreateDataset, useDeleteDataset } from "../api/queries"
 import { apiFetch } from "../api/client";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
+import { ExportDatasetModal } from "../components/ExportDatasetModal";
 
 export default function DatasetsPage() {
   const { data: datasets, isLoading } = useDatasets();
@@ -11,6 +12,7 @@ export default function DatasetsPage() {
   const deleteMutation = useDeleteDataset();
   const [annotating, setAnnotating] = useState<string | null>(null);
   const [progress, setProgress] = useState<{ done: number; total: number; current_episode: number | null; status: string } | null>(null);
+  const [exportingDataset, setExportingDataset] = useState<string | null>(null);
 
   const handleAnnotateAll = async (dsName: string) => {
     if (!confirm(`Annotate all episodes in "${dsName}" with Gemma 4?\nThis may take a while.`)) return;
@@ -113,13 +115,12 @@ export default function DatasetsPage() {
                 <td className="py-3 text-gray-600">{ds.num_episodes}</td>
                 <td className="py-3 text-gray-600">{ds.total_frames}</td>
                 <td className="py-3 flex gap-3">
-                  <a
-                    href={`/api/datasets/${ds.name}/archive`}
+                  <button
                     className="text-sm text-gray-600 hover:text-gray-900"
-                    download
+                    onClick={() => setExportingDataset(ds.name)}
                   >
-                    Download
-                  </a>
+                    Export
+                  </button>
                   <button
                     className="text-sm text-purple-600 hover:text-purple-800"
                     onClick={() => handleAnnotateAll(ds.name)}
@@ -170,6 +171,13 @@ export default function DatasetsPage() {
             <p className="text-sm text-green-600 mt-2">Complete!</p>
           )}
         </div>
+      )}
+
+      {exportingDataset && (
+        <ExportDatasetModal
+          ds={exportingDataset}
+          onClose={() => setExportingDataset(null)}
+        />
       )}
     </div>
   );
