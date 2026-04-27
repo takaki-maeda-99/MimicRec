@@ -343,18 +343,33 @@ class SessionManager:
         self.session.state = SessionState.RECORDING
 
     async def episode_stop(self) -> None:
-        """RECORDING -> REVIEW. Clear pending slot, drain queue, finalize."""
+        """RECORDING -> REVIEW. Drain writer, clear pending slot, finalize."""
         if self.session.state != SessionState.RECORDING:
             raise InvalidTransitionError(
                 f"episode_stop requires RECORDING, got {self.session.state}"
             )
+        # Move out of RECORDING so the control loop stops enqueuing new
+        # bundles. The pending slot stays non-None until drain finishes —
+        # flipping it earlier caused the writer to drop every queued
+        # bundle on its next iteration, which truncated long recordings
+        # to whatever the writer happened to have caught up to (e.g. 3 s
+        # saved out of 10 s recorded).
         self.session.state = SessionState.REVIEW
+        # Wait for the writer to fully process every queued bundle —
+        # both the get() and the executor-side append_row must complete
+        # before we touch the pending episode. ``queue.join()`` is the
+        # canonical way to express that: it returns once every put has
+        # been balanced by a task_done. ``queue.empty()`` would lie
+        # while the writer is mid-encode in the executor thread.
+        try:
+            await asyncio.wait_for(self._recorder_queue.join(), timeout=30.0)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "episode_stop: writer drain timed out; pending episode "
+                "may be missing trailing frames"
+            )
+        # Drained — safe to clear the pending slot and finalize.
         self._current_pending.set(None, t_mono_ns=time.monotonic_ns())
-        # Give writer time to drain
-        for _ in range(100):
-            if self._recorder_queue.empty():
-                break
-            await asyncio.sleep(0.01)
         if self._pending:
             self._pending.finalize()
 
