@@ -24,6 +24,8 @@ def test_loads_yaml(tmp_path):
     assert cfg.safety.heartbeat_timeout_ms == 500
     assert cfg.gravity_comp.kp == [0.0] * 6
     assert cfg.gravity_comp.kd == [1.5, 1.5, 1.0, 0.6, 0.4, 0.2]
+    assert cfg.position.kp == [120.0, 120.0, 120.0, 18.0, 18.0, 18.0]
+    assert cfg.position.kd == [8.0, 8.0, 8.0, 2.0, 2.0, 2.0]
 
 
 def test_loads_empty_yaml_yields_full_defaults(tmp_path):
@@ -34,3 +36,5 @@ def test_loads_empty_yaml_yields_full_defaults(tmp_path):
     assert cfg.safety.heartbeat_timeout_ms == 500
     assert cfg.gravity_comp.kp == [0.0] * 6
     assert cfg.gravity_comp.kd == [1.5, 1.5, 1.0, 0.6, 0.4, 0.2]
+    assert cfg.position.kp == [120.0, 120.0, 120.0, 18.0, 18.0, 18.0]
+    assert cfg.position.kd == [8.0, 8.0, 8.0, 2.0, 2.0, 2.0]

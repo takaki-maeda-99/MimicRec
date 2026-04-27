@@ -20,6 +20,14 @@ gravity_comp:
   kp: [0, 0, 0, 0, 0, 0]
   kd: [1.5, 1.5, 1.0, 0.6, 0.4, 0.2]
 
+# Position-tracking gains for replay / teleop. Motors stay in MIT mode;
+# POSITION is just MIT with strong kp + tau_g. Defaults mirror arm.yaml's
+# MIT.kp/kd (120/8 for 4340P, 18/2 for 4310). Tune up for tighter
+# tracking, down for softer landing.
+position:
+  kp: [120, 120, 120, 18, 18, 18]
+  kd: [8, 8, 8, 2, 2, 2]
+
 # Optional gripper sharing the arm's bus (motor 0x07 on the same
 # /dev/ttyACM0). Remove this section to disable the gripper entirely.
 # friction_tau_nm: torque applied in the velocity direction once velocity

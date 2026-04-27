@@ -101,21 +101,12 @@ def _ramp_disable(arm: RobotArm, n: int, secs: float = 1.0, rate_hz: int = 100) 
         _time.sleep(1.0 / rate_hz)
 
 
-def _switch_arm_mode(arm: RobotArm, target_mode: str, gravity_kp, gravity_kd) -> None:
-    """Switch the underlying arm controller mode if needed.
-
-    Gravity-comp mode uses MIT (with kp/kd from config); POSITION mode
-    uses POS_VEL. ``arm.mode_*`` is idempotent and safe to call when
-    already in the target mode, but skipping the call when possible
-    avoids the per-call ``stabilize_delay`` (~200 ms).
-    """
-    if target_mode == MODE_GRAVITY_COMP and arm.mode != "mit":
-        arm.mode_mit(
-            kp=np.asarray(gravity_kp, dtype=float),
-            kd=np.asarray(gravity_kd, dtype=float),
-        )
-    elif target_mode == MODE_POSITION and arm.mode != "pos_vel":
-        arm.mode_pos_vel()
+# NOTE: ``_switch_arm_mode`` was removed in favour of staying in MIT
+# throughout the daemon's lifetime. POSITION and GRAVITY_COMP are now
+# pure software dispatch — the only thing the motor sees is different
+# kp/kd/pos/tau values per tick. mode_pos_vel() used to drop the QDD
+# arm under gravity during the ~200 ms stabilize per motor; this design
+# eliminates that failure mode entirely.
 
 
 def run_server(cfg: DaemonConfig) -> None:
@@ -129,7 +120,7 @@ def run_server(cfg: DaemonConfig) -> None:
     ee = EEPose()
 
     grav = GravityCompController(cfg.gravity_comp, n, safety=safety)
-    posctl = PositionController(n)
+    posctl = PositionController(cfg.position, n, safety=safety)
 
     # Optional gripper sharing the arm's CAN/serial bus. When configured,
     # we inject the arm's Controller into the Gripper so both sides talk
@@ -308,20 +299,17 @@ def run_server(cfg: DaemonConfig) -> None:
                 if m not in (MODE_POSITION, MODE_GRAVITY_COMP):
                     sock.send_json({"ok": False, "error": f"unknown mode: {m}"})
                 else:
-                    try:
-                        _switch_arm_mode(
-                            arm, m, cfg.gravity_comp.kp, cfg.gravity_comp.kd
-                        )
-                        # Reset the controller's held target so it
-                        # re-anchors at the current pose on the next tick.
-                        if m == MODE_POSITION:
-                            posctl.reset()
-                        else:
-                            grav.reset()
-                        mode["current"] = m
-                        sock.send_json({"ok": True, "mode": m})
-                    except Exception as exc:  # noqa: BLE001 — surface to client
-                        sock.send_json({"ok": False, "error": f"mode switch failed: {exc}"})
+                    # Pure software-mode swap. Motors stay in MIT; the
+                    # control_callback dispatch picks grav.step (kp=0) or
+                    # posctl.step (kp=high) per tick. Reset the inactive
+                    # controller's target so it re-anchors at the current
+                    # pose when it next runs.
+                    if m == MODE_POSITION:
+                        posctl.reset()
+                    else:
+                        grav.reset()
+                    mode["current"] = m
+                    sock.send_json({"ok": True, "mode": m})
             elif cmd == CMD_ESTOP:
                 safety.trigger_estop()
                 try:
@@ -351,16 +339,9 @@ def run_server(cfg: DaemonConfig) -> None:
                 # compliant state instead of inheriting whatever mode the
                 # previous client left behind (e.g., POSITION holding pose
                 # after a replay).
-                try:
-                    _switch_arm_mode(
-                        arm, MODE_GRAVITY_COMP,
-                        cfg.gravity_comp.kp, cfg.gravity_comp.kd,
-                    )
-                    mode["current"] = MODE_GRAVITY_COMP
-                    grav.reset()
-                    posctl.reset()
-                except Exception:
-                    pass
+                mode["current"] = MODE_GRAVITY_COMP
+                grav.reset()
+                posctl.reset()
                 sock.send_json({"ok": True})
             else:
                 sock.send_json({"ok": False, "error": f"unknown cmd: {cmd}"})

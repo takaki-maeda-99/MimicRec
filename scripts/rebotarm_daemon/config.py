@@ -34,6 +34,24 @@ class GravityCompParams:
 
 
 @dataclass
+class PositionParams:
+    # Per-joint MIT gains for position-tracking (replay / teleop). The
+    # daemon never switches the motors out of MIT — POSITION mode is just
+    # MIT with strong kp + gravity FF, GRAVITY_COMP is MIT with kp=0 +
+    # gravity FF. This avoids the ~200 ms torque dropout per motor that
+    # mode_pos_vel() incurs, which used to drop the QDD arm under gravity
+    # whenever replay flipped modes.
+    #
+    # Defaults mirror arm.yaml's MIT.kp/kd (120/8 for proximal 4340P,
+    # 18/2 for distal 4310). Tune up for tighter tracking, down for
+    # softer landing on commanded targets.
+    kp: List[float] = field(
+        default_factory=lambda: [120.0, 120.0, 120.0, 18.0, 18.0, 18.0]
+    )
+    kd: List[float] = field(default_factory=lambda: [8.0, 8.0, 8.0, 2.0, 2.0, 2.0])
+
+
+@dataclass
 class GripperParams:
     # Optional gripper running on the same bus as the arm. Mirrors the
     # compliance loop from reBotArm_control_py/data_collect/11_gravity_compensation_record.py:
@@ -55,6 +73,7 @@ class DaemonConfig:
     control_rate_hz: int = 500
     safety: SafetyLimits = field(default_factory=SafetyLimits)
     gravity_comp: GravityCompParams = field(default_factory=GravityCompParams)
+    position: PositionParams = field(default_factory=PositionParams)
     gripper: Optional[GripperParams] = None
 
 
@@ -63,6 +82,7 @@ def load_daemon_config(path: str | Path) -> DaemonConfig:
     raw = yaml.safe_load(Path(path).read_text()) or {}
     safety_raw = raw.get("safety", {})
     grav_raw = raw.get("gravity_comp", {})
+    pos_raw = raw.get("position", {})
     # Gripper is opt-in: omitting the ``gripper:`` section disables it.
     gripper_raw = raw.get("gripper")
     return DaemonConfig(
@@ -71,5 +91,6 @@ def load_daemon_config(path: str | Path) -> DaemonConfig:
         control_rate_hz=int(raw.get("control_rate_hz", 500)),
         safety=SafetyLimits(**safety_raw) if safety_raw else SafetyLimits(),
         gravity_comp=GravityCompParams(**grav_raw) if grav_raw else GravityCompParams(),
+        position=PositionParams(**pos_raw) if pos_raw else PositionParams(),
         gripper=GripperParams(**gripper_raw) if gripper_raw else None,
     )
