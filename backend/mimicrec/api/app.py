@@ -31,6 +31,7 @@ def create_app() -> FastAPI:
     app.state.session_meta = None
     app.state.configs_root = None
     app.state.datasets_root = None
+    app.state.vla_dest_root = None
     app.include_router(session.router, prefix="/api")
     app.include_router(episode.router, prefix="/api")
     app.include_router(replay.router, prefix="/api")

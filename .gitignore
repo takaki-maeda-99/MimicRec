@@ -8,3 +8,4 @@ __pycache__/
 /MimicAno/sam3/
 node_modules/
 frontend/dist/
+.worktrees/

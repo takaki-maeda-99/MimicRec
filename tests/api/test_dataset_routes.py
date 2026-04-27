@@ -2,6 +2,7 @@ import json
 import zipfile
 import io
 from pathlib import Path
+import pytest
 from httpx import AsyncClient, ASGITransport
 from mimicrec.api.app import create_app
 from mimicrec.recording.dataset_layout import init_dataset
@@ -87,3 +88,33 @@ async def test_archive_download(tmp_path: Path):
         with zipfile.ZipFile(buf) as zf:
             names = zf.namelist()
             assert any("episode_000000.parquet" in n for n in names)
+
+
+@pytest.mark.asyncio
+async def test_archive_with_vla_compat_format_returns_400(tmp_path: Path):
+    from mimicrec.api.app import create_app
+    from mimicrec.recording.dataset_layout import init_dataset
+    a = create_app()
+    a.state.datasets_root = tmp_path
+    init_dataset(tmp_path / "ds_vla", fps=15,
+                 joint_names=["j1","j2","j3","j4","j5","j6"], camera_names=[])
+    transport = ASGITransport(app=a)
+    async with AsyncClient(transport=transport, base_url="http://t") as ac:
+        r = await ac.get("/api/datasets/ds_vla/archive?format=vla_compat")
+    assert r.status_code == 400
+    assert "POST" in r.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_archive_with_v3_native_format_succeeds(tmp_path: Path):
+    from mimicrec.api.app import create_app
+    from mimicrec.recording.dataset_layout import init_dataset
+    a = create_app()
+    a.state.datasets_root = tmp_path
+    init_dataset(tmp_path / "ds_native", fps=15,
+                 joint_names=["j1","j2","j3","j4","j5","j6"], camera_names=[])
+    transport = ASGITransport(app=a)
+    async with AsyncClient(transport=transport, base_url="http://t") as ac:
+        r = await ac.get("/api/datasets/ds_native/archive?format=lerobot_v3_native")
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "application/zip"

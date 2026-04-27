@@ -11,4 +11,5 @@ def app():
     a = create_app()
     a.state.configs_root = REPO_ROOT / "configs"
     a.state.datasets_root = None
+    a.state.vla_dest_root = None
     return a

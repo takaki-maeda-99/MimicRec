@@ -1,4 +1,5 @@
 from __future__ import annotations
+import asyncio
 import io
 import json
 import time
@@ -6,16 +7,18 @@ import zipfile
 from pathlib import Path
 
 import pyarrow.parquet as pq
-from fastapi import APIRouter, Request, Query
+from fastapi import APIRouter, Request, Query, HTTPException
 from fastapi.responses import StreamingResponse, FileResponse
 from pydantic import BaseModel as _BaseModel
 
-from mimicrec.api.deps import get_datasets_root, get_configs_root
+from mimicrec.api.deps import get_datasets_root, get_configs_root, get_vla_dest_root
 from mimicrec.api.schemas import (
     CreateDatasetRequest, CreateTaskRequest, DatasetSummary,
-    EpisodeSummary, TaskSummary,
+    EpisodeSummary, ExportFormat, ExportRequest, ExportResponse, TaskSummary,
 )
 from mimicrec.datasets.archive import build_archive_stream
+from mimicrec.datasets.exporters.errors import DestinationExistsError
+from mimicrec.datasets.exporters.orchestrator import export_dataset_to_local
 from mimicrec.datasets.reader import iter_episodes, read_dataset_info
 from mimicrec.recording.dataset_layout import init_dataset, dataset_paths, resolve_chunk
 from mimicrec.recording.metadata import tombstone_episode, upsert_task
@@ -158,7 +161,18 @@ async def create_task(request: Request, ds: str, body: CreateTaskRequest):
 
 
 @router.get("/datasets/{ds}/archive")
-async def download_archive(request: Request, ds: str):
+async def download_archive(
+    request: Request, ds: str,
+    format: ExportFormat = ExportFormat.LEROBOT_V3_NATIVE,
+):
+    if format != ExportFormat.LEROBOT_V3_NATIVE:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "format=vla_compat is not supported via the archive download. "
+                "Use POST /api/datasets/{ds}/export instead."
+            ),
+        )
     root = get_datasets_root(request.app)
     ds_root = root / ds
     if not ds_root.exists():
@@ -345,3 +359,33 @@ async def get_annotate_progress(request: Request, ds: str):
     if not progress or progress.get("dataset") != ds:
         return {"status": "idle", "total": 0, "done": 0}
     return progress
+
+
+@router.post("/datasets/{ds}/export")
+async def export_dataset(request: Request, ds: str, body: ExportRequest) -> ExportResponse:
+    root = get_datasets_root(request.app)
+    ds_root = root / ds
+    if not ds_root.exists():
+        raise HTTPException(status_code=404, detail=f"dataset '{ds}' not found")
+    dest_root = get_vla_dest_root(request.app)
+    dest_root.mkdir(parents=True, exist_ok=True)
+    try:
+        result = await asyncio.to_thread(
+            export_dataset_to_local,
+            ds_root=ds_root,
+            dest_root=dest_root,
+            format=body.format,
+            instruction_template=body.instruction_template,
+            force=body.force,
+        )
+    except DestinationExistsError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return ExportResponse(
+        dest_path=str(result.dest_path),
+        format=result.format,
+        num_episodes=result.num_episodes,
+        num_frames=result.num_frames,
+        warnings=result.warnings,
+    )

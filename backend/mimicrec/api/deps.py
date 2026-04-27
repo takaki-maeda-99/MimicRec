@@ -29,6 +29,14 @@ def get_datasets_root(app) -> Path:
     return root
 
 
+def get_vla_dest_root(app) -> Path:
+    root = getattr(app.state, "vla_dest_root", None)
+    if root is None:
+        import os
+        root = Path(os.environ.get("MIMICREC_VLA_DEST_ROOT", "~/vla-gemma-4/data/local"))
+    return Path(root).expanduser()
+
+
 def get_session_manager(app) -> SessionManager:
     sm = getattr(app.state, "session_manager", None)
     if sm is None:

@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { apiFetch } from "./client.ts";
-import type { DatasetSummary, EpisodeSummary, SessionStatePayload, TaskSummary } from "./types.ts";
+import { apiFetch, ApiError } from "./client.ts";
+import type { DatasetSummary, EpisodeSummary, ExportRequest, ExportResponse, SessionStatePayload, TaskSummary } from "./types.ts";
 
 // --------------- Datasets ---------------
 
@@ -196,5 +196,17 @@ export function useReplayStop() {
     mutationFn: () =>
       apiFetch<SessionStatePayload>("/api/replay/stop", { method: "POST" }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["session-state"] }),
+  });
+}
+
+// --------------- Export ---------------
+
+export function useExportDataset(ds: string) {
+  return useMutation<ExportResponse, ApiError, ExportRequest>({
+    mutationFn: (body: ExportRequest) =>
+      apiFetch<ExportResponse>(`/api/datasets/${ds}/export`, {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
   });
 }
