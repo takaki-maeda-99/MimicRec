@@ -6,7 +6,7 @@ import zipfile
 from pathlib import Path
 
 import pyarrow.parquet as pq
-from fastapi import APIRouter, Request, Query
+from fastapi import APIRouter, Request, Query, HTTPException
 from fastapi.responses import StreamingResponse, FileResponse
 from pydantic import BaseModel as _BaseModel
 
@@ -345,3 +345,38 @@ async def get_annotate_progress(request: Request, ds: str):
     if not progress or progress.get("dataset") != ds:
         return {"status": "idle", "total": 0, "done": 0}
     return progress
+
+
+from mimicrec.api.deps import get_vla_dest_root
+from mimicrec.api.schemas import ExportRequest, ExportResponse, ExportFormat
+from mimicrec.datasets.exporters.errors import DestinationExistsError
+from mimicrec.datasets.exporters.orchestrator import export_dataset_to_local
+
+
+@router.post("/datasets/{ds}/export")
+async def export_dataset(request: Request, ds: str, body: ExportRequest) -> ExportResponse:
+    root = get_datasets_root(request.app)
+    ds_root = root / ds
+    if not ds_root.exists():
+        raise HTTPException(status_code=404, detail=f"dataset '{ds}' not found")
+    dest_root = get_vla_dest_root(request.app)
+    dest_root.mkdir(parents=True, exist_ok=True)
+    try:
+        result = export_dataset_to_local(
+            ds_root=ds_root,
+            dest_root=dest_root,
+            format=body.format,
+            instruction_template=body.instruction_template,
+            force=body.force,
+        )
+    except DestinationExistsError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return ExportResponse(
+        dest_path=str(result.dest_path),
+        format=result.format,
+        num_episodes=result.num_episodes,
+        num_frames=result.num_frames,
+        warnings=result.warnings,
+    )
