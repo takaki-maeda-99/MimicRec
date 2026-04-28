@@ -92,7 +92,7 @@ Exactly 8 columns. No `*.t_mono_ns`, no `*_vel`, no `*_effort`, no `*_ee_*`.
 }
 ```
 
-`init_dataset(ds_root, fps, joint_names, camera_names)` is the single source of truth. Caller passes `joint_names` of length Narm (NO `"gripper"` appended); `init_dataset` appends `"gripper"` itself.
+`init_dataset(ds_root, fps, joint_names, camera_names)` is the single source of truth. Caller passes `joint_names` of length Narm (NO `"gripper"` appended); `init_dataset` appends `"gripper"` itself, sets `action.shape = observation.state.shape = [Narm + 1]`, and adds the `language_instruction` feature spec to the features dict explicitly. Today `init_dataset` writes neither `language_instruction` nor a packed `action` shape — both are added in this change.
 
 ## 6. Writer / pending flow
 
@@ -140,11 +140,12 @@ The existing observation-side EE preference logic (state.ee_pos before fk.pose) 
 
 ### `writer.run_writer` (signature change)
 
-`run_writer` gains two parameters:
-- `fps: int` — passed to `pending.save()` later via metadata_extra (no change at writer level since pending already reads it).
-- `tasks_lookup: dict[int, str]` — `task_index → instruction`. Built once at session start by reading `tasks.parquet`. Empty dict means writer falls back to `""`.
+`run_writer` gains one parameter:
+- `instruction_provider: Callable[[], str]` — closure capturing the current pending episode's instruction string. Resolved at episode start (when the API caller picks a task) and held for the duration of that pending episode.
 
-Per row, writer resolves `instruction = tasks_lookup.get(task_index, "")` and passes it into `sample_bundle_to_row`.
+Per row, writer calls `instruction_provider()` and passes the result into `sample_bundle_to_row`. This avoids plumbing a per-row `task_index → instruction` lookup table since MimicRec records one task per episode.
+
+`task_index` itself is still hardcoded to `0` per row in this iteration (matching today's writer.py). Replacing it with a real index is out of scope for this spec — the recording schema needs to declare and write the column, but multi-task-per-episode is a separate feature.
 
 ### `pending.PendingEpisode.save` (no signature change)
 
@@ -166,11 +167,30 @@ Changes:
 
 ### `adapters/so_leader.py`
 
-Mirror: `read_action()` returns a 5-element `q` plus a separate `gripper` value, populated on `RobotCommand.q` and `RobotCommand.gripper`. Mapper / dispatcher already pass `RobotCommand.gripper` through to `send_joint_command`'s new parameter.
+Mirror: `read_action()` returns a 5-element `target_joint_pos` plus a separate `gripper` value on the `TeleopAction`.
+
+### `types.TeleopAction` (NEW field)
+
+Add `gripper: float | None = None`. Today `TeleopAction` only carries `target_joint_pos` / `ee_delta`; the leader has nowhere to put a gripper command. With the new field, the leader populates it and the mapper forwards it.
+
+### `mappers/identity.py` (forward gripper)
+
+`IdentityMapper.map(action: TeleopAction)` currently builds `RobotCommand(q=action.target_joint_pos.copy())`. Change to also forward gripper:
+
+```python
+return RobotCommand(
+    q=action.target_joint_pos.copy(),
+    gripper=action.gripper,
+)
+```
 
 ### `types.RobotState` / `types.RobotCommand`
 
-Already have optional `gripper_pos` / `gripper`. No type change needed; the contract just becomes "always populated for robots that have a gripper".
+Already have optional `gripper_pos` / `gripper`. No type change needed; the contract becomes "always populated for robots that have a gripper".
+
+### Dispatcher / `send_joint_command(q, *, gripper=...)`
+
+The dispatcher invokes `adapter.send_joint_command(cmd.q)` today. After this change it must pass `gripper=cmd.gripper`. Verify all call sites in `session/dispatcher.py` and any replay paths.
 
 ### Calibration cache
 
@@ -204,6 +224,9 @@ Backward-compat fallback for hand-teach recordings (the `joint_pos.shape[1] > 6`
 | `backend/mimicrec/api/routes/datasets.py::POST /api/datasets/{ds}/export` | Replaced by existing zip download. |
 | `backend/mimicrec/api/deps.py::get_vla_dest_root` | No external dest. |
 | `frontend/src/components/ExportDatasetModal*` | Datasets page reverts to plain "Download" link. |
+| `frontend/src/api/types.ts::ExportFormat` type | No format choice exposed. |
+| `frontend/src/api/queries.ts::useExportDataset` mutation | Removed alongside the route. |
+| `backend/mimicrec/api/routes/datasets.py::export_dataset` POST handler + its imports (`export_dataset_to_local`, `DestinationExistsError`, `ExportRequest`, `ExportResponse`, `ExportFormat`) | Replaced by existing `archive` zip download. |
 
 Tests that exercise these (`test_exporter_*.py`, `test_vla_compat_roundtrip.py`, the `format=vla_compat` route tests) are deleted alongside.
 
@@ -237,11 +260,11 @@ The existing 33 SO-101 episodes are discarded by the user. No backfill script. A
 
 ## 12. Risks / open issues
 
-- **lerobot `send_action` requires all 6 keys**: when `RobotCommand.gripper is None` (e.g. some replay paths), we have to fill it with something. Plan: read current gripper position via `read_state()` and send that — gripper holds. Tests must cover this.
-- **fps plumbing**: writer needs fps for instruction lookup (no, language_instruction doesn't need fps) — actually fps is already in metadata_extra at save time. Writer doesn't need fps directly. Remove that bullet from Section 6 if accurate. *(Confirmed during implementation.)*
-- **Empty instruction**: tasks.parquet may have null/empty instruction. Falling back to task name + episode-level warning is consistent with the old `vla_compat` behavior; keep that single warning path.
+- **lerobot `send_action` requires all 6 keys**: when `RobotCommand.gripper is None` (e.g. replay paths reading older recordings — though those are discarded — or hand-teach where the user did not intend to drive gripper), `send_joint_command` must fill it. Plan: read current gripper position via `read_state()` and send that — gripper holds. After this change, recordings always carry gripper in `action[N-1]`, so replay's `gripper_targets` will always be populated for SO-101/reBot. Tests must cover the `RobotCommand.gripper is None` defensive branch.
+- **Empty instruction**: tasks.parquet may have null/empty instruction. Falling back to task name + episode-level warning is consistent with the old `vla_compat` behavior; keep that single warning path. The `instruction_provider` closure performs this resolution at episode start.
 - **Robots without grippers**: out of scope; both supported robots (SO-101, reBot) have grippers. If added later, action shape becomes `[Narm]` and `gripper_pos` is omitted; that's a follow-up.
 - **Frontend deletion timing**: removing `ExportDatasetModal` while the user has it open in their browser will yield a stale UI. Acceptable for single-user dev tool.
+- **`EpisodeSummary.task_index`**: this field on the API response (`api/schemas.py`) is unrelated to the export removal; it stays.
 
 ## 13. Acceptance criteria
 
