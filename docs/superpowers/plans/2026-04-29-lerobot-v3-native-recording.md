@@ -348,30 +348,22 @@ git commit -m "feat(so101): send_joint_command(q, gripper=...) inline contract"
 - Modify: `backend/mimicrec/adapters/so_leader.py`
 - Test: `tests/unit/test_so_leader.py` (new — read_action only)
 
-- [ ] **Step 1: Inspect existing leader**
+- [ ] **Step 1: Add failing test**
 
-```
-cat backend/mimicrec/adapters/so_leader.py
-```
-
-Note the current `read_action()` shape and how it builds `TeleopAction`.
-
-- [ ] **Step 2: Add failing test**
-
-Create `tests/unit/test_so_leader.py`:
+Create `tests/unit/test_so_leader.py`. The class is `SOLeaderAdapter` (the unqualified `SOLeader` symbol in this module is the upstream lerobot teleop class). The internal teleop handle is `self._leader` and reads happen through `self._leader.get_action()`:
 
 ```python
 import asyncio
 import numpy as np
 from unittest.mock import MagicMock
 
-from mimicrec.adapters.so_leader import SOLeader  # confirm class name in step 1
+from mimicrec.adapters.so_leader import SOLeaderAdapter
 
 
 def test_leader_read_action_splits_gripper():
-    leader = SOLeader()
-    leader._teleop = MagicMock()
-    leader._teleop.get_action.return_value = {
+    leader = SOLeaderAdapter()
+    leader._leader = MagicMock()
+    leader._leader.get_action.return_value = {
         "shoulder_pan.pos": 1.0, "shoulder_lift.pos": 2.0,
         "elbow_flex.pos": 3.0, "wrist_flex.pos": 4.0,
         "wrist_roll.pos": 5.0, "gripper.pos": 75.0,
@@ -382,9 +374,7 @@ def test_leader_read_action_splits_gripper():
     assert a.gripper == 75.0
 ```
 
-(If the leader class has a different attribute / get_action signature than assumed, adjust the mock setup to match.)
-
-- [ ] **Step 3: Verify fail**
+- [ ] **Step 2: Verify fail**
 
 ```
 env -u PYTHONPATH /home/takakimaeda/MimicRec/.venv/bin/python -m pytest ../tests/unit/test_so_leader.py -v
@@ -392,20 +382,20 @@ env -u PYTHONPATH /home/takakimaeda/MimicRec/.venv/bin/python -m pytest ../tests
 
 Expected: target_joint_pos has shape (6,) (current behavior).
 
-- [ ] **Step 4: Implement**
+- [ ] **Step 3: Implement**
 
 Modify `backend/mimicrec/adapters/so_leader.py`'s `read_action()` to:
-- Read all 6 motor positions from the teleop bus
+- Read all 6 motor positions from the teleop bus via `self._leader.get_action()`
 - Pack 5 arm values into `target_joint_pos: np.ndarray[5]`
 - Set `gripper = float(obs["gripper.pos"])` on the returned `TeleopAction`
 
-- [ ] **Step 5: Verify pass**
+- [ ] **Step 4: Verify pass**
 
 ```
 env -u PYTHONPATH /home/takakimaeda/MimicRec/.venv/bin/python -m pytest ../tests/unit/test_so_leader.py -v
 ```
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 5: Commit**
 
 ```
 git add backend/mimicrec/adapters/so_leader.py tests/unit/test_so_leader.py
@@ -494,16 +484,18 @@ except HardwareError as e:
 
 - [ ] **Step 5: Implement reBotArm change**
 
-In `backend/mimicrec/adapters/rebotarm_zmq.py`, update the `send_joint_command` signature and body:
+In `backend/mimicrec/adapters/rebotarm_zmq.py`:
 
-```python
-async def send_joint_command(self, q: np.ndarray, *, gripper: float | None = None) -> None:
-    # ... existing q-send body ...
-    if gripper is not None:
-        await self._send_gripper_internal(float(gripper))  # the body of the old send_gripper_command
-```
+1. Rename the existing `async def send_gripper_command(self, gripper: float) -> None` method to `async def _send_gripper(self, gripper: float) -> None`. Body preserved verbatim (ZMQ envelope, HardwareError raises, etc).
+2. Update the `send_joint_command` signature to:
+   ```python
+   async def send_joint_command(self, q: np.ndarray, *, gripper: float | None = None) -> None:
+       # ... existing q-send body unchanged ...
+       if gripper is not None:
+           await self._send_gripper(float(gripper))
+   ```
 
-Then delete the standalone `send_gripper_command` method (or rename it to `_send_gripper_internal` if its body is preserved verbatim).
+The rename + delegation keeps the gripper implementation intact while collapsing the dispatcher's call surface to one method.
 
 - [ ] **Step 6: Verify pass + suite**
 
@@ -928,6 +920,8 @@ async def run_writer(
 
 - [ ] **Step 4: Update lifecycle to provide instruction**
 
+The lifecycle already stores the instruction at `self._instruction` (set from the API caller in `__init__`, lines 75-88). Pass it directly:
+
 Edit `backend/mimicrec/session/lifecycle.py:322-328`:
 
 ```python
@@ -936,24 +930,12 @@ self._writer_task = asyncio.create_task(run_writer(
     queue=self._recorder_queue,
     metrics=self._metrics,
     stopped=self.session.stopped,
-    instruction_provider=self._current_episode_instruction,
+    instruction_provider=lambda: self._instruction or "",
     fk=self._fk,
 ))
 ```
 
-Add a method on the lifecycle:
-
-```python
-def _current_episode_instruction(self) -> str:
-    """Return the instruction string for the active pending episode, or ''."""
-    pending = self._current_pending.peek()
-    if pending is None or pending.value is None:
-        return ""
-    # The pending episode carries the task name; resolve via tasks.parquet.
-    return self._pending_instruction or ""
-```
-
-In `episode_start()`, set `self._pending_instruction = <resolved instruction>` from the task name → `tasks.parquet.instruction` lookup. Falls back to task name if instruction is empty (single-warning, mirrors old vla_compat behavior).
+No new instance attributes or methods needed. (If `self._instruction` is empty, the row gets `""` — consistent with falling back to "no instruction".)
 
 - [ ] **Step 5: Verify pass + suite**
 
@@ -1076,6 +1058,8 @@ git commit -m "feat(reader): load_replay_trajectory reads packed action column"
 
 ### Task 11: Delete `exporters/` and the `/api/datasets/{ds}/export` POST endpoint
 
+**Retained (do NOT delete):** `backend/mimicrec/datasets/archive.py` is the zip-streaming primitive. It does NOT live under `exporters/` and stays — the GET archive route depends on it. The `?format=` query param on that GET route is dropped along with `ExportFormat` (the route always streams the v3-native tree).
+
 **Files:**
 - Delete: `backend/mimicrec/datasets/exporters/vla_compat.py`
 - Delete: `backend/mimicrec/datasets/exporters/info_json.py`
@@ -1083,17 +1067,19 @@ git commit -m "feat(reader): load_replay_trajectory reads packed action column"
 - Delete: `backend/mimicrec/datasets/exporters/stats.py`
 - Delete: `backend/mimicrec/datasets/exporters/orchestrator.py`
 - Delete: `backend/mimicrec/datasets/exporters/errors.py`
-- Delete: `backend/mimicrec/datasets/exporters/__init__.py`
+- Delete: `backend/mimicrec/datasets/exporters/__init__.py` (and the directory itself if empty)
 - Delete: `tests/unit/test_exporter_vla_compat.py`
 - Delete: `tests/unit/test_exporter_info_json.py`
 - Delete: `tests/unit/test_exporter_instructions.py`
 - Delete: `tests/unit/test_exporter_stats.py`
 - Delete: `tests/unit/test_exporter_orchestrator.py`
 - Delete: `tests/integration/test_vla_compat_roundtrip.py`
+- Delete: `tests/api/test_export_routes.py` (entire file — exercises the removed POST endpoint)
 - Modify: `backend/mimicrec/api/schemas.py` (drop `ExportFormat`, `ExportRequest`, `ExportResponse`, `DEFAULT_INSTRUCTION_TEMPLATE`)
-- Modify: `backend/mimicrec/api/routes/datasets.py` (drop `export_dataset` POST handler + imports)
+- Modify: `backend/mimicrec/api/routes/datasets.py` (drop `export_dataset` POST handler + imports; drop the `?format=vla_compat → 400` branch in the GET archive handler at lines 170-174 along with the `format` query param)
 - Modify: `backend/mimicrec/api/deps.py` (drop `get_vla_dest_root`)
-- Modify: `tests/api/test_dataset_routes.py` (drop tests for the removed endpoint)
+- Modify: `tests/api/test_dataset_routes.py` (drop `test_archive_with_vla_compat_format_returns_400` at line 139, plus any other vla_compat-format expectations)
+- Modify: `tests/api/conftest.py` (drop any `MIMICREC_VLA_DEST_ROOT` fixtures / monkeypatches if present — `grep MIMICREC_VLA_DEST_ROOT tests/`)
 
 - [ ] **Step 1: Inventory removable references**
 
@@ -1118,8 +1104,11 @@ git rm backend/mimicrec/datasets/exporters/vla_compat.py \
        tests/unit/test_exporter_instructions.py \
        tests/unit/test_exporter_stats.py \
        tests/unit/test_exporter_orchestrator.py \
-       tests/integration/test_vla_compat_roundtrip.py
+       tests/integration/test_vla_compat_roundtrip.py \
+       tests/api/test_export_routes.py
 ```
+
+(`backend/mimicrec/datasets/archive.py` is preserved — that's the zip primitive.)
 
 - [ ] **Step 3: Strip schemas**
 
@@ -1127,17 +1116,30 @@ Edit `backend/mimicrec/api/schemas.py`: remove `ExportFormat` enum, `ExportReque
 
 - [ ] **Step 4: Strip route**
 
-Edit `backend/mimicrec/api/routes/datasets.py`: delete the `export_dataset` POST handler and its imports (`from mimicrec.datasets.exporters.orchestrator import export_dataset_to_local`, `from mimicrec.datasets.exporters.errors import DestinationExistsError`, `ExportRequest`, `ExportResponse`, `ExportFormat`).
+Edit `backend/mimicrec/api/routes/datasets.py`:
+1. Delete the `export_dataset` POST handler and its imports (`export_dataset_to_local`, `DestinationExistsError`, `ExportRequest`, `ExportResponse`, `ExportFormat`).
+2. In the GET archive handler, delete the `format: ExportFormat = ...` query param and the `?format=vla_compat → HTTPException(400)` branch (lines 170-174). The route now always streams `lerobot_v3_native`.
 
-The existing `archive` (zip download) handler stays.
+`backend/mimicrec/datasets/archive.py` (the underlying `build_archive_stream` primitive) is unchanged.
 
 - [ ] **Step 5: Strip deps**
 
-Edit `backend/mimicrec/api/deps.py`: remove `get_vla_dest_root` and any `MIMICREC_VLA_DEST_ROOT` env var handling.
+Edit `backend/mimicrec/api/deps.py`: remove `get_vla_dest_root` and any `MIMICREC_VLA_DEST_ROOT` env var handling. Then verify nothing else references it:
+
+```
+grep -rn "MIMICREC_VLA_DEST_ROOT\|get_vla_dest_root" backend tests --include='*.py'
+```
+
+Should return zero hits. Update / drop any test fixtures that monkeypatch the env var.
 
 - [ ] **Step 6: Update API tests**
 
-Edit `tests/api/test_dataset_routes.py`: drop tests that hit `POST /api/datasets/{ds}/export`. Keep tests for the GET archive endpoint.
+Edit `tests/api/test_dataset_routes.py`:
+- Drop `test_archive_with_vla_compat_format_returns_400` (line 139) and any other test that asserts on the dropped `?format=` behavior.
+- Keep tests for the GET archive endpoint (the default v3-native stream).
+- Drop any tests that import `ExportFormat` / `ExportRequest` / `ExportResponse`.
+
+`tests/api/test_export_routes.py` is deleted whole in Step 2.
 
 - [ ] **Step 7: Verify suite**
 
