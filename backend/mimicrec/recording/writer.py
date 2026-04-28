@@ -22,7 +22,6 @@ async def run_writer(
 ) -> None:
     last_pending: PendingEpisode | None = None
     episode_start_t_mono_ns: int | None = None
-    video_frame_index: dict[str, int] = {}
     frame_counter: int = 0
 
     while not stopped.is_set() or not queue.empty():
@@ -46,7 +45,6 @@ async def run_writer(
             if pending is not last_pending:
                 last_pending = pending
                 episode_start_t_mono_ns = None
-                video_frame_index = {}
                 frame_counter = 0
 
             if pending is None:
@@ -55,20 +53,10 @@ async def run_writer(
 
             if episode_start_t_mono_ns is None:
                 episode_start_t_mono_ns = bundle.tick_t_mono_ns
-                video_frame_index = {name: 0 for name in bundle.frames.keys()}
-
-            advanced: dict[str, int] = {}
-            for cam_name, stamped in bundle.frames.items():
-                if cam_name not in video_frame_index:
-                    video_frame_index[cam_name] = 0
-                advanced[cam_name] = video_frame_index[cam_name]
-                if stamped is not None:
-                    video_frame_index[cam_name] += 1
 
             row = sample_bundle_to_row(
                 bundle,
                 episode_start_t_mono_ns,
-                advanced,
                 frame_index=frame_counter,
                 episode_index=pending.episode_index,
                 global_index=0,  # will be set properly when we have global tracking
