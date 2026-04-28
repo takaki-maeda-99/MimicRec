@@ -114,12 +114,24 @@ def sample_bundle_to_row(
     s = bundle.state.value
     Narm = fk_n_kin_joints if fk_n_kin_joints is not None else s.joint_pos.shape[0]
     obs_arm = s.joint_pos[:Narm]
-    obs_grip = s.gripper_pos if s.gripper_pos is not None else float(s.joint_pos[Narm])
+    # gripper fallback only fires for legacy adapters whose joint_pos still packs gripper.
+    # After SO-101 is migrated, joint_pos.shape[0] == Narm and we never index past it.
+    if s.gripper_pos is not None:
+        obs_grip = float(s.gripper_pos)
+    elif s.joint_pos.shape[0] > Narm:
+        obs_grip = float(s.joint_pos[Narm])
+    else:
+        raise ValueError("missing gripper_pos and no slack joint to derive from")
     observation_state = np.concatenate([obs_arm, [obs_grip]]).astype(np.float32)
 
     # Action: same recipe applied to bundle.action.
     a_arm = bundle.action.q[:Narm]
-    a_grip = bundle.action.gripper if bundle.action.gripper is not None else float(bundle.action.q[Narm])
+    if bundle.action.gripper is not None:
+        a_grip = float(bundle.action.gripper)
+    elif bundle.action.q.shape[0] > Narm:
+        a_grip = float(bundle.action.q[Narm])
+    else:
+        raise ValueError("missing action.gripper and no slack joint to derive from")
     action = np.concatenate([a_arm, [a_grip]]).astype(np.float32)
 
     return {
@@ -188,9 +200,15 @@ return RobotCommand(
 
 Already have optional `gripper_pos` / `gripper`. No type change needed; the contract becomes "always populated for robots that have a gripper".
 
-### Dispatcher / `send_joint_command(q, *, gripper=...)`
+### Dispatcher / gripper routing
 
-The dispatcher invokes `adapter.send_joint_command(cmd.q)` today. After this change it must pass `gripper=cmd.gripper`. Verify all call sites in `session/dispatcher.py` and any replay paths.
+Today `session/dispatcher.py` routes the gripper command via a **separate** `adapter.send_gripper_command(cmd.gripper)` call (used by `rebotarm_zmq.py`). SO-101 has no gripper-specific method — gripper rides inside the 6-element joint command. To keep the dispatcher uniform, this spec adopts:
+
+**Universal contract:** every adapter's `send_joint_command(q, *, gripper=None)` accepts an optional gripper kwarg. Adapters are free to ignore it (gripperless arms) or split internally (reBotArm calls its existing internal gripper path). The dispatcher passes `gripper=cmd.gripper` exactly once per tick and **deletes the separate `send_gripper_command` branch**.
+
+- `adapters/so101.py::send_joint_command(q, *, gripper=None)` — recombines q[5] and gripper into the 6-key lerobot dict.
+- `adapters/rebotarm_zmq.py::send_joint_command(q, *, gripper=None)` — internally forwards to its existing gripper path when `gripper is not None`. The standalone `send_gripper_command` method becomes dead code and is removed.
+- Any other adapter — receives the kwarg but may ignore it.
 
 ### Calibration cache
 
