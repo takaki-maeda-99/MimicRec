@@ -77,6 +77,7 @@ async def list_episodes(request: Request, ds: str, include_deleted: bool = False
     return [
         EpisodeSummary(
             episode_index=ep.get("episode_index", 0),
+            display_index=i + 1,
             task=ep.get("task", ""),
             duration_sec=ep.get("duration_sec", 0.0),
             num_frames=ep.get("num_frames", ep.get("length", 0)),
@@ -87,7 +88,7 @@ async def list_episodes(request: Request, ds: str, include_deleted: bool = False
             recorded_at=ep.get("recorded_at"),
             cameras=ep.get("cameras", []),
         )
-        for ep in episodes
+        for i, ep in enumerate(episodes)
     ]
 
 
@@ -97,10 +98,11 @@ async def get_episode(request: Request, ds: str, idx: int):
     ds_root = root / ds
     if not ds_root.exists():
         raise FileNotFoundError(f"dataset '{ds}' not found")
-    for ep in iter_episodes(ds_root, include_deleted=False):
+    for i, ep in enumerate(iter_episodes(ds_root, include_deleted=False)):
         if ep.get("episode_index") == idx:
             return EpisodeSummary(
                 episode_index=ep.get("episode_index", 0),
+                display_index=i + 1,
                 task=ep.get("task", ""),
                 duration_sec=ep.get("duration_sec", 0.0),
                 num_frames=ep.get("num_frames", ep.get("length", 0)),

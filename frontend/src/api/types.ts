@@ -19,6 +19,7 @@ export interface DatasetSummary {
 
 export interface EpisodeSummary {
   episode_index: number;
+  display_index: number;
   task: string;
   duration_sec: number;
   num_frames: number;

@@ -61,6 +61,51 @@ async def test_delete_episode_tombstones(tmp_path: Path):
         assert len(r.json()) == 1
 
 
+async def test_episodes_have_display_index_compacting_after_delete(tmp_path: Path):
+    """Live episodes should expose a 1-based display_index that closes the gap
+    left by tombstoned episodes — the UI shows ordinals, not internal episode_index."""
+    app = create_app()
+    app.state.configs_root = REPO_ROOT / "configs"
+    app.state.datasets_root = tmp_path
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        await ac.post("/api/datasets", json={"name": "dsx", "fps": 30, "joint_names": ["j1", "j2"], "camera_names": []})
+
+        import asyncio
+        await ac.post("/api/session/start", json={
+            "mode": "teleop", "dataset": "dsx", "task": "pick",
+            "robot": "mock", "teleop": "mock_leader", "mapper": "identity",
+            "cameras": [], "fps": 30,
+        })
+        for _ in range(3):
+            await ac.post("/api/episode/start")
+            await asyncio.sleep(0.1)
+            await ac.post("/api/episode/stop")
+            await ac.post("/api/episode/save")
+        await ac.post("/api/session/end")
+
+        r = await ac.get("/api/datasets/dsx/episodes")
+        eps = r.json()
+        assert [e["episode_index"] for e in eps] == [0, 1, 2]
+        assert [e["display_index"] for e in eps] == [1, 2, 3]
+
+        # Tombstone the middle one
+        r = await ac.delete("/api/datasets/dsx/episodes/1")
+        assert r.status_code == 204
+
+        r = await ac.get("/api/datasets/dsx/episodes")
+        eps = r.json()
+        assert [e["episode_index"] for e in eps] == [0, 2]
+        assert [e["display_index"] for e in eps] == [1, 2], "display_index should compact to 1,2"
+
+        # Detail endpoint should return display_index too, ordinal-based
+        r = await ac.get("/api/datasets/dsx/episodes/2")
+        body = r.json()
+        assert body["episode_index"] == 2
+        assert body["display_index"] == 2
+
+
 async def test_archive_download(tmp_path: Path):
     app = create_app()
     app.state.configs_root = REPO_ROOT / "configs"

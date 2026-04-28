@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { useSessionStore } from "../state/session-store.ts";
-import { useEndSession, useSessionState } from "../api/queries.ts";
+import { useEndSession, useEpisodes, useSessionState } from "../api/queries.ts";
 import { WsConnection } from "../api/ws.ts";
 import SessionConfigForm from "../components/SessionConfigForm.tsx";
 import CameraPreview from "../components/CameraPreview.tsx";
@@ -23,6 +23,7 @@ export default function RecordPage() {
   const setReplayProgress = useSessionStore((s) => s.setReplayProgress);
   const setError = useSessionStore((s) => s.setError);
   const endSession = useEndSession();
+  const { data: episodes } = useEpisodes(dataset || "");
 
   // Restore session state from API on mount (survives page navigation / refresh)
   const { data: apiState } = useSessionState();
@@ -99,6 +100,10 @@ export default function RecordPage() {
         <span>
           <span className="text-gray-400">Dataset:</span>{" "}
           <span className="font-medium text-gray-800">{dataset}</span>
+        </span>
+        <span>
+          <span className="text-gray-400">Episodes:</span>{" "}
+          <span className="font-medium text-gray-800">{episodes?.length ?? "—"}</span>
         </span>
         {cameras.length > 0 && (
           <span>
