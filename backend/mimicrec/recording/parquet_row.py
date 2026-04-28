@@ -56,13 +56,13 @@ def sample_bundle_to_row(
     if obs_ee_pos is not None:
         row["observation.state.ee_pos"] = obs_ee_pos
         row["observation.state.ee_rotvec"] = obs_ee_rotvec
-        if obs_gripper is not None:
-            row["observation.state.gripper_pos"] = float(obs_gripper)
+    if obs_gripper is not None:
+        row["observation.state.gripper_pos"] = float(obs_gripper)
     if act_ee_pos is not None:
         row["action.ee_pos"] = act_ee_pos
         row["action.ee_rotvec"] = act_ee_rotvec
-        if act_gripper is not None:
-            row["action.gripper_pos"] = act_gripper
+    if act_gripper is not None:
+        row["action.gripper_pos"] = act_gripper
     for cam_name, frame_idx in video_frame_index.items():
         row[f"observation.images.{cam_name}.video_frame_index"] = frame_idx
         stamped = bundle.frames.get(cam_name)

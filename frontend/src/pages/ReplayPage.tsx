@@ -3,6 +3,7 @@ import { useEpisodes, useReplayStart, useReplayStop } from "../api/queries";
 import { useSessionStore } from "../state/session-store";
 import VideoPlayer from "../components/VideoPlayer";
 import JointPlot from "../components/JointPlot";
+import EndEffectorPlot from "../components/EndEffectorPlot";
 import SubtaskAnnotator from "../components/SubtaskAnnotator";
 import SubtaskTimeline from "../components/SubtaskTimeline";
 
@@ -120,6 +121,12 @@ export default function ReplayPage() {
       <div className="mt-6 bg-white rounded-lg border border-gray-200 p-4">
         <h3 className="text-sm font-medium text-gray-500 mb-3">Joint Data</h3>
         <JointPlot ds={ds} idx={episodeIdx} />
+      </div>
+
+      {/* End-effector plot (gripper today; extensible to other EE signals) */}
+      <div className="mt-6 bg-white rounded-lg border border-gray-200 p-4">
+        <h3 className="text-sm font-medium text-gray-500 mb-3">End-Effector</h3>
+        <EndEffectorPlot ds={ds} idx={episodeIdx} />
       </div>
 
       {/* Subtask annotation */}

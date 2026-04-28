@@ -166,7 +166,9 @@ export default function SessionConfigForm({ onStarted }: Props) {
         {startSession.isPending ? "Starting..." : "Start Session"}
       </Button>
       {startSession.isError && (
-        <p className="text-red-600 text-sm">{(startSession.error as Error).message}</p>
+        <pre className="text-red-600 text-sm whitespace-pre-wrap font-mono bg-red-50 border border-red-200 rounded-md p-3">
+          {(startSession.error as Error).message}
+        </pre>
       )}
     </div>
   );

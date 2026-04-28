@@ -69,7 +69,12 @@ class ReBotArmZmqAdapter:
             reply = await self._request({"cmd": CMD_CONNECT})
         except Exception as e:
             self._teardown_socket()
-            raise HardwareError(f"reBotArm daemon connect failed: {e}") from e
+            raise HardwareError(
+                f"reBotArm daemon connect failed at {self._address}: {e}\n"
+                f"Is the daemon running? Start it in another terminal:\n"
+                f"    .venv-rebotarm/bin/python -m rebotarm_daemon "
+                f"--config configs/rebotarm_daemon.yaml"
+            ) from e
         if not reply.get("ok"):
             self._teardown_socket()
             raise HardwareError(f"reBotArm daemon refused connect: {reply}")
