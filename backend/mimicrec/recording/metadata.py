@@ -59,6 +59,15 @@ def append_episode(meta_dir: Path, row: dict) -> None:
         "dataset_from_index": 0,  # will be recomputed
         "dataset_to_index": row.get("num_frames", 0),
     }
+    # Per-video metadata columns required by LeRobot v3
+    # (LeRobotDataset.get_video_file_path / _query_videos read these).
+    duration_sec = float(row.get("duration_sec", 0.0))
+    for cam in row.get("cameras") or []:
+        key = f"videos/observation.images.{cam}"
+        ep_record[f"{key}/chunk_index"] = 0
+        ep_record[f"{key}/file_index"] = row["episode_index"]
+        ep_record[f"{key}/from_timestamp"] = 0.0
+        ep_record[f"{key}/to_timestamp"] = duration_sec
     # Keep all original fields too for our own use
     for k, v in row.items():
         if k not in ep_record:
@@ -99,16 +108,22 @@ def tombstone_episode(meta_dir: Path, episode_index: int, deleted_at_unix: int) 
     rows = pq.read_table(pq_path).to_pylist()
     found = False
     for row in rows:
+        # pa.Table.from_pylist infers the schema from row 0 only, so any column
+        # missing from the first row is silently dropped on write. Pre-pad every
+        # row so the deletion fields land in the schema regardless of which row
+        # is being tombstoned.
+        row.setdefault("deleted", False)
+        row.setdefault("deleted_at", None)
         if row["episode_index"] == episode_index:
-            if row.get("deleted"):
+            if row["deleted"]:
                 raise KeyError(f"episode {episode_index} already deleted")
             row["deleted"] = True
             row["deleted_at"] = deleted_at_unix
             found = True
-            break
     if not found:
         raise KeyError(f"episode {episode_index} not found")
     pq.write_table(pa.Table.from_pylist(rows), pq_path)
+    update_info_totals(meta_dir)
 
 
 def upsert_task(meta_dir: Path, task_name: str, instruction: str) -> None:
@@ -128,7 +143,7 @@ def upsert_task(meta_dir: Path, task_name: str, instruction: str) -> None:
 
 
 def update_info_totals(meta_dir: Path) -> None:
-    """Update info.json totals from current episodes state."""
+    """Update info.json totals from current episodes + tasks state."""
     info_path = meta_dir / "info.json"
     if not info_path.exists():
         return
@@ -136,7 +151,10 @@ def update_info_totals(meta_dir: Path) -> None:
     episodes = list(read_episodes(meta_dir, include_deleted=False))
     total_episodes = len(episodes)
     total_frames = sum(e.get("length", e.get("num_frames", 0)) for e in episodes)
+    tasks_pq = _tasks_parquet(meta_dir)
+    total_tasks = pq.read_table(tasks_pq).num_rows if tasks_pq.exists() else 0
     info["total_episodes"] = total_episodes
     info["total_frames"] = total_frames
+    info["total_tasks"] = total_tasks
     info["splits"] = {"train": f"0:{total_episodes}"}
     info_path.write_text(json.dumps(info, indent=2))

@@ -37,7 +37,7 @@ def _seed(ds: Path):
         })
     p.chunk_dir(0).mkdir(parents=True, exist_ok=True)
     pq.write_table(pa.Table.from_pylist(rows), p.episode_parquet(0, 0))
-    cam_dir = p.videos_dir / "chunk-000" / "observation.images.front"
+    cam_dir = p.videos_dir / "observation.images.front" / "chunk-000"
     cam_dir.mkdir(parents=True, exist_ok=True)
     (cam_dir / "episode_000000.mp4").write_bytes(b"\x00")
     append_episode(p.meta_dir, {
@@ -91,7 +91,7 @@ def test_vla_compat_export_produces_loadable_parquet_and_metadata(tmp_path: Path
     assert all(s > 0 for s in stats["std"])
 
     # Video copied verbatim.
-    assert (out / "videos" / "chunk-000" / "observation.images.front" / "episode_000000.mp4").exists()
+    assert (out / "videos" / "observation.images.front" / "chunk-000" / "episode_000000.mp4").exists()
 
     # Tasks.parquet preserved.
     tasks_table = pq.read_table(out / "meta" / "tasks.parquet")
