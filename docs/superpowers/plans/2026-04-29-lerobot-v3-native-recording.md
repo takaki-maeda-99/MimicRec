@@ -1190,7 +1190,7 @@ Edit `frontend/src/api/types.ts`: delete the `ExportFormat` type.
 In `DatasetsPage.tsx`, replace whatever button opens `ExportDatasetModal` with an anchor:
 
 ```tsx
-<a href={`/api/datasets/${ds.name}/archive?format=lerobot_v3_native`} download>
+<a href={`/api/datasets/${ds.name}/archive`} download>
   Download
 </a>
 ```
