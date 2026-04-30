@@ -1,0 +1,57 @@
+_target_: mimicrec.mappers.so_to_rebotarm_ee.SOToReBotArmEEMapper
+
+# URDFs (paths resolved relative to repo root)
+so101_urdf_path: configs/urdf/so101/so101.urdf
+rebotarm_urdf_path: reBotArm_control_py/urdf/reBot-DevArm_fixend_description/urdf/reBot-DevArm_fixend.urdf
+
+so101_ee_frame: gripper_frame_link
+rebotarm_ee_frame: end_link
+
+so101_arm_joints: [shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll]
+# Note: reBotArm URDF spells joint3 as "join3" (upstream typo).
+rebotarm_arm_joints: [joint1, joint2, join3, joint4, joint5, joint6]
+rebotarm_package_dirs: [reBotArm_control_py/urdf]
+
+# Position-delta scale: reBotArm Δp = xyz_scale * SO101 Δp.
+# Conservative 1.0 default for first hardware run; bump to 1.5–2.0
+# once you've confirmed motion direction / scale feel right.
+xyz_scale: 1.0
+
+# Linear gripper map: SO101 gripper [deg] → reBotArm gripper [rad]
+gripper_in_min_deg: 0.0
+gripper_in_max_deg: 100.0
+gripper_out_min_rad: 0.0
+gripper_out_max_rad: 1.0
+# SO101's gripper is normalised so that "closed" is the lower deg
+# value and "open" is higher. If reBotArm's daemon expects the
+# opposite (smaller rad = wider open), flip this to true.
+gripper_invert: true
+
+# IK weights (placo soft-constraint)
+ik_position_weight: 1.0
+ik_orientation_weight: 0.05
+
+# Discontinuity filter: if SO101 EE jumps farther than this in one
+# tick, treat as the operator repositioning the leader and skip the
+# delta. Set 0 to disable.
+max_ee_step_m: 0.05
+
+# Workspace box on the absolute reBotArm EE target.
+workspace_radius_m: 0.65
+workspace_z_min_m: -0.2
+workspace_z_max_m: 0.8
+
+# Joint-space velocity clamp: cap each joint's per-tick command
+# delta. Default 5°/tick → 150°/sec at 30Hz. Set 0 to disable.
+max_joint_step_deg: 5.0
+
+# IK seed strategy: prefer previous IK output (temporal coherence)
+# over live state.joint_pos (which lags the command).
+seed_from_last_ik: true
+
+# Joint indices (0-based) to freeze at their first-tick values.
+# Useful when placo's soft-constraint orientation IK whips a wrist
+# joint around to satisfy weakly-weighted orientation targets.
+# Default locks joint5 (the wrist twist axis on reBotArm) — empty
+# list means no locks.
+lock_joints_at_init: [4]
