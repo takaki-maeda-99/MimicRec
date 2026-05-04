@@ -384,6 +384,9 @@ async def run_inference_producer(
                 metrics.observe("inference_latency_ms",
                                 (time.perf_counter() - t0) * 1000)
                 backoff_s = 0.1                          # reset on success
+                # Note: no explicit re-arm here — the consumer-side
+                # half-prefetch in pop_next() will fire _refill_event
+                # once consumed_ratio >= prefetch_threshold.
         except Exception as e:
             metrics.inc("inference_error_count")
             await error_bus.publish_inference_error(kind=classify(e), message=str(e))
@@ -615,7 +618,7 @@ Inference-side failures **do not crash the session**. Only hardware errors and e
 
 ### Unit
 
-- `test_contract.py` — load happy path, env-var interpolation, missing env, unknown action.type, non-existent stats path, components-with-unknown-keys.
+- `test_contract.py` — load happy path, env-var interpolation, missing env, unknown action.type, non-existent stats path, components-with-unknown-keys, **action_stats length mismatch with declared components dim sum**, **`done.scope=step` rejected (MVP: chunk only)**, **`done.type` ∉ {bool, float} rejected**, **missing `inference_safety` block in robot config rejected at start_inference_session**.
 - `test_chunk_buffer.py` — half-prefetch threshold fires once, flag prevents double-fire, empty-buffer pop returns None, push resets origin and clears flag, **`flush()` empties steps and bumps generation**, **`try_push_chunk` with stale generation returns False and drops the chunk**.
 - `test_action_decoder.py` — round-trip ee_local / world frames; gripper kinds (absolute / delta / binary); units conversion; IK chain seeding; IK failure propagates `ik_failed`.
 - `test_safety.py` — clamp at boundary, joint-limit clip, slow-stop linear over N ticks, IK-fail step held, **`step.gripper=None` repeats `_last_gripper_cmd`**, slow-stop preserves last gripper, clamp count exposed via `_clamps_in_current_chunk`.
@@ -626,7 +629,7 @@ Inference-side failures **do not crash the session**. Only hardware errors and e
 
 - `test_producer_loop.py` — fake client returns canned chunk; verify producer fills buffer on refill event; **regression: initial state=None then becomes available — producer must recover and push a chunk** (deadlock check); **regression: 3 consecutive transport errors then success — producer must recover with bounded backoff** (deadlock check); **regression: instruction flush during in-flight request causes `try_push_chunk` to return False and producer to fetch fresh** (generation check).
 - `test_lifecycle.py` — `start_inference_session` spawns producer + control_loop + dispatcher; stop cancels all; teleop session active → start_inference returns 409; inference watchdog auto-stops episode.
-- `test_recording_integration.py` — full session: start → episode_start → inject N ticks of inference → episode_stop → commit(outcome=success). Verify parquet rows, mp4 written, `tasks.parquet` has instruction, `episodes.jsonl` has new columns populated.
+- `test_recording_integration.py` — full session: start → episode_start → inject N ticks of inference → episode_stop → POST /episode/save with `success=True`. Verify parquet rows, mp4 written, `tasks.parquet` has instruction, `episodes.jsonl` has the three new columns populated; `success=True` recorded via the existing `success` plumbing.
 
 ### E2E
 
@@ -710,7 +713,9 @@ response:
         dataset: "SO101"
   done:
     path: "done"
+    type: "float"
     threshold: 0.5
+    scope: "chunk"
     action_on_done: "auto_stop"
 
 loop:
