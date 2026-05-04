@@ -11,6 +11,7 @@ dependencies = [
   "av>=12",
   "fastapi>=0.115",
   "uvicorn[standard]>=0.30",
+  "scipy>=1.15.3",
 ]
 
 [project.optional-dependencies]
