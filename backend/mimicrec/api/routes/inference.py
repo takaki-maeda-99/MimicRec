@@ -4,6 +4,7 @@ from fastapi import APIRouter, Request
 from pydantic import BaseModel
 
 from mimicrec.api.deps import get_configs_root, get_session_manager_or_none
+from mimicrec.api.ws.inference_hub import get_inference_hub
 from mimicrec.config.inference_loader import list_inference_configs, load_inference_config
 from mimicrec.errors import InvalidTransitionError
 
@@ -37,6 +38,7 @@ async def start_inference(request: Request, body: StartInferenceRequest):
         )
     configs_root = get_configs_root(request.app)
     contract = load_inference_config(configs_root, body.config)
+    sm.inference_hub = get_inference_hub(request.app)
     await sm.start_inference_session(
         contract=contract,
         instruction=body.instruction,
@@ -71,9 +73,10 @@ async def update_instruction(request: Request, body: InstructionUpdateRequest):
         )
     import time
     sm._instruction_slot.set(body.instruction, t_mono_ns=time.monotonic_ns())
-    hub = getattr(sm, "inference_hub", None)
-    if hub is not None:
-        await hub.publish({"type": "instruction_updated", "instruction": body.instruction})
+    if sm.inference_hub is not None:
+        await sm.inference_hub.publish({
+            "type": "instruction_updated", "instruction": body.instruction,
+        })
     return {"instruction": body.instruction}
 
 

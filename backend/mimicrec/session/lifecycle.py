@@ -143,6 +143,9 @@ class SessionManager:
         self._inference_config_name: str | None = None
         self._last_stop_reason: str | None = None
 
+        from mimicrec.api.ws.inference_hub import InferenceHub
+        self.inference_hub: InferenceHub | None = None
+
     # ------------------------------------------------------------------
     # Properties
     # ------------------------------------------------------------------
@@ -630,11 +633,14 @@ class SessionManager:
         client = InferenceClient(spec=contract)
         self._inference_client = client
 
+        publish_event = self.inference_hub.publish if self.inference_hub else None
+
         self._producer_task = asyncio.create_task(run_inference_producer(
             client=client, decoder=decoder, buffer=self._chunk_buffer,
             camera_slots=camera_slots, robot_state_slot=self._robot_state_slot,
             instruction_slot=self._instruction_slot, safety=self._inference_safety,
             session=self.session, metrics=self._metrics, error_bus=self._error_bus,
+            publish_event=publish_event,
         ))
         self._control_loop_task = asyncio.create_task(run_inference_control_loop(
             session=self.session, fps=self._fps,
