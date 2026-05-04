@@ -134,11 +134,17 @@ class _StubFK:
     """Minimal FK that satisfies FKLike (returns identity 4x4).
     Exposes a `cfg` attribute so lifecycle's `IKService(fk.cfg)` call doesn't crash
     (the patched IKService ignores cfg entirely).
+    Also exposes `n_kin_joints` and `pose()` so the writer's parquet_row helper
+    doesn't crash when fk is set.
     """
     cfg = object()  # opaque sentinel; patched IKService ignores it
+    n_kin_joints: int = 2  # matches MockRobotAdapter.joint_names count
 
     def matrix(self, q: np.ndarray) -> np.ndarray:
         return np.eye(4)
+
+    def pose(self, q: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        return np.zeros(3, dtype=np.float32), np.zeros(3, dtype=np.float32)
 
 
 class _StubIK:
