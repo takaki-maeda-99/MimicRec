@@ -372,9 +372,29 @@ class SessionManager:
         self._episode_start_t_mono_ns = time.monotonic_ns()
         self._episode_stop_t_mono_ns = None
         self.session.state = SessionState.RECORDING
+        if self.session.mode == SessionMode.INFERENCE:
+            instr_stamped = self._instruction_slot.peek()
+            self.session.locked_instruction = instr_stamped.value if instr_stamped is not None else None
+            if self.inference_hub is not None:
+                await self.inference_hub.publish({
+                    "type": "instruction_locked",
+                    "text": self.session.locked_instruction,
+                })
+                await self.inference_hub.publish({"type": "episode_phase", "phase": "recording"})
+            max_sec = getattr(self, "_session_config", None)
+            max_sec = (max_sec.max_episode_seconds if max_sec else None) or 120
+            self._inference_watchdog_task = asyncio.create_task(self._run_watchdog(max_sec))
 
-    async def episode_stop(self) -> None:
+    async def episode_stop(self, *, stop_reason: str = "manual") -> None:
         """RECORDING -> REVIEW. Drain writer, clear pending slot, finalize."""
+        if self._inference_watchdog_task is not None:
+            self._inference_watchdog_task.cancel()
+            self._inference_watchdog_task = None
+        if self.session.mode == SessionMode.INFERENCE:
+            self.pause_producer_and_flush()
+            self._last_stop_reason = stop_reason
+            if self.inference_hub is not None:
+                await self.inference_hub.publish({"type": "episode_phase", "phase": "review"})
         if self.session.state != SessionState.RECORDING:
             raise InvalidTransitionError(
                 f"episode_stop requires RECORDING, got {self.session.state}"
@@ -448,10 +468,19 @@ class SessionManager:
                 "session_boot_t_mono_ns": 0,
                 "resolved_config": self._resolved_config,
                 "recorded_at": datetime.now(timezone.utc).isoformat(),
+                "source": self.session.mode.value if self.session.mode == SessionMode.INFERENCE else None,
+                "inference_config": self._inference_config_name if self.session.mode == SessionMode.INFERENCE else None,
+                "stop_reason": self._last_stop_reason if self.session.mode == SessionMode.INFERENCE else None,
             })
             self._pending = None
             self._episode_index += 1
         self.session.state = SessionState.READY
+        if self.session.mode == SessionMode.INFERENCE:
+            self.resume_producer()
+            self.session.locked_instruction = None
+            if self.inference_hub is not None:
+                await self.inference_hub.publish({"type": "instruction_released"})
+                await self.inference_hub.publish({"type": "episode_phase", "phase": "ready"})
 
     async def episode_discard(self) -> None:
         """REVIEW -> READY. Discard pending episode."""
@@ -463,6 +492,23 @@ class SessionManager:
             self._pending.discard()
             self._pending = None
         self.session.state = SessionState.READY
+        if self.session.mode == SessionMode.INFERENCE:
+            self.resume_producer()
+            self.session.locked_instruction = None
+            if self.inference_hub is not None:
+                await self.inference_hub.publish({"type": "instruction_released"})
+                await self.inference_hub.publish({"type": "episode_phase", "phase": "ready"})
+
+    async def _run_watchdog(self, max_sec: float) -> None:
+        try:
+            await asyncio.sleep(max_sec)
+            if self.inference_hub is not None:
+                await self.inference_hub.publish({
+                    "type": "watchdog_timeout", "elapsed_sec": max_sec,
+                })
+            await self.episode_stop(stop_reason="timeout")
+        except asyncio.CancelledError:
+            pass
 
     async def replay_start(self, trajectory) -> None:
         """READY (not replay_active) -> spawn replay task."""
