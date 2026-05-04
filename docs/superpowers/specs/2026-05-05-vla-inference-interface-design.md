@@ -1,7 +1,7 @@
 # VLA Inference Interface
 
 **Date:** 2026-05-05
-**Status:** Draft (pending spec review + user approval)
+**Status:** Approved (subagent rounds 1–3, user reviews 1–3 — LGTM 2026-05-05)
 **Scope:** Add a closed-loop VLA inference mode to MimicRec. The app calls a self-hosted Vision-Language-Action HTTP server (initially the user's `vla-gemma-4` Gemma-VLA), receives action chunks (ΔEE pose + gripper), runs them on a real robot (SO-101 first, reBot deferred), records rollouts as datasets, and exposes a new `InferencePage` UI.
 
 ## 1. Purpose
@@ -313,14 +313,17 @@ class ChunkBuffer:
         self._refill_in_flight = False
         return True
 
-    def flush(self) -> None:
-        """Drop any queued steps and re-arm the producer.
-        Called by the lifecycle on `PUT /session/inference/instruction`."""
+    def flush(self) -> int:
+        """Drop any queued steps, bump generation, re-arm the producer.
+        Returns the number of steps that were dropped (used by
+        callers that emit `instruction_updated.flushed_steps` on the WS)."""
+        flushed = len(self._steps)
         self._steps.clear()
         self._origin_size = 0
         self._generation += 1
         self._refill_in_flight = False
         self._refill_event.set()
+        return flushed
 
     def request_refill_now(self) -> None:
         """Producer-facing signal used at startup, on producer-driven re-arm,
@@ -553,13 +556,19 @@ Teleop reader task is **not** spawned in INFERENCE mode (the leader arm is decou
 
 - `READY`: VLA is queried, chunks decoded and applied via safety, robot moves under model control. Operator uses this to validate model behavior, position the arm, edit the instruction, then press *Start episode* when ready.
 - `RECORDING`: same as READY plus the recording writer is enqueueing.
-- `REVIEW`: control_loop **continues to run normally**, but on entering REVIEW the lifecycle:
-  1. calls `chunk_buffer.flush()` (empties queued steps and bumps generation, dropping any in-flight stale chunk on arrival), and
-  2. sets `session.producer_paused = True` so the producer skips fetching while the operator deliberates.
+- `REVIEW`: control_loop **continues to run normally**, but on entering REVIEW the lifecycle performs the following **in this exact order**:
+  1. `session.producer_paused = True` (must come first — otherwise step 2's `_refill_event.set()` could wake the producer to fetch one stale chunk before it sees the pause flag),
+  2. `chunk_buffer.flush()` (empties queued steps, bumps generation so any in-flight chunk is dropped on arrival, and re-arms the event harmlessly since the producer is now paused).
 
   With the buffer empty, every `pop_next()` returns `None` and `safety.filter(None, q_curr, ...)` enters slow-stop, holding the arm at `_last_safe_q` and continuing to assert that hold every tick (no dispatch hole). Gripper holds at `_last_gripper_cmd` (§7.4).
 
-  On commit / discard (REVIEW → READY), lifecycle clears `producer_paused` and calls `buffer.request_refill_now()` so the producer fetches a fresh chunk grounded in the current robot state — never the state captured 30 s ago when REVIEW began.
+  On commit / discard (REVIEW → READY), the lifecycle reverses the order:
+  1. `session.producer_paused = False`,
+  2. `chunk_buffer.request_refill_now()`.
+
+  Order on resume is technically forgiving (the producer is asleep on `wait_for_refill()`), but the symmetric ordering is what the lifecycle helper enforces. **Implementation:** these pairs are wrapped in `lifecycle.pause_producer_and_flush()` and `lifecycle.resume_producer()` so the order is enforced in one place and tested once.
+
+  The first chunk after resume is grounded in the current robot state — never the state captured at REVIEW entry.
 
 The InferencePage `[● live]` indicator is lit whenever commands are being dispatched (READY + RECORDING). UI must clearly communicate "the robot is under model control" during READY (see §9). E-stop (`POST /robot/estop`) remains the operator's escape hatch in any phase.
 
@@ -576,7 +585,7 @@ The robot decelerates over `slow_stop_ticks` (≈333 ms at 15 fps) until the nex
 |---|---|---|---|
 | POST | `/session/inference/start` | `{ session_config_ref, inference_config_ref, dataset_ref, instruction }` | `{ session_id, state }` — 409 if any session is already active |
 | POST | `/session/inference/stop` | `{}` | `{ ok }` |
-| PUT | `/session/inference/instruction` | `{ text }` | `{ ok }` — 409 if `state == RECORDING`. Handler updates `_instruction_slot`, calls `chunk_buffer.flush()`, and publishes `instruction_updated` on `inference_hub` (see §8.4). |
+| PUT | `/session/inference/instruction` | `{ text }` | `{ ok }` — 409 if `state == RECORDING`. Handler updates `_instruction_slot`, captures `flushed = chunk_buffer.flush()` (returns the dropped step count), and publishes `{type: "instruction_updated", text, flushed_steps: flushed}` on `inference_hub` (§8.4). |
 | GET | `/session/inference/state` | — | `{ phase, instruction, locked_instruction, buffer_depth, buffer_origin, chunks_consumed, last_inference_latency_ms, inference_errors, last_safety_event }` |
 | GET | `/configs/inference` | — | `{ items: [{name, description}] }` |
 | GET | `/configs/inference/{name}` | — | `{ ContractSpec dump (env vars elided) }` |
@@ -673,13 +682,13 @@ Inference-side failures **do not crash the session**. Only hardware errors and e
 
 ### Integration
 
-- `test_producer_loop.py` — fake client returns canned chunk; verify producer fills buffer on refill event; **regression: initial state=None then becomes available — producer must recover and push a chunk** (deadlock check); **regression: 3 consecutive transport errors then success — producer must recover with bounded backoff** (deadlock check); **regression: instruction flush during in-flight request causes `try_push_chunk` to return False and producer to fetch fresh** (generation check).
+- `test_producer_loop.py` — fake client returns canned chunk; verify producer fills buffer on refill event; **regression: initial state=None then becomes available — producer must recover and push a chunk** (deadlock check); **regression: 3 consecutive transport errors then success — producer must recover with bounded backoff** (deadlock check); **regression: instruction flush during in-flight request causes `try_push_chunk` to return False and producer to fetch fresh** (generation check); **spy: every successful push is followed by exactly one `safety.on_new_chunk()` call** (catches future refactor that decouples them).
 - `test_lifecycle.py` — `start_inference_session` spawns producer + control_loop + dispatcher; stop cancels all; teleop session active → start_inference returns 409; inference watchdog auto-stops episode.
 - `test_recording_integration.py` — full session: start → episode_start → inject N ticks of inference → episode_stop → POST /episode/save with `success=True`. Verify parquet rows, mp4 written, `tasks.parquet` has instruction, `episodes.jsonl` has the three new columns populated; `success=True` recorded via the existing `success` plumbing.
 
 ### E2E
 
-- `test_inference_e2e.py` — boot a fake VLA HTTP server (aiohttp.test_utils) that emits ee_delta chunks with mild motion; spin up an inference session against `mock_robot`; run 60 seconds; assert: zero `inference_error`, ≥1 chunk consumed, `safety_event` count below threshold, parquet+mp4 generated, recovered action stats fall within expected ranges.
+- `test_inference_e2e.py` — boot a fake VLA HTTP server (aiohttp.test_utils) that emits ee_delta chunks with mild motion; spin up an inference session against `mock_robot`; run 60 seconds; assert: zero `inference_error`, ≥1 chunk consumed, `safety_event` count below threshold, parquet+mp4 generated, recovered action stats fall within expected ranges. **REVIEW-tail assertion**: at the moment `episode_phase=review` is broadcast, capture the next 100 ms of dispatched commands; assert each delta is ≤ `max_joint_delta_per_step_deg` (the slow-stop tail must not exceed the per-tick clamp).
 
 `mock_robot`-only for E2E. CI runs unit + integration; E2E gated to manual / nightly.
 
