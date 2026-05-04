@@ -1,0 +1,73 @@
+# configs/inference/gemma_libero_v1.yaml
+#
+# Contract for the user's self-hosted Gemma-VLA server (LIBERO-finetuned),
+# served via local FastAPI on :8001. See configs/inference/README.md for
+# field-by-field documentation.
+
+name: gemma_libero_v1
+description: "Gemma-VLA fine-tuned on LIBERO, served on local FastAPI."
+
+endpoint:
+  url: "http://localhost:8001/predict"
+  method: POST
+  timeout_s: 5.0
+  headers:
+    Authorization: "Bearer ${VLA_API_TOKEN}"
+  retry:
+    # MVP: no retry; safety handles late chunks via slow-stop.
+    # NOTE: setting this > 0 in production inference is almost always wrong —
+    # it amplifies state drift, and half-prefetch + slow-stop already cover
+    # transient network errors. Reserved for future health-check usage only.
+    max_attempts: 0
+
+request:
+  images:
+    front:
+      field: image_primary
+      encoding: jpeg_base64
+      resize: [224, 224]
+      jpeg_quality: 90
+    wrist:
+      field: image_wrist
+      encoding: jpeg_base64
+      resize: [224, 224]
+      jpeg_quality: 90
+  state:
+    field: proprio
+    components: [joint_pos, gripper_pos]
+    normalization:
+      method: none           # MVP default: server normalizes, or model is robust to raw
+  instruction:
+    field: instruction
+  extra_fields:
+    model_version: gemma-libero-v1
+
+response:
+  actions_path: actions
+  chunk:
+    expected_size: 16
+    on_size_mismatch: use_actual
+  action:
+    type: ee_delta
+    frame: ee_local
+    pose:
+      units: meter_axisangle_rad
+    gripper:
+      kind: absolute
+      units: normalized_0_1
+    components: [ee_delta, gripper]
+    normalization:
+      method: mean_std
+      stats_ref:
+        type: vla_export
+        dataset: SO101
+  done:
+    path: done
+    type: float
+    threshold: 0.5
+    scope: chunk
+    action_on_done: auto_stop
+
+loop:
+  prefetch_threshold: 0.5
+  max_inflight: 1
