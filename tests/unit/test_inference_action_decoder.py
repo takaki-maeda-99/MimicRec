@@ -137,3 +137,43 @@ def test_decode_unknown_normalization_method_raises():
     dec = ActionDecoder(spec=spec, fk=FakeFK(), ik=FakeIK(), narm=5, action_stats=None)
     with pytest.raises(ValueError, match="normalization"):
         dec.decode({"actions": [[0.0]*7]}, current_state=_state())
+
+
+def test_gripper_binary_kind():
+    yaml_bin = YAML_CONTRACT.replace("kind: absolute", "kind: binary").replace(
+        "units: normalized_0_1", "units: binary_threshold_0p5",
+    )
+    spec = ContractSpec.from_yaml_text(yaml_bin)
+    dec = ActionDecoder(spec=spec, fk=FakeFK(), ik=FakeIK(), narm=5, action_stats=None)
+    raw = {"actions": [[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.7]]}
+    chunk = dec.decode(raw, current_state=_state())
+    assert chunk[0].gripper == 1.0
+
+
+def test_gripper_delta_kind_accumulates():
+    yaml_delta = YAML_CONTRACT.replace("kind: absolute", "kind: delta")
+    spec = ContractSpec.from_yaml_text(yaml_delta)
+    dec = ActionDecoder(spec=spec, fk=FakeFK(), ik=FakeIK(), narm=5, action_stats=None)
+    raw = {"actions": [[0.0]*6 + [0.1]]}
+    state = RobotState(
+        joint_pos=np.array([0.0, 0.0, 0.0, 0.0, 0.0]),
+        joint_vel=np.zeros(5),
+        joint_effort=np.zeros(5),
+        gripper_pos=0.4,
+        t_mono_ns=0,
+    )
+    chunk = dec.decode(raw, current_state=state)
+    assert chunk[0].gripper == pytest.approx(0.5)
+
+
+def test_ik_failure_falls_back_to_seed():
+    class FailingIK:
+        def solve(self, T, seed):
+            return seed.copy(), False
+    spec = ContractSpec.from_yaml_text(YAML_CONTRACT)
+    dec = ActionDecoder(spec=spec, fk=FakeFK(), ik=FailingIK(), narm=5, action_stats=None)
+    raw = {"actions": [[0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5]]}
+    chunk = dec.decode(raw, current_state=_state(joint_pos=np.full(5, 7.0)))
+    assert chunk[0].ik_failed
+    assert np.allclose(chunk[0].q, 7.0)
+    # IK failure path is independent of normalization; either contract works.
