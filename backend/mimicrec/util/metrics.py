@@ -19,5 +19,13 @@ class Metrics:
     def gauge(self, name: str) -> float:
         return self._gauges.get(name, 0.0)
 
+    def observe(self, name: str, value: float) -> None:
+        """Record a sampled value. Currently keeps only the latest (used by /state)."""
+        self._gauges[name] = value
+
+    def get_last(self, name: str) -> float | None:
+        """Get the most recent observation, or None if never observed."""
+        return self._gauges.get(name)
+
     def snapshot(self) -> dict[str, dict[str, float]]:
         return {"counters": dict(self._counters), "gauges": dict(self._gauges)}

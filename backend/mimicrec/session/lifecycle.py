@@ -675,6 +675,25 @@ class SessionManager:
         if self._chunk_buffer is not None:
             self._chunk_buffer.request_refill_now()
 
+    def inference_state_snapshot(self) -> dict:
+        """Return the current INFERENCE-mode session state for polling clients.
+        Reads in-memory state only (no I/O). Returns {phase: pre_start} when not
+        currently in INFERENCE mode."""
+        if self.session.mode != SessionMode.INFERENCE:
+            return {"phase": "pre_start"}
+        instr = self._instruction_slot.peek()
+        return {
+            "phase": self.session.state.value,
+            "instruction": instr.value if instr is not None else None,
+            "locked_instruction": self.session.locked_instruction,
+            "buffer_depth": self._chunk_buffer.depth() if self._chunk_buffer else 0,
+            "buffer_origin": self._chunk_buffer.origin_size() if self._chunk_buffer else 0,
+            "chunks_consumed": self._metrics.get("chunks_consumed"),
+            "last_inference_latency_ms": self._metrics.get_last("inference_latency_ms"),
+            "inference_errors": self._metrics.get("inference_error_count"),
+            "last_safety_event": self._inference_safety.last_event() if self._inference_safety else None,
+        }
+
     async def end(self) -> None:
         """Any -> IDLE. Shut down everything in order."""
         self.session.stopped.set()

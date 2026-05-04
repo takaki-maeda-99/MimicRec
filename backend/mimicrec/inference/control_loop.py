@@ -45,6 +45,8 @@ async def run_inference_control_loop(
             continue
 
         step = chunk_buffer.pop_next() if phase != SessionState.REVIEW else None
+        if step is not None and chunk_buffer.depth() == 0:
+            metrics.inc("chunks_consumed")
         command = safety.filter(step, state.value.joint_pos[:safety.joint_min.shape[0]], tick_t)
 
         if not session.replay_active:
