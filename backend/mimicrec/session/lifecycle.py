@@ -685,6 +685,27 @@ class SessionManager:
         self._writer_task = None
         self._robot_reader_task = None
 
+        # CRITICAL: clear the command goal slot so the fresh dispatcher
+        # doesn't immediately replay whatever teleop left in it. The new
+        # inference control_loop will publish a safety-filtered command on
+        # its first tick (slow-stop or the first decoded chunk step).
+        # Without this reset, run_command_dispatcher's `last_seen_seq=0`
+        # initialization sees the teleop value as "new" and sends it once
+        # at the mode transition.
+        self._command_goal_slot = LatestValue()
+
+        # If we bootstrapped from a HAND_TEACH session, the robot is in
+        # GRAVITY_COMP and will refuse joint commands. Switch to POSITION
+        # explicitly. (start() already does this at session boot for
+        # non-hand-teach modes, but the inference handoff was missing it.)
+        try:
+            await self._robot.set_mode(RobotMode.POSITION)
+        except (HardwareError, NotImplementedError):
+            logger.warning(
+                "robot adapter %r refused set_mode(POSITION) at inference start; proceeding",
+                self._robot.name,
+            )
+
         self.session.mode = SessionMode.INFERENCE
         self._inference_config_name = inference_config_name
         # Update both the live slot (read by the producer) and the persisted
