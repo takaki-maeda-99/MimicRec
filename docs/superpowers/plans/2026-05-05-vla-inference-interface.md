@@ -734,34 +734,51 @@ def test_fk_service_retains_cfg():
     cfg = _cfg()
     fk = FKService(cfg)
     assert fk._cfg is cfg
+
+
+def test_fk_service_pose_still_works():
+    """Regression: existing pose() must continue to work after the edit
+    (it depends on self._rotation, which is preserved alongside the new fields)."""
+    fk = FKService(_cfg())
+    pos, rotvec = fk.pose(np.zeros(5))
+    assert pos.shape == (3,)
+    assert rotvec.shape == (3,)
 ```
 
 - [ ] **Step 2: Run to fail** — `AttributeError: 'FKService' object has no attribute 'matrix'` and `_cfg`.
 
-- [ ] **Step 3: Implement** — in `backend/mimicrec/kinematics/fk.py`, modify `FKService.__init__` to retain `cfg` and add `matrix()`:
+- [ ] **Step 3: Implement** — in `backend/mimicrec/kinematics/fk.py` make **two surgical edits** inside `FKService.__init__` (preserve every other line, including the `Rotation` import, URDF path resolve, and `self._rotation = Rotation`):
 
-```python
-class FKService:
-    def __init__(self, cfg: KinematicsConfig):
-        from lerobot.model.kinematics import RobotKinematics
-        self._cfg = cfg                                # ← NEW: retain cfg for IKService construction
-        self._k = RobotKinematics(
-            urdf_path=cfg.urdf_path,
-            target_frame_name=cfg.target_frame,
-            joint_names=cfg.joint_names,
-        )
-        self._n_kin_joints = len(self._k.joint_names)
+  Edit 1 — add `self._cfg = cfg` immediately after the imports inside `__init__`:
 
-    def matrix(self, joint_pos_deg) -> np.ndarray:    # ← NEW: 4x4 transform
-        """Return the 4x4 end-effector transform for joint_pos_deg (degrees).
-        Convenience accessor used by ActionDecoder; FK convention matches `pose()`."""
-        import numpy as np
-        return self._k.forward_kinematics(np.asarray(joint_pos_deg, dtype=np.float64))
-```
+  ```python
+      def __init__(self, cfg: KinematicsConfig):
+          from lerobot.model.kinematics import RobotKinematics
+          from lerobot.utils.rotation import Rotation
 
-(Preserve the existing `pose()` method.)
+          self._cfg = cfg                                # ← NEW: retain for IKService reuse
+          urdf = str(Path(cfg.urdf_path).resolve())
+          self._k = RobotKinematics(
+              urdf_path=urdf,
+              target_frame_name=cfg.target_frame,
+              joint_names=cfg.joint_names,
+          )
+          self._rotation = Rotation
+          self._n_kin_joints = len(self._k.joint_names)
+  ```
 
-- [ ] **Step 4: Verify pass** — 2 passed.
+  Edit 2 — append a new `matrix()` method to `FKService` (alongside the existing `pose()`):
+
+  ```python
+      def matrix(self, joint_pos_deg: np.ndarray) -> np.ndarray:
+          """Return the 4x4 end-effector transform for joint_pos_deg (degrees).
+          Convenience accessor for ActionDecoder; FK convention matches `pose()`."""
+          return self._k.forward_kinematics(np.asarray(joint_pos_deg, dtype=np.float64))
+  ```
+
+  **Do not delete or replace any existing line in `FKService`.** Only add the two pieces above.
+
+- [ ] **Step 4: Verify pass** — 3 passed (matrix + retain_cfg + pose regression).
 
 - [ ] **Step 5: Commit**
 
