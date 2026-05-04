@@ -14,7 +14,15 @@ router = APIRouter()
 
 
 class StartInferenceRequest(BaseModel):
-    config: str
+    # `config` is the contract name (configs/inference/<config>.yaml). The other
+    # three fields are accepted for API completeness (frontend already sends them
+    # per the spec); only `inference_config_ref`/`config` and `instruction` are
+    # currently consulted. `session_config_ref` and `dataset_ref` are reserved
+    # for future "create session from inference start" wiring (deferred).
+    config: str | None = None
+    inference_config_ref: str | None = None
+    session_config_ref: str | None = None
+    dataset_ref: str | None = None
     instruction: str = ""
 
 
@@ -36,13 +44,18 @@ async def start_inference(request: Request, body: StartInferenceRequest):
             "no active session adapter; start a teleop session first to load "
             "the robot then call /session/inference/start"
         )
+    config_name = body.config or body.inference_config_ref
+    if not config_name:
+        raise InvalidTransitionError(
+            "request must include `config` (or `inference_config_ref`) — the contract YAML name"
+        )
     configs_root = get_configs_root(request.app)
-    contract = load_inference_config(configs_root, body.config)
+    contract = load_inference_config(configs_root, config_name)
     sm.inference_hub = get_inference_hub(request.app)
     await sm.start_inference_session(
         contract=contract,
         instruction=body.instruction,
-        inference_config_name=body.config,
+        inference_config_name=config_name,
     )
     return sm.inference_state_snapshot()
 
@@ -61,9 +74,15 @@ async def stop_inference(request: Request):
 async def update_instruction(request: Request, body: InstructionUpdateRequest):
     """Update the instruction slot for the running inference session.
 
-    Returns 409 if called outside of INFERENCE mode.
+    Per spec §8.3, the instruction is **locked during RECORDING** — one episode,
+    one task. Calling this endpoint while the session is RECORDING returns 409
+    so an operator can't accidentally split an episode's instruction. The
+    locked text is captured at episode_start and persisted to tasks.parquet
+    on commit.
+
+    Returns 409 if called outside of INFERENCE mode or during RECORDING.
     """
-    from mimicrec.types import SessionMode
+    from mimicrec.types import SessionMode, SessionState
     sm = get_session_manager_or_none(request.app)
     if sm is None:
         raise InvalidTransitionError("no active session")
@@ -71,13 +90,23 @@ async def update_instruction(request: Request, body: InstructionUpdateRequest):
         raise InvalidTransitionError(
             f"instruction update requires INFERENCE mode, got {sm.session.mode.value}"
         )
+    if sm.session.state == SessionState.RECORDING:
+        raise InvalidTransitionError(
+            "instruction is locked during RECORDING; stop the episode first"
+        )
     import time
     sm._instruction_slot.set(body.instruction, t_mono_ns=time.monotonic_ns())
+    # Spec §8.1 Q17: PUT during READY flushes the chunk buffer so the producer
+    # fetches a fresh chunk under the new instruction. The brief gap is
+    # absorbed by safety.slow_stop until the next chunk arrives.
+    flushed = sm._chunk_buffer.flush() if sm._chunk_buffer is not None else 0
     if sm.inference_hub is not None:
         await sm.inference_hub.publish({
-            "type": "instruction_updated", "instruction": body.instruction,
+            "type": "instruction_updated",
+            "instruction": body.instruction,
+            "flushed_steps": flushed,
         })
-    return {"instruction": body.instruction}
+    return {"instruction": body.instruction, "flushed_steps": flushed}
 
 
 @router.get("/session/inference/state")

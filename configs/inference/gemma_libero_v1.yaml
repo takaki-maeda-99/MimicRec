@@ -61,12 +61,17 @@ response:
       stats_ref:
         type: vla_export
         dataset: SO101
-  done:
-    path: done
-    type: float
-    threshold: 0.5
-    scope: chunk
-    action_on_done: auto_stop
+  # NOTE: server-side `done` signal handling is not yet wired through the
+  # producer (deferred — see spec §13 follow-ups). Setting `action_on_done:
+  # auto_stop` would have no effect today, so the block is left commented out
+  # to avoid the false impression that auto-stop is active. Uncomment + set to
+  # `notify_only` once the producer is taught to read response[done.path].
+  # done:
+  #   path: done
+  #   type: float
+  #   threshold: 0.5
+  #   scope: chunk
+  #   action_on_done: notify_only
 
 loop:
   prefetch_threshold: 0.5

@@ -85,10 +85,10 @@ export const inferenceApi = {
     ),
   stop: () =>
     apiFetch<{ ok: boolean }>("/api/session/inference/stop", { method: "POST", body: JSON.stringify({}) }),
-  updateInstruction: (text: string) =>
-    apiFetch<{ ok: boolean }>(
+  updateInstruction: (instruction: string) =>
+    apiFetch<{ instruction: string; flushed_steps: number }>(
       "/api/session/inference/instruction",
-      { method: "PUT", body: JSON.stringify({ text }) },
+      { method: "PUT", body: JSON.stringify({ instruction }) },
     ),
   state: () =>
     apiFetch<InferenceState>("/api/session/inference/state"),
