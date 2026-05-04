@@ -96,6 +96,10 @@ async def update_instruction(request: Request, body: InstructionUpdateRequest):
         )
     import time
     sm._instruction_slot.set(body.instruction, t_mono_ns=time.monotonic_ns())
+    # Keep the persisted attribute (used by episode_save → tasks.parquet) in
+    # sync with the live slot so a save during the next READY→RECORDING window
+    # records the actual instruction the model was running under.
+    sm._instruction = body.instruction
     # Spec §8.1 Q17: PUT during READY flushes the chunk buffer so the producer
     # fetches a fresh chunk under the new instruction. The brief gap is
     # absorbed by safety.slow_stop until the next chunk arrives.

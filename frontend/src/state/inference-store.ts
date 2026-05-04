@@ -160,10 +160,10 @@ export const useInferenceStore = create<InferenceStoreState>((set, get) => ({
         });
         break;
       case "instruction_updated":
-        set({ instruction: e.text });
+        set({ instruction: e.instruction });
         break;
       case "instruction_locked":
-        set({ lockedInstruction: e.text });
+        set({ lockedInstruction: e.instruction });
         break;
       case "instruction_released":
         set({ lockedInstruction: null });

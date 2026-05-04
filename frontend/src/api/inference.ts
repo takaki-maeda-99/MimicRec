@@ -62,8 +62,8 @@ export type InferenceEvent =
   | { type: "inference_chunk_dropped_stale"; generation_was: number; current_generation: number }
   | { type: "safety_event"; kind: string; step_index?: number; joint?: string }
   | { type: "clamps_per_chunk"; count: number; chunk_size: number }
-  | { type: "instruction_updated"; text: string; flushed_steps: number }
-  | { type: "instruction_locked"; text: string }
+  | { type: "instruction_updated"; instruction: string; flushed_steps: number }
+  | { type: "instruction_locked"; instruction: string }
   | { type: "instruction_released" }
   | { type: "next_action_preview"; ee_delta: number[]; gripper: number }
   | { type: "episode_phase"; phase: "ready" | "recording" | "review" }

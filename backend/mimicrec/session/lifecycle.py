@@ -378,7 +378,7 @@ class SessionManager:
             if self.inference_hub is not None:
                 await self.inference_hub.publish({
                     "type": "instruction_locked",
-                    "text": self.session.locked_instruction,
+                    "instruction": self.session.locked_instruction,
                 })
                 await self.inference_hub.publish({"type": "episode_phase", "phase": "recording"})
             max_sec = getattr(self, "_session_config", None)
@@ -387,6 +387,14 @@ class SessionManager:
 
     async def episode_stop(self, *, stop_reason: str = "manual") -> None:
         """RECORDING -> REVIEW. Drain writer, clear pending slot, finalize."""
+        # Validate state FIRST so a mistaken stop in READY/REVIEW doesn't
+        # cancel the watchdog or pause the producer before the 409. (The
+        # watchdog task can only be active during RECORDING anyway, so the
+        # earlier ordering was safe in practice — this is a defensive cleanup.)
+        if self.session.state != SessionState.RECORDING:
+            raise InvalidTransitionError(
+                f"episode_stop requires RECORDING, got {self.session.state}"
+            )
         if self._inference_watchdog_task is not None:
             self._inference_watchdog_task.cancel()
             self._inference_watchdog_task = None
@@ -395,10 +403,6 @@ class SessionManager:
             self._last_stop_reason = stop_reason
             if self.inference_hub is not None:
                 await self.inference_hub.publish({"type": "episode_phase", "phase": "review"})
-        if self.session.state != SessionState.RECORDING:
-            raise InvalidTransitionError(
-                f"episode_stop requires RECORDING, got {self.session.state}"
-            )
         # Move out of RECORDING so the control loop stops enqueuing new
         # bundles. The pending slot stays non-None until drain finishes —
         # flipping it earlier caused the writer to drop every queued
@@ -436,11 +440,20 @@ class SessionManager:
             now_mono = time.monotonic_ns()
             # Make sure tasks.parquet has an entry for this task name so the
             # task -> task_index mapping is consistent across episodes.
+            # For INFERENCE mode the instruction was locked at episode_start
+            # (spec §8.3); use that exact value rather than self._instruction
+            # which may have been updated mid-episode by a stale code path.
             from mimicrec.recording.metadata import upsert_task
+            persisted_instruction = (
+                self.session.locked_instruction
+                if self.session.mode == SessionMode.INFERENCE
+                and self.session.locked_instruction is not None
+                else self._instruction
+            )
             upsert_task(
                 self._dataset_root / "meta",
                 self._task,
-                self._instruction,
+                persisted_instruction,
             )
             # Use the stop timestamp (set when state→REVIEW), not now_mono,
             # so duration reflects only the RECORDING window. Reviewing for
@@ -450,7 +463,7 @@ class SessionManager:
             self._pending.save(metadata_extra={
                 "episode_index": self._episode_index,
                 "task": self._task,
-                "instruction": self._instruction,
+                "instruction": persisted_instruction,
                 "robot": self._robot.name,
                 "teleop": self._teleop.name if self._teleop else None,
                 "mapper": "identity",
@@ -645,9 +658,41 @@ class SessionManager:
                 "start_inference_session: inference session already active"
             )
 
+        # CRITICAL: cancel tasks spawned by the prior teleop/handteach
+        # session.start(). Those tasks share the slots/queues we're about
+        # to spawn fresh tasks against — letting both run causes:
+        #   - 2 robot readers writing to _robot_state_slot (last write wins)
+        #   - 2 dispatchers calling robot.send_joint_command (alternation)
+        #   - 2 writers consuming the same _recorder_queue (episode rows split)
+        # Cancel + await so the slots are clean before the new spawn block.
+        prior_tasks = [
+            t for t in (
+                self._teleop_reader_task,
+                self._robot_reader_task,
+                self._control_loop_task,
+                self._dispatcher_task,
+                self._writer_task,
+            )
+            if t is not None and not t.done()
+        ]
+        for t in prior_tasks:
+            t.cancel()
+        if prior_tasks:
+            await asyncio.gather(*prior_tasks, return_exceptions=True)
+        self._teleop_reader_task = None
+        self._control_loop_task = None
+        self._dispatcher_task = None
+        self._writer_task = None
+        self._robot_reader_task = None
+
         self.session.mode = SessionMode.INFERENCE
         self._inference_config_name = inference_config_name
+        # Update both the live slot (read by the producer) and the persisted
+        # attribute (read by episode_save → tasks.parquet). Keeping them in
+        # sync at session start prevents the dataset from being saved with a
+        # stale instruction (e.g. the teleop seed instruction).
         self._instruction_slot.set(instruction, t_mono_ns=0)
+        self._instruction = instruction
         self.session.locked_instruction = None
         self.session.producer_paused = False
         self._last_stop_reason = None
