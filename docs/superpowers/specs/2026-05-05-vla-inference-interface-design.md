@@ -51,13 +51,15 @@ The action format is **6-dim ΔEE pose + 1-dim gripper** (7-dim total), which bi
 | Q6 | Safety layers | Per-step delta clamp + hard joint limits + manual E-stop + slow-stop | Required for real-robot operation; EE workspace box is overkill for MVP |
 | Q7 | UI placement | New `InferencePage` (separate from RecordPage) | Different semantics, RecordPage already dense |
 | Q8 | First robot | SO-101 (MVP), reBot designed-in | User priority + existing maturity |
-| Action type | `ee_delta` only | 6-dim ΔEE + 1-dim gripper | Cross-robot transferability (iii); typical VLA output format |
-| Frame / gripper / units | All YAML-configurable | `frame: ee_local|world`, `gripper.kind: absolute|delta|binary`, `pose.units: ...` | Fits multiple training stacks |
-| Image encoding (MVP) | `jpeg_base64` only | Smallest schema, works with Gemma-VLA |
-| Normalization stance | Configurable; `method: none` allowed | Some servers normalize internally |
-| Instruction lifecycle | `LatestValue[str]` slot, free during READY, **locked during RECORDING** | Clean episode-task semantics |
-| Rollout dataset | Same as `dataset_ref` (no separate target) | Simpler |
-| Task-done | Manual stop + optional model `done` signal in response + `max_episode_seconds` watchdog + REVIEW success/failure label | Layered defense + human-in-loop |
+| Q9 | Action type | `ee_delta` only | 6-dim ΔEE + 1-dim gripper. Cross-robot transferability (iii); typical VLA output format |
+| Q10 | Frame / gripper / units | All YAML-configurable | `frame: ee_local|world`, `gripper.kind: absolute|delta|binary`, `pose.units: ...`. Fits multiple training stacks |
+| Q11 | Image encoding (MVP) | `jpeg_base64` only | Smallest schema, works with Gemma-VLA |
+| Q12 | Normalization stance | Configurable; `method: none` allowed | Some servers normalize internally |
+| Q13 | Instruction lifecycle | `LatestValue[str]` slot, free during READY, **locked during RECORDING** | Clean episode-task semantics |
+| Q14 | Rollout dataset | Same as `dataset_ref` (no separate target) | Simpler |
+| Q15 | Task-done | Manual stop + optional model `done` signal in response + `max_episode_seconds` watchdog + REVIEW success/failure label | Layered defense + human-in-loop |
+
+**Units convention** (referenced throughout): `RobotState.joint_pos` is `float32[Narm]` in **degrees** (matches `FKService` and the SO-101 adapter). `RobotState.gripper_pos` is a normalized scalar in `[-1, +1]` after the recent SO-101 gripper normalization fix (commit `e52029e`). The values fed into `request.state.components` are these raw values; `normalization` (if any) operates on them.
 
 ## 4. Architecture overview
 
@@ -270,6 +272,8 @@ class ChunkBuffer:
 
 `StepAction` carries a target `q` (degrees), gripper command, and any safety-relevant metadata (e.g., `ik_failed: bool`).
 
+The buffer's `_refill_event` and `_refill_in_flight` are intentionally accessed by `InferenceProducer` (the only writer of chunks). Producer + buffer are a designed-pair; the underscore signals "not for general callers" rather than fully private. The implementation may expose thin public methods (`request_refill_signal()`, `acknowledge_refill_started()`) if doing so improves test ergonomics, but the contract is "exactly one producer per buffer".
+
 ### 7.2 InferenceProducer (async task)
 
 ```python
@@ -396,19 +400,24 @@ Teleop reader task is **not** spawned in INFERENCE mode (the leader arm is decou
 | GET | `/session/inference/state` | — | `{ phase, instruction, locked_instruction, buffer_depth, buffer_origin, chunks_consumed, last_inference_latency_ms, inference_errors, last_safety_event }` |
 | GET | `/configs/inference` | — | `{ items: [{name, description}] }` |
 | GET | `/configs/inference/{name}` | — | `{ ContractSpec dump (env vars elided) }` |
-| WS | `/ws/inference/telemetry` | — | streaming events (see §8.4) |
-| POST | `/session/emergency_stop` | `{}` | `{ ok }` — checked: implemented if not present, sets `RobotMode.TORQUE_OFF` |
+| WS | `/ws/inference` | — | streaming events (see §8.4); new hub alongside existing `session_hub`/`state_hub`/`teleop_hub`/`camera_hub` |
 
-Existing `/episode/start`, `/episode/stop`, `/episode/discard` are reused. `/episode/commit` gains an optional `outcome` field: `success | failure | null` (default null = same as today). When `null` and source is `inference`, frontend defaults UI to ask, but backend accepts null.
+Existing endpoints reused without modification:
+
+- `POST /episode/start` — start a recording episode within the inference session.
+- `POST /episode/stop` — stop the recording.
+- `POST /episode/save` (existing) — commit the episode. Body is `SaveEpisodeRequest { success: bool | None, comment: str | None }`. Inference rollouts populate `success=True|False` from the REVIEW UI (Save (success) vs Save (failure)). Teleop callers continue to send `success=None` (no behavior change).
+- `POST /episode/discard` — discard the episode.
+- `POST /robot/estop` (existing, in `api/routes/session.py:122`) — used as the InferencePage E-stop. Calls the active adapter's `estop()` method (SO-101 supports it). No new emergency-stop endpoint is added.
 
 ### 8.3 Recording integration
 
 - Instruction lock: at `episode_start`, the value of `_instruction_slot.peek()` is captured into `Session.locked_instruction`. `PUT /session/inference/instruction` returns 409 while RECORDING. At `episode_stop` (or discard), the lock is released.
-- `episodes.jsonl` per-episode metadata gains four optional columns:
+- `episodes.jsonl` per-episode metadata gains three optional columns:
   - `source: "teleop" | "hand_teach" | "inference"` (NULL/missing for legacy rows)
   - `inference_config: <name>` (only when `source == "inference"`)
-  - `outcome: "success" | "failure"` (only when `source == "inference"`; required at commit)
   - `stop_reason: "manual" | "model_done" | "timeout"` (only when `source == "inference"`)
+- The success/failure label is carried by the **existing `success: bool | None`** field on `SaveEpisodeRequest` (no new column). The InferencePage REVIEW UI sets `success=True` for *Save (success)* and `success=False` for *Save (failure)*. The backend does **not** reject `success=None` for inference rollouts — that case maps to "unlabeled rollout" and the column is recorded as null. The frontend always presents the labeled buttons for inference, so `null` only occurs if the API is called directly.
 - `tasks.parquet` gets the locked instruction via the existing `upsert_task` path; `task_index` is assigned per-episode as today.
 
 Existing teleop episodes are unaffected.
@@ -429,7 +438,7 @@ Existing teleop episodes are unaffected.
 {"type": "watchdog_timeout",    "elapsed_sec": 121.3}                      // max_episode_seconds hit
 ```
 
-`/ws/inference/telemetry` is a separate channel from `/ws/telemetry`. Cameras keep their existing channels.
+The new `/ws/inference` channel is implemented as a new `inference_hub` alongside the existing `api/ws/{session,state,teleop,camera}_hub.py`. Hardware errors continue to surface through the existing `session_hub` (the InferencePage subscribes to both). Camera streams remain on their existing `camera_hub` channels.
 
 ### 8.5 max_episode_seconds watchdog
 
@@ -463,7 +472,7 @@ Frontend opens the WebSocket on session start and closes on session stop. Teleme
 | IK failure | decoder | WS `safety_event{kind:"ik_fail"}` | step holds at seed; chunk continues |
 | Delta clamp / joint limit | safety | WS `safety_event` | clamped value used; recorded |
 | Slow-stop entered | safety | WS `safety_event{kind:"slow_stop"}` | linear interpolation to current |
-| Hardware error | RobotAdapter / dispatcher | existing `ErrorBus` | session stopped (existing behavior) |
+| Hardware error | RobotAdapter / dispatcher | existing `ErrorBus` → existing `session_hub` WS (no duplication on `inference_hub`) | session stopped (existing behavior) |
 | Episode watchdog timeout | lifecycle | WS `watchdog_timeout` + auto `episode_stop` | RECORDING → REVIEW |
 
 Inference-side failures **do not crash the session**. Only hardware errors and explicit stop end the session.
