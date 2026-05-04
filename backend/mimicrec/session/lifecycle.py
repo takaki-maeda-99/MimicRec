@@ -20,6 +20,15 @@ from mimicrec.session.dispatcher import run_command_dispatcher
 from mimicrec.session.replay_safety import ReplaySafetyConfig
 from mimicrec.session.state import Session
 from mimicrec.recording.writer import run_writer
+from mimicrec.inference.chunk_buffer import ChunkBuffer
+from mimicrec.inference.safety import InferenceSafety
+from mimicrec.inference.producer import run_inference_producer
+from mimicrec.inference.control_loop import run_inference_control_loop
+from mimicrec.inference.action_decoder import ActionDecoder
+from mimicrec.inference.client import InferenceClient
+from mimicrec.inference.contract import ContractSpec
+from mimicrec.kinematics.ik import IKService
+import numpy as np
 
 logger = logging.getLogger(__name__)
 from mimicrec.types import (
@@ -122,6 +131,17 @@ class SessionManager:
         # mode switch was performed (e.g. adapter doesn't support modes /
         # set_mode failed soft).
         self._mode_before_replay: RobotMode | None = None
+
+        # Inference subsystem (populated by start_inference_session)
+        self._robot_config_dict: dict = self._resolved_config.get("robot", {})
+        self._instruction_slot: LatestValue[str] = LatestValue()
+        self._chunk_buffer: ChunkBuffer | None = None
+        self._inference_safety: InferenceSafety | None = None
+        self._producer_task: asyncio.Task | None = None
+        self._inference_watchdog_task: asyncio.Task | None = None
+        self._inference_client: InferenceClient | None = None
+        self._inference_config_name: str | None = None
+        self._last_stop_reason: str | None = None
 
     # ------------------------------------------------------------------
     # Properties
@@ -535,6 +555,125 @@ class SessionManager:
         # way out, but in race cases (cancel before the finally fires) we
         # call it again here to make sure mode is restored.
         await self._restore_mode_after_replay()
+
+    # ------------------------------------------------------------------
+    # Inference safety config helper
+    # ------------------------------------------------------------------
+
+    def _robot_safety_config(self) -> dict | None:
+        """Read inference_safety: from the active robot's YAML config."""
+        cfg = (self._robot_config_dict or {}).get("inference_safety")
+        if cfg is None:
+            return None
+        joint_names = self._robot.joint_names
+        limits = cfg["joint_limits_deg"]
+        joint_min = np.array([limits[n][0] for n in joint_names])
+        joint_max = np.array([limits[n][1] for n in joint_names])
+        return {
+            "max_joint_delta_per_step_deg": cfg["max_joint_delta_per_step_deg"],
+            "slow_stop_ticks": cfg.get("slow_stop_ticks", 5),
+            "joint_min": joint_min,
+            "joint_max": joint_max,
+        }
+
+    # ------------------------------------------------------------------
+    # Inference session lifecycle
+    # ------------------------------------------------------------------
+
+    async def start_inference_session(
+        self,
+        contract: ContractSpec,
+        instruction: str,
+        inference_config_name: str,
+    ) -> None:
+        """Replaces start_recording_session for INFERENCE mode."""
+        if self.session.state != SessionState.READY:
+            raise InvalidTransitionError(
+                f"start_inference_session requires READY, got {self.session.state}"
+            )
+
+        self.session.mode = SessionMode.INFERENCE
+        self._inference_config_name = inference_config_name
+        self._instruction_slot.set(instruction, t_mono_ns=0)
+        self.session.locked_instruction = None
+        self.session.producer_paused = False
+        self._last_stop_reason = None
+
+        # Build inference subsystem.
+        # `resolve_action_stats()` returns None when normalization.method == "none",
+        # so we can call it unconditionally and pass the result straight through.
+        action_stats = contract.resolve_action_stats()
+        self._chunk_buffer = ChunkBuffer.create(
+            prefetch_threshold=contract.loop.prefetch_threshold,
+        )
+        safety_cfg = self._robot_safety_config()
+        if safety_cfg is None:
+            raise InvalidTransitionError("inference_safety block is required in robot config")
+        self._inference_safety = InferenceSafety(
+            max_delta=safety_cfg["max_joint_delta_per_step_deg"],
+            joint_min=safety_cfg["joint_min"],
+            joint_max=safety_cfg["joint_max"],
+            slow_stop_ticks=safety_cfg["slow_stop_ticks"],
+        )
+
+        # Spawn readers same as TELEOP, except teleop reader is NOT spawned
+        self._robot_reader_task = asyncio.create_task(self._run_robot_reader())
+        camera_slots = {name: self._cameras.latest(name) for name in self._cameras._cameras}
+
+        fk = self._fk
+        ik = IKService(fk.cfg)  # FKService.cfg is public (see Task 5b)
+        decoder = ActionDecoder(
+            spec=contract, fk=fk, ik=ik,
+            narm=self._robot.dof,
+            action_stats=action_stats,
+        )
+        client = InferenceClient(spec=contract)
+        self._inference_client = client
+
+        self._producer_task = asyncio.create_task(run_inference_producer(
+            client=client, decoder=decoder, buffer=self._chunk_buffer,
+            camera_slots=camera_slots, robot_state_slot=self._robot_state_slot,
+            instruction_slot=self._instruction_slot, safety=self._inference_safety,
+            session=self.session, metrics=self._metrics, error_bus=self._error_bus,
+        ))
+        self._control_loop_task = asyncio.create_task(run_inference_control_loop(
+            session=self.session, fps=self._fps,
+            robot_state_slot=self._robot_state_slot, camera_slots=camera_slots,
+            chunk_buffer=self._chunk_buffer, safety=self._inference_safety,
+            command_goal_slot=self._command_goal_slot,
+            enqueue=self._recorder_queue.put_nowait,
+            clock=RealClock(), metrics=self._metrics,
+        ))
+        self._dispatcher_task = asyncio.create_task(run_command_dispatcher(
+            self._robot, self._command_goal_slot, self._error_bus, self.session.stopped,
+        ))
+        self._writer_task = asyncio.create_task(run_writer(
+            current_pending=self._current_pending,
+            queue=self._recorder_queue, metrics=self._metrics,
+            stopped=self.session.stopped, fk=self._fk,
+        ))
+
+    async def stop_inference_session(self) -> None:
+        self.session.stopped.set()
+        for t in (
+            self._producer_task, self._control_loop_task,
+            self._dispatcher_task, self._writer_task, self._robot_reader_task,
+        ):
+            if t is not None:
+                t.cancel()
+        if self._inference_client is not None:
+            await self._inference_client.aclose()
+
+    def pause_producer_and_flush(self) -> int:
+        """Order-locked: producer_paused FIRST, then flush.
+        Returns the flushed step count for telemetry."""
+        self.session.producer_paused = True
+        return self._chunk_buffer.flush() if self._chunk_buffer else 0
+
+    def resume_producer(self) -> None:
+        self.session.producer_paused = False
+        if self._chunk_buffer is not None:
+            self._chunk_buffer.request_refill_now()
 
     async def end(self) -> None:
         """Any -> IDLE. Shut down everything in order."""
