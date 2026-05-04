@@ -640,6 +640,10 @@ class SessionManager:
             raise InvalidTransitionError(
                 f"start_inference_session requires READY, got {self.session.state}"
             )
+        if self.session.mode == SessionMode.INFERENCE:
+            raise InvalidTransitionError(
+                "start_inference_session: inference session already active"
+            )
 
         self.session.mode = SessionMode.INFERENCE
         self._inference_config_name = inference_config_name
