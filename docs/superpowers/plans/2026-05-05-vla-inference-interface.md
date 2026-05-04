@@ -4,7 +4,7 @@
 
 **Goal:** Add closed-loop VLA inference to MimicRec — a YAML-configurable HTTP client that drives a real robot from a Vision-Language-Action server, records rollouts as datasets, and exposes a new `InferencePage` UI. Supports SO-101 first; reBot is designed-in but verified later.
 
-**Architecture:** New `inference/` Python module mirrors the existing teleop control-loop pattern but pulls actions from an async HTTP producer + chunk buffer. Action format is 6-dim ΔEE pose + 1-dim gripper; an `IKService` wraps lerobot's `InverseKinematicsEEToJoints`. A new `SessionMode.INFERENCE` slots into `lifecycle.py`. Recording reuses the existing parquet/mp4 pipeline. Three new WS event types stream to a new `inference_hub`.
+**Architecture:** New `inference/` Python module mirrors the existing teleop control-loop pattern but pulls actions from an async HTTP producer + chunk buffer. Action format is 6-dim ΔEE pose + 1-dim gripper; an `IKService` wraps `lerobot.model.kinematics.RobotKinematics.inverse_kinematics` (the same class FKService already wraps for FK). A new `SessionMode.INFERENCE` slots into `lifecycle.py`. Recording reuses the existing parquet/mp4 pipeline. Three new WS event types stream to a new `inference_hub`.
 
 **Tech Stack:** Python 3.10+ (FastAPI / pyarrow / numpy / httpx / pydantic), pytest + asyncio_mode=auto, React/TypeScript frontend (Vite, TanStack Query, Zustand).
 
@@ -37,7 +37,7 @@ backend/mimicrec/
 │   ├── producer.py         run_inference_producer (async task)
 │   └── control_loop.py     run_inference_control_loop
 ├── kinematics/
-│   └── ik.py               IKService (wraps lerobot.so_follower IK)
+│   └── ik.py               IKService (wraps lerobot.model.kinematics.RobotKinematics.inverse_kinematics)
 ├── api/
 │   ├── routes/inference.py REST endpoints (start/stop/instruction/state/configs)
 │   └── ws/inference_hub.py inference_hub WS channel
@@ -699,6 +699,77 @@ git commit -m "feat(inference): contract stats_ref resolution + length validatio
 
 ## Phase 2 — Kinematics IK service
 
+### Task 5b: Augment `FKService` — add `matrix()` + retain `_cfg`
+
+ActionDecoder needs the **4×4 EE transform** (not the `(pos, rotvec)` tuple `pose()` returns), and IKService needs the original `KinematicsConfig` to construct its own `RobotKinematics`. Both are tiny additions to FKService.
+
+**Files:**
+- Modify: `backend/mimicrec/kinematics/fk.py`
+- Test: `tests/unit/test_fk_service_matrix.py`
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tests/unit/test_fk_service_matrix.py
+import numpy as np
+from mimicrec.kinematics.fk import FKService, KinematicsConfig
+
+
+def _cfg() -> KinematicsConfig:
+    return KinematicsConfig(
+        urdf_path="configs/urdf/so101/so101.urdf",
+        target_frame="gripper_frame_link",
+        joint_names=["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll"],
+    )
+
+
+def test_fk_service_returns_4x4_matrix():
+    fk = FKService(_cfg())
+    T = fk.matrix(np.zeros(5))
+    assert T.shape == (4, 4)
+    assert np.allclose(T[3], [0, 0, 0, 1])
+
+
+def test_fk_service_retains_cfg():
+    cfg = _cfg()
+    fk = FKService(cfg)
+    assert fk._cfg is cfg
+```
+
+- [ ] **Step 2: Run to fail** — `AttributeError: 'FKService' object has no attribute 'matrix'` and `_cfg`.
+
+- [ ] **Step 3: Implement** — in `backend/mimicrec/kinematics/fk.py`, modify `FKService.__init__` to retain `cfg` and add `matrix()`:
+
+```python
+class FKService:
+    def __init__(self, cfg: KinematicsConfig):
+        from lerobot.model.kinematics import RobotKinematics
+        self._cfg = cfg                                # ← NEW: retain cfg for IKService construction
+        self._k = RobotKinematics(
+            urdf_path=cfg.urdf_path,
+            target_frame_name=cfg.target_frame,
+            joint_names=cfg.joint_names,
+        )
+        self._n_kin_joints = len(self._k.joint_names)
+
+    def matrix(self, joint_pos_deg) -> np.ndarray:    # ← NEW: 4x4 transform
+        """Return the 4x4 end-effector transform for joint_pos_deg (degrees).
+        Convenience accessor used by ActionDecoder; FK convention matches `pose()`."""
+        import numpy as np
+        return self._k.forward_kinematics(np.asarray(joint_pos_deg, dtype=np.float64))
+```
+
+(Preserve the existing `pose()` method.)
+
+- [ ] **Step 4: Verify pass** — 2 passed.
+
+- [ ] **Step 5: Commit**
+
+```
+git add backend/mimicrec/kinematics/fk.py tests/unit/test_fk_service_matrix.py
+git commit -m "feat(kinematics): FKService.matrix() + retain _cfg for IK reuse"
+```
+
 ### Task 6: `kinematics/ik.py` — IKService wrapping lerobot
 
 **Files:**
@@ -784,11 +855,14 @@ class IKService:
     ANG_TOL_RAD = 0.1
 
     def __init__(self, cfg: KinematicsConfig):
+        from pathlib import Path
         from lerobot.model.kinematics import RobotKinematics
 
         self._cfg = cfg
+        # Resolve relative URDF paths the same way FKService does (see kinematics/fk.py:35).
+        urdf_path = str(Path(cfg.urdf_path).resolve())
         self._k = RobotKinematics(
-            urdf_path=cfg.urdf_path,
+            urdf_path=urdf_path,
             target_frame_name=cfg.target_frame,
             joint_names=cfg.joint_names,
         )
@@ -2046,7 +2120,7 @@ async def start_inference_session(
     camera_slots = {name: self._cameras.latest(name) for name in self._cameras._cameras}
 
     fk = self._fk
-    ik = IKService(fk._cfg)  # share KinematicsConfig
+    ik = IKService(fk._cfg)  # share KinematicsConfig (FKService retains _cfg as of Task 5b)
     decoder = ActionDecoder(spec=contract, fk=fk, ik=ik, narm=self._robot.dof)
     client = InferenceClient(spec=contract)
     self._inference_client = client
@@ -2378,10 +2452,10 @@ Wire to identical FastAPI WebSocket pattern as `teleop_hub`. Endpoint: `/ws/infe
 - [ ] **Step 3: Hook publish points**
 
 In `lifecycle.py`:
-- `pause_producer_and_flush` → `await self.inference_hub.publish({"type": "instruction_locked", ...})` (when used at episode_start)
-- in `episode_start` for inference mode: publish `{"type": "instruction_locked", "text": locked}`
-- in `episode_stop` and `episode_save/discard`: publish `{"type": "instruction_released"}` and `{"type": "episode_phase", "phase": ...}`
-- in `_inference_watchdog_task`: publish `{"type": "watchdog_timeout", ...}` on fire
+- `episode_start` for inference mode: publish `{"type": "instruction_locked", "text": locked}` and `{"type": "episode_phase", "phase": "recording"}`
+- `episode_stop`: publish `{"type": "episode_phase", "phase": "review"}` (transitioning into REVIEW). Also calls `pause_producer_and_flush()` (per spec §8.1) which itself does NOT publish — it just pauses + flushes.
+- `episode_save` / `episode_discard` (REVIEW → READY): publish `{"type": "instruction_released"}` and `{"type": "episode_phase", "phase": "ready"}`. Calls `resume_producer()` (which does NOT publish either).
+- `_inference_watchdog_task`: publish `{"type": "watchdog_timeout", ...}` on fire, then `episode_stop(stop_reason="timeout")`.
 
 In `producer.py`: surface `inference_started` / `inference_done` / `inference_error` / `inference_chunk_dropped_stale` / `clamps_per_chunk`.
 
