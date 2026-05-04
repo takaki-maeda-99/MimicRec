@@ -1,7 +1,27 @@
 from __future__ import annotations
 from typing import Literal
+import os
+import re
 import yaml
 from pydantic import BaseModel, Field, field_validator
+
+_ENV_RE = re.compile(r"\$\{([A-Z0-9_]+)\}")
+
+
+def _interpolate_env(value):
+    if isinstance(value, str):
+        def repl(m):
+            name = m.group(1)
+            v = os.environ.get(name)
+            if v is None:
+                raise ValueError(f"contract references missing env var: {name}")
+            return v
+        return _ENV_RE.sub(repl, value)
+    if isinstance(value, dict):
+        return {k: _interpolate_env(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_interpolate_env(v) for v in value]
+    return value
 
 
 # ---- Endpoint ----
@@ -116,4 +136,29 @@ class ContractSpec(BaseModel):
     @classmethod
     def from_yaml_text(cls, text: str) -> "ContractSpec":
         data = yaml.safe_load(text)
-        return cls.model_validate(data)
+        data = _interpolate_env(data)
+        spec = cls.model_validate(data)
+        spec._post_validate()
+        return spec
+
+    def _post_validate(self) -> None:
+        # image field uniqueness
+        fields = [img.field for img in self.request.images.values()]
+        if len(fields) != len(set(fields)):
+            raise ValueError("request.images.<cam>.field values must be unique")
+        # done scope MVP=chunk only
+        if self.response.done and self.response.done.scope != "chunk":
+            raise ValueError(
+                f"done.scope='{self.response.done.scope}' not implemented in MVP "
+                "(only 'chunk' is supported)"
+            )
+        # MVP: only meter_axisangle_rad is implemented in the decoder. Rejecting
+        # unsupported units at load time prevents a silent 1000x mis-scale or
+        # rotation-format mismatch when an operator drops in a contract for a
+        # different VLA training stack.
+        units = self.response.action.pose.units
+        if units != "meter_axisangle_rad":
+            raise ValueError(
+                f"response.action.pose.units='{units}' not implemented in MVP "
+                "(only 'meter_axisangle_rad' is supported)"
+            )

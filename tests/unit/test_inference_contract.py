@@ -50,3 +50,73 @@ def test_endpoint_url_must_be_http():
     bad = YAML_OK.replace("http://localhost:8001/predict", "ftp://nope")
     with pytest.raises(ValueError, match="http"):
         ContractSpec.from_yaml_text(bad)
+
+
+import os
+import yaml as _yaml
+
+
+def _yaml_with_overrides(**overrides) -> str:
+    """Build a YAML test fixture by mutating a parsed dict — much less
+    fragile than running multiple `replace()` calls on a string.
+
+    `overrides` keys can be:
+      - `headers`: dict to set on `endpoint.headers`
+      - `image_field_dup`: bool — make both image fields collide
+      - `done`: dict for `response.done`
+      - `pose_units`: str for `response.action.pose.units`
+      - `normalization_method`: str for `response.action.normalization.method`
+    """
+    d = _yaml.safe_load(YAML_OK)
+    if "headers" in overrides:
+        d["endpoint"]["headers"] = overrides["headers"]
+    if overrides.get("image_field_dup"):
+        d["request"]["images"] = {
+            "front": {"field": "SAME", "encoding": "jpeg_base64",
+                      "resize": [224, 224], "jpeg_quality": 90},
+            "wrist": {"field": "SAME", "encoding": "jpeg_base64",
+                      "resize": [224, 224], "jpeg_quality": 90},
+        }
+    if "done" in overrides:
+        d["response"]["done"] = overrides["done"]
+    if "pose_units" in overrides:
+        d["response"]["action"]["pose"]["units"] = overrides["pose_units"]
+    if "normalization_method" in overrides:
+        d["response"]["action"]["normalization"] = {"method": overrides["normalization_method"]}
+    return _yaml.safe_dump(d)
+
+
+def test_env_var_interpolation(monkeypatch):
+    monkeypatch.setenv("VLA_API_TOKEN", "secret123")
+    text = _yaml_with_overrides(headers={"Authorization": "Bearer ${VLA_API_TOKEN}"})
+    spec = ContractSpec.from_yaml_text(text)
+    assert spec.endpoint.headers["Authorization"] == "Bearer secret123"
+
+
+def test_missing_env_var_fails(monkeypatch):
+    monkeypatch.delenv("VLA_API_TOKEN", raising=False)
+    text = _yaml_with_overrides(headers={"Authorization": "Bearer ${VLA_API_TOKEN}"})
+    with pytest.raises(ValueError, match="VLA_API_TOKEN"):
+        ContractSpec.from_yaml_text(text)
+
+
+def test_image_fields_must_be_unique():
+    text = _yaml_with_overrides(image_field_dup=True)
+    with pytest.raises(ValueError, match="unique"):
+        ContractSpec.from_yaml_text(text)
+
+
+def test_done_scope_step_rejected():
+    text = _yaml_with_overrides(done={
+        "path": "done", "type": "bool", "scope": "step", "action_on_done": "auto_stop",
+    })
+    with pytest.raises(ValueError, match="done.scope"):
+        ContractSpec.from_yaml_text(text)
+
+
+def test_pose_units_mm_euler_deg_rejected_in_mvp():
+    """MVP only implements meter_axisangle_rad; mm_euler_deg must fail at load
+    so a config swap can't silently mis-scale by 1000x or mis-interpret rotation."""
+    text = _yaml_with_overrides(pose_units="mm_euler_deg")
+    with pytest.raises(ValueError, match="pose.units"):
+        ContractSpec.from_yaml_text(text)
