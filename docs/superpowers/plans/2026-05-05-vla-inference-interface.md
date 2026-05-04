@@ -1245,6 +1245,7 @@ class InferenceSafety:
     _last_gripper_cmd: float | None = None
     _slow_stop_remaining: int = 0
     _clamps_in_current_chunk: int = 0
+    _last_event: dict | None = None              # most recent safety event, for /state snapshot
 
     def filter(self, step: StepAction | None, q_curr: np.ndarray, tick_t_ns: int) -> RobotCommand:
         if step is None:
@@ -1253,11 +1254,16 @@ class InferenceSafety:
         clamped = np.clip(delta, -self.max_delta, self.max_delta)
         if not np.array_equal(clamped, delta):
             self._clamps_in_current_chunk += 1
+            self._last_event = {"kind": "delta_clamp"}
         q_safe = np.clip(q_curr + clamped, self.joint_min, self.joint_max)
+        if not np.array_equal(q_safe, q_curr + clamped):
+            self._last_event = {"kind": "joint_limit"}
         self._last_safe_q = q_safe
         gripper_cmd = step.gripper if step.gripper is not None else self._last_gripper_cmd
         if gripper_cmd is not None:
             self._last_gripper_cmd = gripper_cmd
+        if step.ik_failed:
+            self._last_event = {"kind": "ik_fail"}
         self._slow_stop_remaining = 0
         return RobotCommand(q=q_safe, gripper=gripper_cmd, t_mono_ns=tick_t_ns)
 
@@ -1273,6 +1279,7 @@ class InferenceSafety:
             self._slow_stop_remaining = max(0, n - 1)
             if self._slow_stop_remaining == 0:
                 self._last_safe_q = q
+        self._last_event = {"kind": "slow_stop"}
         return RobotCommand(q=q, gripper=self._last_gripper_cmd, t_mono_ns=tick_t_ns)
 
     def on_new_chunk(self) -> None:
@@ -1280,6 +1287,11 @@ class InferenceSafety:
 
     def clamps_in_current_chunk(self) -> int:
         return self._clamps_in_current_chunk
+
+    def last_event(self) -> dict | None:
+        """Most recent safety event for the GET /session/inference/state snapshot.
+        None if no event has fired since session start."""
+        return self._last_event
 ```
 
 - [ ] **Step 4: Verify pass** — 3 passed.
@@ -2137,12 +2149,13 @@ async def run_inference_producer(
                 # resets it. clamps_per_chunk is emitted at chunk boundaries,
                 # which only the producer can detect (the control_loop just
                 # consumes one step at a time and doesn't know what's a boundary).
+                # The first push has prev_clamps == 0; we still emit so the UI
+                # can render a steady stream from chunk #1, no special-case
+                # filtering on either side.
                 prev_clamps = safety.clamps_in_current_chunk()
-                if prev_clamps > 0 or buffer.current_generation() > 1:
-                    # Don't emit on the very first chunk (nothing to summarize).
-                    await _publish({"type": "clamps_per_chunk",
-                                    "count": prev_clamps,
-                                    "chunk_size": len(chunk)})
+                await _publish({"type": "clamps_per_chunk",
+                                "count": prev_clamps,
+                                "chunk_size": len(chunk)})
                 safety.on_new_chunk()
                 latency_ms = (time.perf_counter() - t0) * 1000
                 metrics.observe("inference_latency_ms", latency_ms)
@@ -2615,7 +2628,33 @@ async def get_config(request: Request, name: str):
     return contract.model_dump(exclude={"endpoint": {"headers"}})  # elide secrets
 ```
 
-(The `build_session_manager_for_inference` and `inference_state_snapshot` are TODO bits to fill in — read existing `api/deps.py` for how the teleop session is built and mirror the path.)
+(The `build_session_manager_for_inference` is a TODO — read existing `api/deps.py` for how the teleop session is built and mirror the path.)
+
+**`inference_state_snapshot` implementation (on `SessionManager`)** — fill in per spec §8.2 GET /session/inference/state response shape:
+
+```python
+def inference_state_snapshot(self) -> dict:
+    """Return the current INFERENCE-mode session state for polling clients.
+    Should be cheap (no I/O); reads in-memory state only."""
+    if self.session.mode != SessionMode.INFERENCE:
+        return {"phase": "pre_start"}
+    instr = self._instruction_slot.peek()
+    return {
+        "phase": self.session.state.value,                      # ready | recording | review
+        "instruction": instr.value if instr is not None else None,
+        "locked_instruction": self.session.locked_instruction,  # set on episode_start
+        "buffer_depth":  self._chunk_buffer.depth() if self._chunk_buffer else 0,
+        "buffer_origin": self._chunk_buffer.origin_size() if self._chunk_buffer else 0,
+        "chunks_consumed": self._metrics.get("chunks_consumed", 0),
+        "last_inference_latency_ms": self._metrics.get_last("inference_latency_ms"),
+        "inference_errors": self._metrics.get("inference_error_count", 0),
+        "last_safety_event": self._inference_safety.last_event() if self._inference_safety else None,
+    }
+```
+
+The `Metrics` accessors (`get`, `get_last`) already exist for the writer/control_loop telemetry — read `backend/mimicrec/util/metrics.py` and use whatever it exposes. If a method is missing, add one consistently with the existing API.
+
+`chunks_consumed` should be incremented by `run_inference_control_loop` whenever it pops the last step of a chunk (i.e. `chunk_buffer.depth() == 0` after pop) — add `metrics.inc("chunks_consumed")` there.
 
 Register in `api/app.py`:
 
@@ -2788,19 +2827,33 @@ async def episode_stop(self, *, stop_reason: str = "manual") -> None:
     # ... existing teleop logic to move state → REVIEW ...
 
 async def episode_save(self, *, success: bool | None = None, comment: str | None = None) -> None:
-    """REVIEW → READY (commit). Existing teleop persistence runs first."""
-    # ... existing parquet/mp4 commit logic ...
+    """REVIEW → READY (commit).
+
+    Order is intentional: we run the existing parquet/mp4 commit FIRST
+    (synchronously, awaiting completion), then call `resume_producer()`.
+    Rationale: if commit takes a few seconds, the operator sees the arm
+    stay in slow-stop hold during the persistence window — that's safe
+    and matches the visual REVIEW state. Resuming before commit is done
+    would let the robot start moving while files are still being written,
+    which is surprising UX (and obscures any commit failures behind motion).
+    Re-evaluate only if commit is observed to be slow enough that the UX
+    becomes annoying.
+    """
+    # ... existing parquet/mp4 commit logic, awaited to completion ...
     if self.session.mode == SessionMode.INFERENCE:
         # Spec §8.1: resume_producer reverses the REVIEW pause+flush so the
-        # next chunk is fetched against the CURRENT state, not the 30s-old
-        # state captured at REVIEW entry.
+        # next chunk is fetched against the CURRENT state, not the state
+        # captured at REVIEW entry.
         self.resume_producer()
         self.session.locked_instruction = None
         await self.inference_hub.publish({"type": "instruction_released"})
         await self.inference_hub.publish({"type": "episode_phase", "phase": "ready"})
 
 async def episode_discard(self) -> None:
-    """REVIEW → READY (discard). Symmetric to episode_save for INFERENCE."""
+    """REVIEW → READY (discard). Symmetric to episode_save for INFERENCE.
+    Discard is fast (no parquet/mp4 commit), so the order doesn't matter
+    perceptibly — but we keep the same shape (existing discard work first,
+    then resume) for consistency."""
     # ... existing teleop discard logic ...
     if self.session.mode == SessionMode.INFERENCE:
         self.resume_producer()
@@ -2827,6 +2880,7 @@ async def _run_watchdog(self, max_sec: float) -> None:
 cd backend
 grep -rn 'episodes\.jsonl\|episodes_jsonl\|append_episode\|write_episode' mimicrec/recording/
 grep -rn 'episodes_dir\|file-000\.parquet\|chunk-000' mimicrec/recording/
+grep -rn 'meta/episodes\|meta/tasks' mimicrec/recording/         # LeRobot v3 native paths
 grep -rn 'tasks\.parquet\|upsert_task' mimicrec/recording/
 ```
 
@@ -3119,7 +3173,12 @@ git commit -m "test(inference): fake VLA HTTP server fixture"
 - [ ] **Step 4 (Task 17 unblocking)**: with the fixture in place, return to `tests/integration/test_inference_lifecycle.py` and replace each `pytest.skip(...)` placeholder from Task 17 with the real test body:
   - `test_start_inference_against_mock_robot`: spin up `make_inference_session` with `fake_vla_server`, assert `SessionMode.INFERENCE`, `SessionState.READY`, all four tasks (producer, control_loop, dispatcher, writer) are `not done`.
   - `test_409_when_session_already_active`: start an inference session, then try `start_inference_session` again, assert `InvalidTransitionError` (or 409 from the API layer if testing through HTTP).
-  - `test_pause_and_resume_helpers`: call `pause_producer_and_flush`, observe `session.producer_paused == True` and `chunk_buffer.depth() == 0` after a pre-fill; call `resume_producer`, observe `producer_paused == False` and (within `_wait_for`) `chunk_buffer.depth() > 0` again.
+  - `test_pause_and_resume_helpers`: **must wait for the producer's first push before calling pause** — otherwise the buffer was already empty and the pause/flush is a no-op that doesn't prove anything. Sequence:
+    1. `sm = await make_inference_session(...)`
+    2. `assert await _wait_for(lambda: sm._chunk_buffer.depth() > 0)` — let producer fill once
+    3. `flushed = sm.pause_producer_and_flush()`; `assert flushed > 0` (proves we actually flushed something) and `sm.session.producer_paused is True`; `assert sm._chunk_buffer.depth() == 0`
+    4. `sm.resume_producer()`
+    5. `assert await _wait_for(lambda: sm._chunk_buffer.depth() > 0)` — proves resume re-armed and producer fetched fresh
 
   Run the three tests, confirm 3 passed, then commit:
 
