@@ -20,9 +20,9 @@ The action format is **6-dim ΔEE pose + 1-dim gripper** (7-dim total), which bi
 - New `SessionMode.INFERENCE` slotted into the existing session lifecycle (mutually exclusive with `TELEOP` / `HAND_TEACH`).
 - IK service: wraps `lerobot.robots.so_follower.robot_kinematic_processor.InverseKinematicsEEToJoints` (already bundled).
 - New configurable YAML at `configs/inference/<name>.yaml` with full I/O contract (endpoint, request/response field mapping, normalization, action format, frame, gripper kind, units, optional `done` signal).
-- New REST + WebSocket API: `/session/inference/start|stop|instruction|state` and `/ws/inference/telemetry`.
+- New REST + WebSocket API: `/session/inference/start|stop|instruction|state` and `/ws/inference`.
 - New `InferencePage.tsx` frontend with config/dataset selectors, live instruction input, telemetry, camera tiles, episode controls, REVIEW with success/failure labeling, and always-visible E-stop.
-- Recording integration: rollouts written as episodes in the existing dataset format. Instruction → `tasks.parquet`, with new `outcome`, `source`, `inference_config`, `stop_reason` columns on `meta/episodes.jsonl` (additive only, NULL for teleop).
+- Recording integration: rollouts written as episodes in the existing dataset format. Instruction → `tasks.parquet`. Three additive columns on `meta/episodes.jsonl` (`source`, `inference_config`, `stop_reason`) — null for teleop. Success/failure label reuses the **existing** `SaveEpisodeRequest.success: bool | None` field; no new outcome column.
 - Per-step delta clamp + joint limit + slow-stop on chunk-late, all gated through `InferenceSafety`.
 - Unit + integration tests on every component, one E2E test against `mock_robot` + a fake VLA server.
 
@@ -58,6 +58,8 @@ The action format is **6-dim ΔEE pose + 1-dim gripper** (7-dim total), which bi
 | Q13 | Instruction lifecycle | `LatestValue[str]` slot, free during READY, **locked during RECORDING** | Clean episode-task semantics |
 | Q14 | Rollout dataset | Same as `dataset_ref` (no separate target) | Simpler |
 | Q15 | Task-done | Manual stop + optional model `done` signal in response + `max_episode_seconds` watchdog + REVIEW success/failure label | Layered defense + human-in-loop |
+| Q16 | READY phase robot motion | **Robot is actively driven by VLA during READY** (RECORDING gates only the parquet/mp4 write path, not command dispatch) | Lets the operator validate model behavior before committing to a recorded episode; matches the "rehearsal" semantics expected from a closed-loop UI |
+| Q17 | Instruction update on READY | `PUT /session/inference/instruction` **flushes the chunk buffer** and re-arms the producer; the in-flight request (if any) is dropped via a generation counter | Avoids ~0.5 s of stale motion under the previous instruction. Slow-stop covers the gap until the new chunk arrives |
 
 **Units convention** (referenced throughout): `RobotState.joint_pos` is `float32[Narm]` in **degrees** (matches `FKService` and the SO-101 adapter). `RobotState.gripper_pos` is a normalized scalar in `[-1, +1]` after the recent SO-101 gripper normalization fix (commit `e52029e`). The values fed into `request.state.components` are these raw values; `normalization` (if any) operates on them.
 
@@ -167,7 +169,12 @@ endpoint:
   timeout_s: 5.0
   headers:
     Authorization: "Bearer ${VLA_API_TOKEN}"   # ${ENV} interpolation
-  retry: { max_attempts: 0 }                   # MVP: no retry; safety handles late chunks
+  retry: { max_attempts: 0 }                   # MVP: no retry; safety handles late chunks.
+                                               # NOTE: setting this > 0 in production inference is
+                                               # almost always wrong — it amplifies state drift, and
+                                               # half-prefetch + slow-stop already cover transient
+                                               # network errors. Reserved for future health-check
+                                               # type usage only.
 
 request:
   images:
@@ -210,9 +217,15 @@ response:
       stats_ref:
         type: "vla_export"                      # vla_export | absolute
         dataset: "SO101"                        # resolves to ${MIMICREC_VLA_DEST_ROOT}/SO101/meta/action_stats.json
-  done:                                         # OPTIONAL — omit if server has no done signal
-    path: "done"
-    threshold: 0.5
+  done:                                         # OPTIONAL — omit entirely to disable the auto-stop signal path
+    path: "done"                                # JSONPath into response body
+    type: "float"                               # float | bool. If float, compared with `threshold`. If bool, taken directly.
+    threshold: 0.5                              # only used when type=float
+    scope: "chunk"                              # chunk | step. MVP: only "chunk" implemented.
+                                                #   chunk = applies to the chunk as a whole; auto_stop
+                                                #           fires after the chunk is fully consumed.
+                                                #   step  = (future) per-step done; would auto_stop
+                                                #           on the first step that reports done.
     action_on_done: "auto_stop"                 # auto_stop | notify_only
 
 loop:
@@ -224,10 +237,23 @@ loop:
 
 - `endpoint.url` must start with `http://` or `https://`.
 - `request.images.<cam>.field` values must be unique.
-- All `components` entries must be in the registry of known keys (`joint_pos`, `gripper_pos`, `ee_delta`, `gripper`).
-- `stats_ref`: if `type=vla_export`, the resolved path must exist on disk; if `type=absolute`, the literal path must exist.
+- All `components` entries must be in the **components-to-dim registry**:
+
+  | key | dim | source |
+  |---|---|---|
+  | `joint_pos` | `Narm` (from robot config) | `RobotState.joint_pos` |
+  | `gripper_pos` | 1 | `RobotState.gripper_pos` (normalized [-1, +1]) |
+  | `ee_delta` | 6 (3 pos + 3 axis-angle) | computed via FK / decoder |
+  | `gripper` | 1 | from `action.gripper.kind` rules |
+  | `joint_delta` | `Narm` | (future, not in MVP) |
+  | `ee_pose` | 7 (3 pos + 4 quat) | (future, not in MVP) |
+
+  Total expected vector length is the sum of component dims in declared order. Used both at request-build time (state vector packing) and at response-decode time.
+- `stats_ref`: if `type=vla_export`, the resolved path must exist on disk; if `type=absolute`, the literal path must exist. **The length of `mean` and `std` arrays in `action_stats.json` MUST equal the sum of `action.components` dims** (length mismatch → load fails). MVP `["ee_delta", "gripper"]` requires length 7, matching the existing 7-dim stats produced by `vla_compat`.
 - `action.type` and combinations must be in the implemented registry (MVP: `ee_delta` only).
 - `${ENV}` interpolation: missing env vars → load fails with a clear error.
+- If `response.done` block is present, `done.scope` must be in the implemented registry (MVP: `chunk` only); `done.type` ∈ `{bool, float}`; if `bool`, `threshold` is ignored.
+- The robot config's `inference_safety:` block (see §7.4) **must be present** when `start_inference_session` is called — missing block returns 400 with a remedy hint. URDF mechanical limits are intentionally NOT used as a fallback (they are too wide for closed-loop policy use).
 
 ### 6.3 stats resolution
 
@@ -248,10 +274,19 @@ Observation state stats are **not currently exported**. MVP allows only `method:
 ```python
 @dataclass
 class ChunkBuffer:
+    """
+    Action chunk buffer with half-prefetch trigger and instruction-flush support.
+
+    Concurrency contract: SINGLE producer (InferenceProducer), SINGLE consumer
+    (run_inference_control_loop), BOTH on the same asyncio event loop. This
+    invariant is what allows the implementation to skip locks. Adding a
+    second producer or accessing from a thread requires re-design.
+    """
     _steps: deque[StepAction]         # StepAction = decoded q + optional gripper command
     _origin_size: int                  # set on push_chunk()
     _refill_event: asyncio.Event
     _refill_in_flight: bool = False
+    _generation: int = 0               # bumped on flush(); producer captures + checks on push
     prefetch_threshold: float = 0.5
 
     def pop_next(self) -> StepAction | None:
@@ -264,44 +299,102 @@ class ChunkBuffer:
             self._refill_event.set()
         return step
 
-    def push_chunk(self, chunk: list[StepAction]) -> None:
+    def try_push_chunk(self, chunk: list[StepAction], generation: int) -> bool:
+        """Push chunk only if generation still matches. Returns False if stale."""
+        if generation != self._generation:
+            return False                       # caller's snapshot is stale; chunk dropped
         self._steps.extend(chunk)
         self._origin_size = len(self._steps)
         self._refill_in_flight = False
+        return True
+
+    def flush(self) -> None:
+        """Drop any queued steps and re-arm the producer.
+        Called by the lifecycle on `PUT /session/inference/instruction`."""
+        self._steps.clear()
+        self._origin_size = 0
+        self._generation += 1
+        self._refill_in_flight = False
+        self._refill_event.set()
+
+    def request_refill_now(self) -> None:
+        """Producer-facing signal used at startup and on producer-driven re-arm."""
+        self._refill_in_flight = False
+        self._refill_event.set()
+
+    def current_generation(self) -> int:
+        return self._generation
 ```
 
 `StepAction` carries a target `q` (degrees), gripper command, and any safety-relevant metadata (e.g., `ik_failed: bool`).
 
-The buffer's `_refill_event` and `_refill_in_flight` are intentionally accessed by `InferenceProducer` (the only writer of chunks). Producer + buffer are a designed-pair; the underscore signals "not for general callers" rather than fully private. The implementation may expose thin public methods (`request_refill_signal()`, `acknowledge_refill_started()`) if doing so improves test ergonomics, but the contract is "exactly one producer per buffer".
+`_refill_event` and `_refill_in_flight` are accessed only via the methods above; `_generation` is captured by `InferenceProducer` at the start of each refill round and passed back to `try_push_chunk` so that any chunk computed under a stale instruction is dropped on arrival.
 
 ### 7.2 InferenceProducer (async task)
+
+The producer takes a coordinated **input snapshot** at the start of each refill, captures the buffer's current generation, and is the only task that must always re-arm itself before sleeping (so the loop can never deadlock when inputs aren't ready or HTTP fails).
 
 ```python
 async def run_inference_producer(
     client, decoder, buffer, camera_slots, robot_state_slot, instruction_slot,
-    metrics, stopped: asyncio.Event,
+    metrics, error_bus, stopped: asyncio.Event,
 ):
-    buffer._refill_event.set()        # initial fire
+    buffer.request_refill_now()                          # initial fire
+    backoff_s = 0.1                                      # error backoff, doubles up to 1.0
+    NOT_READY_RETRY_S = 0.05
+
     while not stopped.is_set():
         await buffer._refill_event.wait()
         buffer._refill_event.clear()
+
+        # --- coordinated input snapshot ---
+        # All slots are .peek()ed back-to-back at the same async stack frame.
+        # Each Stamped value carries its own t_mono_ns; we forward those into
+        # extra_fields so the server can verify (or refuse) the synchrony window.
+        gen = buffer.current_generation()
         frames = {n: s.peek() for n, s in camera_slots.items()}
         state = robot_state_slot.peek()
         instr = instruction_slot.peek()
-        if any(v is None for v in (state, instr)) or not frames:
-            buffer._refill_in_flight = False
-            await asyncio.sleep(0.01); continue
+
+        not_ready = (
+            state is None or instr is None or
+            not frames or any(f is None for f in frames.values())
+        )
+        if not_ready:
+            await asyncio.sleep(NOT_READY_RETRY_S)
+            buffer.request_refill_now()                  # ← re-arm; otherwise deadlock
+            continue
+
         t0 = time.perf_counter()
         try:
-            resp = await client.predict(frames, state, instr)
+            extras = {
+                "_t_mono_ns": {
+                    "state": state.t_mono_ns,
+                    **{f"image:{n}": f.t_mono_ns for n, f in frames.items()},
+                    "instruction": instr.t_mono_ns,
+                },
+            }
+            resp = await client.predict(frames, state, instr, extras=extras)
             chunk = decoder.decode(resp, current_state=state.value)
-            buffer.push_chunk(chunk)
-            metrics.observe("inference_latency_ms", (time.perf_counter() - t0) * 1000)
+            pushed = buffer.try_push_chunk(chunk, generation=gen)
+            if not pushed:
+                metrics.inc("inference_chunk_dropped_stale")
+                buffer.request_refill_now()              # generation advanced → fetch fresh
+            else:
+                metrics.observe("inference_latency_ms",
+                                (time.perf_counter() - t0) * 1000)
+                backoff_s = 0.1                          # reset on success
         except Exception as e:
             metrics.inc("inference_error_count")
-            buffer._refill_in_flight = False
-            # log via ErrorBus; do NOT crash the task
+            await error_bus.publish_inference_error(kind=classify(e), message=str(e))
+            await asyncio.sleep(backoff_s)
+            backoff_s = min(backoff_s * 2, 1.0)
+            buffer.request_refill_now()                  # ← re-arm; otherwise deadlock
 ```
+
+**Test coverage required (§11):** the not-ready and exception paths must each have a regression test that verifies the producer recovers (re-fires within bounded time and eventually succeeds when conditions clear). Specifically `test_producer_loop.py` must include "initial state=None then becomes available" and "3 consecutive transport errors then success".
+
+**Sync window (§4):** the snapshot is best-effort, not tick-aligned. Inter-camera and camera-vs-state offsets can reach a few tens of ms in practice. The `extras._t_mono_ns` map carries each per-source timestamp so the server side (or downstream analysis) can detect violations of any synchrony assumptions the model has. A future improvement is to expose a tick-aligned `SampleBundle`-style snapshot from the recording pipeline and have the producer pull from it.
 
 ### 7.3 ActionDecoder (ee_delta only in MVP)
 
@@ -332,35 +425,58 @@ for step in chunk_raw:
 ### 7.4 InferenceSafety
 
 ```python
-def filter(self, step: StepAction | None, q_curr: np.ndarray, tick_t_ns: int) -> RobotCommand:
-    if step is None:                            # buffer empty
-        return self._slow_stop(q_curr, tick_t_ns)
-    delta = step.q - q_curr
-    delta = np.clip(delta, -self.max_delta, self.max_delta)
-    q_safe = np.clip(q_curr + delta, self.joint_min, self.joint_max)
-    self._last_safe_q = q_safe
-    self._slow_stop_remaining = 0
-    return RobotCommand(q=q_safe, gripper=step.gripper, t_mono_ns=tick_t_ns)
+class InferenceSafety:
+    # state initialized at session start
+    _last_safe_q: np.ndarray | None = None       # last clamped joint command
+    _last_gripper_cmd: float | None = None       # last gripper command emitted
+    _slow_stop_remaining: int = 0                # 0 = not in slow-stop; counts down to 0 from slow_stop_ticks
+    _clamps_in_current_chunk: int = 0            # surfaced via telemetry; reset on each push_chunk
 
-def _slow_stop(self, q_curr, tick_t_ns) -> RobotCommand:
-    if self._slow_stop_remaining is None:
-        self._slow_stop_remaining = self.slow_stop_ticks
-    n = self._slow_stop_remaining
-    if n <= 0 or self._last_safe_q is None:
-        q = q_curr
-    else:
-        q = self._last_safe_q + (q_curr - self._last_safe_q) * (1 - n / self.slow_stop_ticks)
-    self._slow_stop_remaining = max(0, n - 1)
-    return RobotCommand(q=q, gripper=None, t_mono_ns=tick_t_ns)
+    def filter(self, step: StepAction | None, q_curr: np.ndarray, tick_t_ns: int) -> RobotCommand:
+        if step is None:                                                # buffer empty
+            return self._slow_stop(q_curr, tick_t_ns)
+        delta = step.q - q_curr
+        clamped = np.clip(delta, -self.max_delta, self.max_delta)
+        if not np.array_equal(clamped, delta):
+            self._clamps_in_current_chunk += 1                          # surfaced via telemetry
+        q_safe = np.clip(q_curr + clamped, self.joint_min, self.joint_max)
+        self._last_safe_q = q_safe
+        # Hold-the-last semantics for gripper: if a step has gripper=None
+        # (decoder decided no change, or contract has no gripper output),
+        # repeat whatever was sent last to avoid the dispatcher flapping.
+        gripper_cmd = step.gripper if step.gripper is not None else self._last_gripper_cmd
+        if gripper_cmd is not None:
+            self._last_gripper_cmd = gripper_cmd
+        self._slow_stop_remaining = 0
+        return RobotCommand(q=q_safe, gripper=gripper_cmd, t_mono_ns=tick_t_ns)
+
+    def _slow_stop(self, q_curr: np.ndarray, tick_t_ns: int) -> RobotCommand:
+        # Linear interpolation from _last_safe_q toward q_curr over slow_stop_ticks.
+        # Once finished, hold q_curr (zero motion).
+        if self._last_safe_q is None:
+            q = q_curr.copy()
+        else:
+            if self._slow_stop_remaining == 0:
+                self._slow_stop_remaining = self.slow_stop_ticks
+            n = self._slow_stop_remaining
+            alpha = 1.0 - (n / self.slow_stop_ticks)                    # 0 → 1 over the window
+            q = self._last_safe_q + (q_curr - self._last_safe_q) * alpha
+            self._slow_stop_remaining = max(0, n - 1)
+            if self._slow_stop_remaining == 0:
+                self._last_safe_q = q                                   # converged
+        # Gripper during slow-stop holds the last commanded value (do not flap).
+        return RobotCommand(q=q, gripper=self._last_gripper_cmd, t_mono_ns=tick_t_ns)
 ```
 
-Safety params from `configs/robot/<name>.yaml`:
+`_clamps_in_current_chunk` is sampled by the producer/control_loop at chunk boundaries and emitted on the WS as `clamps_per_chunk` (see §8.4) so growth indicates VLA-vs-tracking divergence in production.
+
+Safety params from `configs/robot/<name>.yaml`. **The `inference_safety:` block is required to start an inference session** — there is intentionally no URDF-mechanical-limit fallback (those values are too wide for closed-loop policy use).
 
 ```yaml
-inference_safety:
+inference_safety:                              # REQUIRED for inference sessions; missing block → 400
   max_joint_delta_per_step_deg: 2.0
   slow_stop_ticks: 5
-  joint_limits_deg:                            # if not set, falls back to URDF limits
+  joint_limits_deg:                            # required; values inside the URDF mechanical limits
     shoulder_pan: [-180.0, 180.0]
     shoulder_lift: [-110.0, 110.0]
     elbow_flex: [-110.0, 110.0]
@@ -389,6 +505,21 @@ elif mode == SessionMode.INFERENCE:    run_inference_control_loop(...)
 ```
 
 Teleop reader task is **not** spawned in INFERENCE mode (the leader arm is decoupled). Camera readers and dispatcher run as in TELEOP.
+
+**READY phase semantics (Q16).** The inference control loop runs continuously from session start to session stop and **always publishes commands to `command_goal_slot`**. The `RECORDING` phase only gates the parquet/mp4 write path (`enqueue(SampleBundle)`), not command dispatch. Concretely:
+
+- `READY`: VLA is queried, chunks decoded and applied via safety, robot moves under model control. Operator uses this to validate model behavior, position the arm, edit the instruction, then press *Start episode* when ready.
+- `RECORDING`: same as READY plus the recording writer is enqueueing.
+- `REVIEW`: control loop **pauses** dispatch (`replay_active`-style flag) until the operator commits/discards. Slow-stop holds the arm at its last-safe position. After commit/discard, the loop resumes (back to `READY`).
+
+The InferencePage `[● live]` indicator is lit whenever commands are being dispatched (READY + RECORDING). UI must clearly communicate "the robot is under model control" during READY (see §9). E-stop (`POST /robot/estop`) remains the operator's escape hatch in any phase.
+
+**Instruction update flush (Q17).** `PUT /session/inference/instruction` calls `chunk_buffer.flush()` immediately. This:
+- empties any queued steps (control_loop next pop_next() returns `None` → safety enters slow-stop),
+- bumps the buffer's `_generation` so any in-flight HTTP response is dropped on arrival via `try_push_chunk`,
+- re-arms the producer to fetch a fresh chunk under the new instruction.
+
+The robot decelerates over `slow_stop_ticks` (≈333 ms at 15 fps) until the next chunk arrives, then resumes. This is the `READY`-only path; during `RECORDING` the endpoint returns 409 and no flush happens.
 
 ### 8.2 New API surface
 
@@ -425,17 +556,20 @@ Existing teleop episodes are unaffected.
 ### 8.4 WebSocket events
 
 ```jsonc
-{"type": "buffer_state",        "depth": 8, "origin_size": 16}
-{"type": "inference_started",   "instruction": "pick up the bottle"}
-{"type": "inference_done",      "latency_ms": 142.3, "chunk_size": 16}
-{"type": "inference_error",     "kind": "http_timeout"|"schema"|"transport", "message": "..."}
-{"type": "safety_event",        "kind": "delta_clamp"|"joint_limit"|"slow_stop"|"ik_fail", "step_index": 42, "joint": "elbow_flex"}
-{"type": "instruction_locked",  "text": "pick up the bottle"}
+{"type": "buffer_state",         "depth": 8, "origin_size": 16, "generation": 3}
+{"type": "inference_started",    "instruction": "pick up the bottle"}
+{"type": "inference_done",       "latency_ms": 142.3, "chunk_size": 16}
+{"type": "inference_error",      "kind": "http_timeout"|"schema"|"transport", "message": "..."}
+{"type": "inference_chunk_dropped_stale", "generation_was": 2, "current_generation": 3}
+{"type": "safety_event",         "kind": "delta_clamp"|"joint_limit"|"slow_stop"|"ik_fail", "step_index": 42, "joint": "elbow_flex"}
+{"type": "clamps_per_chunk",     "count": 7, "chunk_size": 16}             // emitted at each chunk boundary
+{"type": "instruction_updated",  "text": "...", "flushed_steps": 6}        // PUT during READY
+{"type": "instruction_locked",   "text": "pick up the bottle"}
 {"type": "instruction_released"}
-{"type": "next_action_preview", "ee_delta": [...6...], "gripper": 0.2}    // throttled, e.g., every 5 ticks
-{"type": "episode_phase",       "phase": "ready"|"recording"|"review"}
-{"type": "model_done",          "received": true}                          // contract.done.path triggered
-{"type": "watchdog_timeout",    "elapsed_sec": 121.3}                      // max_episode_seconds hit
+{"type": "next_action_preview",  "ee_delta": [...6...], "gripper": 0.2}    // throttled, e.g., every 5 ticks
+{"type": "episode_phase",        "phase": "ready"|"recording"|"review"}
+{"type": "model_done",           "received": true}                         // contract.done.path triggered
+{"type": "watchdog_timeout",     "elapsed_sec": 121.3}                     // max_episode_seconds hit
 ```
 
 The new `/ws/inference` channel is implemented as a new `inference_hub` alongside the existing `api/ws/{session,state,teleop,camera}_hub.py`. Hardware errors continue to surface through the existing `session_hub` (the InferencePage subscribes to both). Camera streams remain on their existing `camera_hub` channels.
@@ -446,14 +580,14 @@ Lifecycle starts a watchdog task on `episode_start` that auto-fires `episode_sto
 
 ## 9. UI: InferencePage
 
-A single page with phase-driven main panel; persistent header with `[● live]` indicator and right-aligned `[E-STOP]` (red, always visible).
+A single page with phase-driven main panel; persistent header with `[● live]` indicator and right-aligned `[E-STOP]` (red, always visible). The `[● live]` dot is lit whenever commands are being dispatched (READY and RECORDING — see Q16). The page renders a yellow "Robot under model control" banner during READY to make the active dispatch unambiguous to the operator.
 
 | Phase | Main panel content |
 |---|---|
 | pre-start | Inference config dropdown, dataset dropdown, instruction text input + disabled mic icon, **Start session** |
-| ready | Editable instruction input + **Update**, telemetry block (buffer / latency / chunks / errors / safety events), camera tiles, action preview (numeric ΔEE + gripper), **Start episode** + **Stop session** |
+| ready | **Yellow banner: "Robot under model control — use E-STOP to halt".** Editable instruction input + **Update** (calls `PUT instruction` and triggers a buffer flush; brief slow-stop is expected), telemetry block (buffer / latency / chunks / errors / safety events / clamps_per_chunk), camera tiles, action preview (numeric ΔEE + gripper), **Start episode** + **Stop session** |
 | recording | Locked instruction display, episode timer (`mm:ss / mm:ss`), telemetry + cameras + action preview, "model done signal: …", **Stop episode** |
-| review | Episode summary (index, duration), **Save (✓ success)** / **Save (✗ failure)** / **Discard** |
+| review | Episode summary (index, duration), **Save (✓ success)** / **Save (✗ failure)** / **Discard**. Control loop is paused (slow-stop holds the arm) until the operator chooses. |
 
 Component–to–API mapping is documented inline with the implementation; no new entries beyond §8.2.
 
@@ -482,15 +616,15 @@ Inference-side failures **do not crash the session**. Only hardware errors and e
 ### Unit
 
 - `test_contract.py` — load happy path, env-var interpolation, missing env, unknown action.type, non-existent stats path, components-with-unknown-keys.
-- `test_chunk_buffer.py` — half-prefetch threshold fires once, flag prevents double-fire, empty-buffer pop returns None, push resets origin and clears flag.
+- `test_chunk_buffer.py` — half-prefetch threshold fires once, flag prevents double-fire, empty-buffer pop returns None, push resets origin and clears flag, **`flush()` empties steps and bumps generation**, **`try_push_chunk` with stale generation returns False and drops the chunk**.
 - `test_action_decoder.py` — round-trip ee_local / world frames; gripper kinds (absolute / delta / binary); units conversion; IK chain seeding; IK failure propagates `ik_failed`.
-- `test_safety.py` — clamp at boundary, joint-limit clip, slow-stop linear over N ticks, IK-fail step held.
+- `test_safety.py` — clamp at boundary, joint-limit clip, slow-stop linear over N ticks, IK-fail step held, **`step.gripper=None` repeats `_last_gripper_cmd`**, slow-stop preserves last gripper, clamp count exposed via `_clamps_in_current_chunk`.
 - `test_client.py` — request body assembly per contract, jpeg encoding shape, header env interpolation; mock httpx server returns canned response, parser roundtrip.
 - `test_ik_service.py` — known-pose round trip, unsolvable pose returns `ok=False`.
 
 ### Integration
 
-- `test_producer_loop.py` — fake client returns canned chunk; verify producer fills buffer on refill event; verify error path leaves buffer empty without crashing.
+- `test_producer_loop.py` — fake client returns canned chunk; verify producer fills buffer on refill event; **regression: initial state=None then becomes available — producer must recover and push a chunk** (deadlock check); **regression: 3 consecutive transport errors then success — producer must recover with bounded backoff** (deadlock check); **regression: instruction flush during in-flight request causes `try_push_chunk` to return False and producer to fetch fresh** (generation check).
 - `test_lifecycle.py` — `start_inference_session` spawns producer + control_loop + dispatcher; stop cancels all; teleop session active → start_inference returns 409; inference watchdog auto-stops episode.
 - `test_recording_integration.py` — full session: start → episode_start → inject N ticks of inference → episode_stop → commit(outcome=success). Verify parquet rows, mp4 written, `tasks.parquet` has instruction, `episodes.jsonl` has new columns populated.
 
