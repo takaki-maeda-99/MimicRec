@@ -120,3 +120,50 @@ def test_pose_units_mm_euler_deg_rejected_in_mvp():
     text = _yaml_with_overrides(pose_units="mm_euler_deg")
     with pytest.raises(ValueError, match="pose.units"):
         ContractSpec.from_yaml_text(text)
+
+
+import json
+
+
+COMPONENTS_DIM = {
+    "joint_pos": "Narm",      # robot-config-dependent
+    "gripper_pos": 1,
+    "ee_delta": 6,
+    "gripper": 1,
+}
+
+
+def test_stats_path_resolution_vla_export(tmp_path, monkeypatch):
+    # set up a fake VLA export tree
+    monkeypatch.setenv("MIMICREC_VLA_DEST_ROOT", str(tmp_path))
+    (tmp_path / "SO101" / "meta").mkdir(parents=True)
+    stats_file = tmp_path / "SO101" / "meta" / "action_stats.json"
+    stats_file.write_text(json.dumps({"mean": [0.0]*7, "std": [1.0]*7}))
+
+    spec = ContractSpec.from_yaml_text(YAML_OK)
+    resolved = spec.resolve_action_stats()
+    assert resolved == {"mean": [0.0]*7, "std": [1.0]*7}
+
+
+def test_stats_path_missing_fails(tmp_path, monkeypatch):
+    monkeypatch.setenv("MIMICREC_VLA_DEST_ROOT", str(tmp_path))
+    spec = ContractSpec.from_yaml_text(YAML_OK)
+    with pytest.raises(FileNotFoundError, match="action_stats.json"):
+        spec.resolve_action_stats()
+
+
+def test_stats_length_mismatch_fails(tmp_path, monkeypatch):
+    monkeypatch.setenv("MIMICREC_VLA_DEST_ROOT", str(tmp_path))
+    (tmp_path / "SO101" / "meta").mkdir(parents=True)
+    stats_file = tmp_path / "SO101" / "meta" / "action_stats.json"
+    stats_file.write_text(json.dumps({"mean": [0.0]*5, "std": [1.0]*5}))  # wrong length
+
+    spec = ContractSpec.from_yaml_text(YAML_OK)
+    with pytest.raises(ValueError, match="length"):
+        spec.resolve_action_stats()
+
+
+def test_resolve_returns_none_when_method_is_none():
+    """method=none → no stats needed; lifecycle can call unconditionally."""
+    spec = ContractSpec.from_yaml_text(_yaml_with_overrides(normalization_method="none"))
+    assert spec.resolve_action_stats() is None
