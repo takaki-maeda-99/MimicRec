@@ -480,6 +480,8 @@ def _yaml_with_overrides(**overrides) -> str:
         d["response"]["done"] = overrides["done"]
     if "pose_units" in overrides:
         d["response"]["action"]["pose"]["units"] = overrides["pose_units"]
+    if "normalization_method" in overrides:
+        d["response"]["action"]["normalization"] = {"method": overrides["normalization_method"]}
     return _yaml.safe_dump(d)
 
 
@@ -652,11 +654,7 @@ def test_stats_length_mismatch_fails(tmp_path, monkeypatch):
 
 def test_resolve_returns_none_when_method_is_none():
     """method=none → no stats needed; lifecycle can call unconditionally."""
-    text = _yaml_with_overrides()
-    # Override action normalization to none in-place
-    d = _yaml.safe_load(text)
-    d["response"]["action"]["normalization"] = {"method": "none"}
-    spec = ContractSpec.from_yaml_text(_yaml.safe_dump(d))
+    spec = ContractSpec.from_yaml_text(_yaml_with_overrides(normalization_method="none"))
     assert spec.resolve_action_stats() is None
 ```
 
@@ -1693,13 +1691,7 @@ git commit -m "test(inference): action decoder gripper kinds + IK-fail hold"
 - Test: `tests/unit/test_inference_client.py`
 - Reference: spec §7.2 (snapshot extras), §6 (request/response shape)
 
-- [ ] **Step 0: Verify `Frame` and `Stamped` field names**
-
-```
-cd backend && grep -A3 'class Frame\|class Stamped\|class RobotState' mimicrec/types.py | head -40
-```
-
-Expected: `Frame.image: np.ndarray`, `Stamped(value=T, t_mono_ns=int)`. If the actual field name differs (e.g. `Frame.frame` or `Frame.array`), update the test fixture and `client._build_request_body` accordingly.
+**Note before starting:** the test fixture and `_build_request_body` below assume `Frame.image: np.ndarray`, `Stamped(value=T, t_mono_ns=int)`, `RobotState.gripper_pos: float`. If the actual field names in `backend/mimicrec/types.py` differ (e.g. `Frame.frame` instead of `Frame.image`), adjust both. Read the file in your editor or `grep -A3 'class Frame\|class Stamped\|class RobotState' backend/mimicrec/types.py` if you prefer the terminal.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -2141,6 +2133,16 @@ async def run_inference_producer(
                                 "current_generation": buffer.current_generation()})
                 buffer.request_refill_now()
             else:
+                # Snapshot the previous chunk's clamp count BEFORE on_new_chunk()
+                # resets it. clamps_per_chunk is emitted at chunk boundaries,
+                # which only the producer can detect (the control_loop just
+                # consumes one step at a time and doesn't know what's a boundary).
+                prev_clamps = safety.clamps_in_current_chunk()
+                if prev_clamps > 0 or buffer.current_generation() > 1:
+                    # Don't emit on the very first chunk (nothing to summarize).
+                    await _publish({"type": "clamps_per_chunk",
+                                    "count": prev_clamps,
+                                    "chunk_size": len(chunk)})
                 safety.on_new_chunk()
                 latency_ms = (time.perf_counter() - t0) * 1000
                 metrics.observe("inference_latency_ms", latency_ms)
@@ -2685,7 +2687,7 @@ In `lifecycle.py`:
 - `episode_save` / `episode_discard` (REVIEW → READY): publish `{"type": "instruction_released"}` and `{"type": "episode_phase", "phase": "ready"}`. Calls `resume_producer()` (which does NOT publish either).
 - `_inference_watchdog_task`: publish `{"type": "watchdog_timeout", ...}` on fire, then `episode_stop(stop_reason="timeout")`.
 
-In `producer.py`: the `publish_event` callable is already a constructor parameter (Task 14). Lifecycle (Task 16) passes `inference_hub.publish` here so the producer emits `inference_done` / `inference_error` / `inference_chunk_dropped_stale` / `buffer_state` events without importing the hub directly.
+In `producer.py`: the `publish_event` callable is already a constructor parameter (Task 14). Lifecycle (Task 16) passes `inference_hub.publish` here so the producer emits `inference_done` / `inference_error` / `inference_chunk_dropped_stale` / `buffer_state` / `clamps_per_chunk` events without importing the hub directly. **All chunk-boundary events (including `clamps_per_chunk`) are emitted by the producer**, because only the producer knows when a new chunk has been pushed. The `run_inference_control_loop` does NOT need a `publish_event` parameter — it just consumes one step at a time.
 
 Specifically Task 16's `start_inference_session` becomes:
 
@@ -2699,7 +2701,7 @@ self._producer_task = asyncio.create_task(run_inference_producer(
 ))
 ```
 
-`clamps_per_chunk` is emitted by `run_inference_control_loop` at chunk boundaries (sample `safety.clamps_in_current_chunk()` after each `pop_next` that pulled the last step of a chunk). Add a `publish_event` parameter to `run_inference_control_loop` symmetrically.
+Lifecycle is responsible for the **session/episode** events that producer doesn't see: `instruction_locked` / `instruction_released` (episode_start/save/discard), `episode_phase` (transitions), `instruction_updated` (PUT handler), `watchdog_timeout` (the watchdog itself), and the existing `session_hub` for hardware errors.
 
 - [ ] **Step 4: Commit**
 
@@ -2752,7 +2754,9 @@ async def test_max_episode_seconds_watchdog_fires(make_inference_session):
     ...
 ```
 
-- [ ] **Step 2: Implement episode_start/stop changes in `lifecycle.py`**
+- [ ] **Step 2: Implement episode lifecycle hooks in `lifecycle.py`**
+
+Four methods touch episode lifecycle for INFERENCE mode: `episode_start`, `episode_stop`, `episode_save`, `episode_discard`. The pause/flush/resume dance from spec §8.1 is split across them as follows:
 
 ```python
 async def episode_start(self) -> None:
@@ -2763,21 +2767,46 @@ async def episode_start(self) -> None:
             "type": "instruction_locked",
             "text": self.session.locked_instruction,
         })
-        # Spawn watchdog
+        await self.inference_hub.publish({"type": "episode_phase", "phase": "recording"})
         max_sec = self._session_config.max_episode_seconds or 120
         self._inference_watchdog_task = asyncio.create_task(
             self._run_watchdog(max_sec)
         )
 
 async def episode_stop(self, *, stop_reason: str = "manual") -> None:
+    """RECORDING → REVIEW. For INFERENCE: pause producer + flush buffer
+    so REVIEW slow-stop is grounded; on REVIEW exit (save/discard) we
+    re-arm with a fresh fetch."""
     if self._inference_watchdog_task is not None:
         self._inference_watchdog_task.cancel()
         self._inference_watchdog_task = None
     if self.session.mode == SessionMode.INFERENCE:
-        await self.inference_hub.publish({"type": "instruction_released"})
-        self.session.locked_instruction = None
+        # Spec §8.1 REVIEW transition (order-locked: producer_paused FIRST, then flush).
+        self.pause_producer_and_flush()
         self._last_stop_reason = stop_reason
-    # ... existing teleop logic ...
+        await self.inference_hub.publish({"type": "episode_phase", "phase": "review"})
+    # ... existing teleop logic to move state → REVIEW ...
+
+async def episode_save(self, *, success: bool | None = None, comment: str | None = None) -> None:
+    """REVIEW → READY (commit). Existing teleop persistence runs first."""
+    # ... existing parquet/mp4 commit logic ...
+    if self.session.mode == SessionMode.INFERENCE:
+        # Spec §8.1: resume_producer reverses the REVIEW pause+flush so the
+        # next chunk is fetched against the CURRENT state, not the 30s-old
+        # state captured at REVIEW entry.
+        self.resume_producer()
+        self.session.locked_instruction = None
+        await self.inference_hub.publish({"type": "instruction_released"})
+        await self.inference_hub.publish({"type": "episode_phase", "phase": "ready"})
+
+async def episode_discard(self) -> None:
+    """REVIEW → READY (discard). Symmetric to episode_save for INFERENCE."""
+    # ... existing teleop discard logic ...
+    if self.session.mode == SessionMode.INFERENCE:
+        self.resume_producer()
+        self.session.locked_instruction = None
+        await self.inference_hub.publish({"type": "instruction_released"})
+        await self.inference_hub.publish({"type": "episode_phase", "phase": "ready"})
 
 async def _run_watchdog(self, max_sec: float) -> None:
     try:
@@ -2789,6 +2818,8 @@ async def _run_watchdog(self, max_sec: float) -> None:
     except asyncio.CancelledError:
         pass
 ```
+
+**Worker checklist for this step**: edit FOUR methods (`episode_start`, `episode_stop`, `episode_save`, `episode_discard`) plus `_run_watchdog` on `SessionManager`. Do not skip `episode_save` / `episode_discard` — without `resume_producer()` there, the producer stays paused after REVIEW exit and the robot won't resume.
 
 - [ ] **Step 3a (investigation, mandatory before Step 3b)**: locate the episode-metadata write path. The spec assumes `recording/metadata.py` but the LeRobot v3-native migration (spec §13) means the writer surface may have moved. Run all of these and capture the results in a scratch note before editing:
 
@@ -3085,6 +3116,18 @@ git add tests/fixtures/fake_vla_server.py tests/conftest.py
 git commit -m "test(inference): fake VLA HTTP server fixture"
 ```
 
+- [ ] **Step 4 (Task 17 unblocking)**: with the fixture in place, return to `tests/integration/test_inference_lifecycle.py` and replace each `pytest.skip(...)` placeholder from Task 17 with the real test body:
+  - `test_start_inference_against_mock_robot`: spin up `make_inference_session` with `fake_vla_server`, assert `SessionMode.INFERENCE`, `SessionState.READY`, all four tasks (producer, control_loop, dispatcher, writer) are `not done`.
+  - `test_409_when_session_already_active`: start an inference session, then try `start_inference_session` again, assert `InvalidTransitionError` (or 409 from the API layer if testing through HTTP).
+  - `test_pause_and_resume_helpers`: call `pause_producer_and_flush`, observe `session.producer_paused == True` and `chunk_buffer.depth() == 0` after a pre-fill; call `resume_producer`, observe `producer_paused == False` and (within `_wait_for`) `chunk_buffer.depth() > 0` again.
+
+  Run the three tests, confirm 3 passed, then commit:
+
+```
+git add tests/integration/test_inference_lifecycle.py
+git commit -m "test(inference): lifecycle integration tests (resolves Task 17)"
+```
+
 ### Task 27: `tests/e2e/test_inference_e2e.py`
 
 **Files:**
@@ -3254,3 +3297,4 @@ git status   # should be clean
 - **`api/deps.build_session_manager_for_inference`**: how is the SessionManager currently constructed for teleop? Does it expect a teleop adapter or can it boot without one? (Task 18 / Task 16 may need a small adjustment.)
 - **`Frame` vs `np.ndarray` in camera slots**: does the existing camera manager publish `Stamped[Frame]` or `Stamped[np.ndarray]`? (Affects `client._build_request_body` — see Task 13.)
 - **`_robot_config_dict` retention**: lifecycle currently constructs the robot adapter via Hydra-style `_target_` dict; confirm whether the raw config dict is retained or has to be re-loaded for `_robot_safety_config()`.
+- **`minmax_neg1_pos1` stats source**: ActionDecoder's `_de_normalize` applies `physical = mean + arr * std` for both `mean_std` and `minmax_neg1_pos1`, on the convention that minmax stats encode midpoint (mean) and half-range (std). Today `vla_compat/stats.py` only emits population mean/std, suitable for `mean_std`. If a future model uses `minmax_neg1_pos1`, confirm the stats producer also emits midpoint+half-range in those keys (or extend the exporter). The MVP `gemma_libero_v1.yaml` uses `mean_std`, so this is a follow-up concern, not an MVP blocker.
