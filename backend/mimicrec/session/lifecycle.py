@@ -657,6 +657,15 @@ class SessionManager:
             raise InvalidTransitionError(
                 "start_inference_session: inference session already active"
             )
+        # Replay parks references to self._command_goal_slot inside its task
+        # and may restore RobotMode at exit. If we replace the slot or change
+        # mode while replay is in flight, replay keeps writing to the now-
+        # detached old slot and may flip the robot back to GRAVITY_COMP after
+        # this method sets POSITION. Reject the transition until replay ends.
+        if self.session.replay_active:
+            raise InvalidTransitionError(
+                "start_inference_session: replay is active; stop replay first"
+            )
 
         # CRITICAL: cancel tasks spawned by the prior teleop/handteach
         # session.start(). Those tasks share the slots/queues we're about
