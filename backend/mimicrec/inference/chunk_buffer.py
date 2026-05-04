@@ -50,3 +50,28 @@ class ChunkBuffer:
 
     def origin_size(self) -> int:
         return self._origin_size
+
+    def flush(self) -> int:
+        """Drop any queued steps, bump generation, re-arm the producer.
+        Returns the number of steps that were dropped (used by
+        callers that emit `instruction_updated.flushed_steps` on the WS)."""
+        flushed = len(self._steps)
+        self._steps.clear()
+        self._origin_size = 0
+        self._generation += 1
+        self._refill_in_flight = False
+        self._refill_event.set()
+        return flushed
+
+    def request_refill_now(self) -> None:
+        """Producer-facing signal used at startup, on producer-driven re-arm,
+        and by the lifecycle on REVIEW → READY transition."""
+        self._refill_in_flight = False
+        self._refill_event.set()
+
+    async def wait_for_refill(self) -> None:
+        """Producer-facing wait. Encapsulates the underlying Event so the
+        producer never touches `_refill_event` directly — keeps the seam
+        clean for tests that swap a fake buffer in."""
+        await self._refill_event.wait()
+        self._refill_event.clear()
