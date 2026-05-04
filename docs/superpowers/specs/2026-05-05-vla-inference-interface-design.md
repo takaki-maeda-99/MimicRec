@@ -226,7 +226,12 @@ response:
                                                 #           fires after the chunk is fully consumed.
                                                 #   step  = (future) per-step done; would auto_stop
                                                 #           on the first step that reports done.
-    action_on_done: "auto_stop"                 # auto_stop | notify_only
+    action_on_done: "auto_stop"                 # auto_stop | notify_only.
+                                                # In READY phase, auto_stop is silently downgraded
+                                                # to notify_only (there is no episode to stop) — the
+                                                # WS still emits `model_done` for visibility. auto_stop
+                                                # is honored only during RECORDING, where it fires
+                                                # episode_stop with stop_reason="model_done".
 
 loop:
   prefetch_threshold: 0.5
@@ -318,9 +323,17 @@ class ChunkBuffer:
         self._refill_event.set()
 
     def request_refill_now(self) -> None:
-        """Producer-facing signal used at startup and on producer-driven re-arm."""
+        """Producer-facing signal used at startup, on producer-driven re-arm,
+        and by the lifecycle on REVIEW → READY transition."""
         self._refill_in_flight = False
         self._refill_event.set()
+
+    async def wait_for_refill(self) -> None:
+        """Producer-facing wait. Encapsulates the underlying Event so the
+        producer never touches `_refill_event` directly — keeps the seam
+        clean for tests that swap a fake buffer in."""
+        await self._refill_event.wait()
+        self._refill_event.clear()
 
     def current_generation(self) -> int:
         return self._generation
@@ -337,20 +350,34 @@ The producer takes a coordinated **input snapshot** at the start of each refill,
 ```python
 async def run_inference_producer(
     client, decoder, buffer, camera_slots, robot_state_slot, instruction_slot,
-    metrics, error_bus, stopped: asyncio.Event,
+    safety,                                              # for safety.on_new_chunk()
+    session,                                             # exposes producer_paused, state, stopped
+    metrics, error_bus,
 ):
     buffer.request_refill_now()                          # initial fire
     backoff_s = 0.1                                      # error backoff, doubles up to 1.0
     NOT_READY_RETRY_S = 0.05
 
-    while not stopped.is_set():
-        await buffer._refill_event.wait()
-        buffer._refill_event.clear()
+    async def stop_aware_sleep(seconds: float) -> bool:
+        """Sleep, but return True early if the session is stopping.
+        Replaces bare asyncio.sleep so backoff/retry can't delay graceful shutdown."""
+        try:
+            await asyncio.wait_for(session.stopped.wait(), timeout=seconds)
+            return True
+        except asyncio.TimeoutError:
+            return False
+
+    while not session.stopped.is_set():
+        await buffer.wait_for_refill()                   # see §7.1 (public method)
+
+        # REVIEW phase: skip fetching, go back to wait. Lifecycle re-arms us on REVIEW exit.
+        if session.producer_paused:
+            continue
 
         # --- coordinated input snapshot ---
         # All slots are .peek()ed back-to-back at the same async stack frame.
         # Each Stamped value carries its own t_mono_ns; we forward those into
-        # extra_fields so the server can verify (or refuse) the synchrony window.
+        # extras so the server can verify (or refuse) the synchrony window.
         gen = buffer.current_generation()
         frames = {n: s.peek() for n, s in camera_slots.items()}
         state = robot_state_slot.peek()
@@ -361,7 +388,8 @@ async def run_inference_producer(
             not frames or any(f is None for f in frames.values())
         )
         if not_ready:
-            await asyncio.sleep(NOT_READY_RETRY_S)
+            if await stop_aware_sleep(NOT_READY_RETRY_S):
+                return
             buffer.request_refill_now()                  # ← re-arm; otherwise deadlock
             continue
 
@@ -381,6 +409,7 @@ async def run_inference_producer(
                 metrics.inc("inference_chunk_dropped_stale")
                 buffer.request_refill_now()              # generation advanced → fetch fresh
             else:
+                safety.on_new_chunk()                    # reset _clamps_in_current_chunk (see §7.4)
                 metrics.observe("inference_latency_ms",
                                 (time.perf_counter() - t0) * 1000)
                 backoff_s = 0.1                          # reset on success
@@ -390,10 +419,13 @@ async def run_inference_producer(
         except Exception as e:
             metrics.inc("inference_error_count")
             await error_bus.publish_inference_error(kind=classify(e), message=str(e))
-            await asyncio.sleep(backoff_s)
+            if await stop_aware_sleep(backoff_s):
+                return
             backoff_s = min(backoff_s * 2, 1.0)
             buffer.request_refill_now()                  # ← re-arm; otherwise deadlock
 ```
+
+`stop_aware_sleep` replaces bare `asyncio.sleep` so a graceful `session.stop` interrupts a 1 s backoff immediately rather than waiting it out (which also avoids cancelling an in-flight `httpx` request mid-read and the resource-warning fallout that comes with that).
 
 **Test coverage required (§11):** the not-ready and exception paths must each have a regression test that verifies the producer recovers (re-fires within bounded time and eventually succeeds when conditions clear). Specifically `test_producer_loop.py` must include "initial state=None then becomes available" and "3 consecutive transport errors then success".
 
@@ -433,7 +465,7 @@ class InferenceSafety:
     _last_safe_q: np.ndarray | None = None       # last clamped joint command
     _last_gripper_cmd: float | None = None       # last gripper command emitted
     _slow_stop_remaining: int = 0                # 0 = not in slow-stop; counts down to 0 from slow_stop_ticks
-    _clamps_in_current_chunk: int = 0            # surfaced via telemetry; reset on each push_chunk
+    _clamps_in_current_chunk: int = 0            # surfaced via telemetry; reset by on_new_chunk()
 
     def filter(self, step: StepAction | None, q_curr: np.ndarray, tick_t_ns: int) -> RobotCommand:
         if step is None:                                                # buffer empty
@@ -462,13 +494,21 @@ class InferenceSafety:
             if self._slow_stop_remaining == 0:
                 self._slow_stop_remaining = self.slow_stop_ticks
             n = self._slow_stop_remaining
-            alpha = 1.0 - (n / self.slow_stop_ticks)                    # 0 → 1 over the window
+            # alpha series for slow_stop_ticks=N=5: tick 1→0.2, tick 2→0.4, ..., tick 5→1.0.
+            # We start ramping immediately (no "do nothing" first tick), since the operator
+            # already feels the late-chunk and we want to begin deceleration right away.
+            alpha = 1.0 - ((n - 1) / self.slow_stop_ticks)
             q = self._last_safe_q + (q_curr - self._last_safe_q) * alpha
             self._slow_stop_remaining = max(0, n - 1)
             if self._slow_stop_remaining == 0:
                 self._last_safe_q = q                                   # converged
         # Gripper during slow-stop holds the last commanded value (do not flap).
         return RobotCommand(q=q, gripper=self._last_gripper_cmd, t_mono_ns=tick_t_ns)
+
+    def on_new_chunk(self) -> None:
+        """Called by InferenceProducer after a successful try_push_chunk().
+        Resets per-chunk metrics so they reflect "this chunk only"."""
+        self._clamps_in_current_chunk = 0
 ```
 
 `_clamps_in_current_chunk` is sampled by the producer/control_loop at chunk boundaries and emitted on the WS as `clamps_per_chunk` (see §8.4) so growth indicates VLA-vs-tracking divergence in production.
@@ -513,7 +553,13 @@ Teleop reader task is **not** spawned in INFERENCE mode (the leader arm is decou
 
 - `READY`: VLA is queried, chunks decoded and applied via safety, robot moves under model control. Operator uses this to validate model behavior, position the arm, edit the instruction, then press *Start episode* when ready.
 - `RECORDING`: same as READY plus the recording writer is enqueueing.
-- `REVIEW`: control loop **pauses** dispatch (`replay_active`-style flag) until the operator commits/discards. Slow-stop holds the arm at its last-safe position. After commit/discard, the loop resumes (back to `READY`).
+- `REVIEW`: control_loop **continues to run normally**, but on entering REVIEW the lifecycle:
+  1. calls `chunk_buffer.flush()` (empties queued steps and bumps generation, dropping any in-flight stale chunk on arrival), and
+  2. sets `session.producer_paused = True` so the producer skips fetching while the operator deliberates.
+
+  With the buffer empty, every `pop_next()` returns `None` and `safety.filter(None, q_curr, ...)` enters slow-stop, holding the arm at `_last_safe_q` and continuing to assert that hold every tick (no dispatch hole). Gripper holds at `_last_gripper_cmd` (§7.4).
+
+  On commit / discard (REVIEW → READY), lifecycle clears `producer_paused` and calls `buffer.request_refill_now()` so the producer fetches a fresh chunk grounded in the current robot state — never the state captured 30 s ago when REVIEW began.
 
 The InferencePage `[● live]` indicator is lit whenever commands are being dispatched (READY + RECORDING). UI must clearly communicate "the robot is under model control" during READY (see §9). E-stop (`POST /robot/estop`) remains the operator's escape hatch in any phase.
 
@@ -530,7 +576,7 @@ The robot decelerates over `slow_stop_ticks` (≈333 ms at 15 fps) until the nex
 |---|---|---|---|
 | POST | `/session/inference/start` | `{ session_config_ref, inference_config_ref, dataset_ref, instruction }` | `{ session_id, state }` — 409 if any session is already active |
 | POST | `/session/inference/stop` | `{}` | `{ ok }` |
-| PUT | `/session/inference/instruction` | `{ text }` | `{ ok }` — 409 if `state == RECORDING` |
+| PUT | `/session/inference/instruction` | `{ text }` | `{ ok }` — 409 if `state == RECORDING`. Handler updates `_instruction_slot`, calls `chunk_buffer.flush()`, and publishes `instruction_updated` on `inference_hub` (see §8.4). |
 | GET | `/session/inference/state` | — | `{ phase, instruction, locked_instruction, buffer_depth, buffer_origin, chunks_consumed, last_inference_latency_ms, inference_errors, last_safety_event }` |
 | GET | `/configs/inference` | — | `{ items: [{name, description}] }` |
 | GET | `/configs/inference/{name}` | — | `{ ContractSpec dump (env vars elided) }` |
