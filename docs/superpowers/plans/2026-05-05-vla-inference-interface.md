@@ -453,47 +453,70 @@ git commit -m "feat(inference): add ContractSpec pydantic model + YAML loader"
 
 ```python
 import os
+import yaml as _yaml
+
+
+def _yaml_with_overrides(**overrides) -> str:
+    """Build a YAML test fixture by mutating a parsed dict — much less
+    fragile than running multiple `replace()` calls on a string.
+
+    `overrides` keys can be:
+      - `headers`: dict to set on `endpoint.headers`
+      - `image_field_dup`: bool — make both image fields collide
+      - `done`: dict for `response.done`
+      - `pose_units`: str for `response.action.pose.units`
+    """
+    d = _yaml.safe_load(YAML_OK)
+    if "headers" in overrides:
+        d["endpoint"]["headers"] = overrides["headers"]
+    if overrides.get("image_field_dup"):
+        d["request"]["images"] = {
+            "front": {"field": "SAME", "encoding": "jpeg_base64",
+                      "resize": [224, 224], "jpeg_quality": 90},
+            "wrist": {"field": "SAME", "encoding": "jpeg_base64",
+                      "resize": [224, 224], "jpeg_quality": 90},
+        }
+    if "done" in overrides:
+        d["response"]["done"] = overrides["done"]
+    if "pose_units" in overrides:
+        d["response"]["action"]["pose"]["units"] = overrides["pose_units"]
+    return _yaml.safe_dump(d)
 
 
 def test_env_var_interpolation(monkeypatch):
     monkeypatch.setenv("VLA_API_TOKEN", "secret123")
-    yaml_with_env = YAML_OK.replace(
-        '  retry: { max_attempts: 0 }',
-        '  headers: { Authorization: "Bearer ${VLA_API_TOKEN}" }\n  retry: { max_attempts: 0 }',
-    )
-    spec = ContractSpec.from_yaml_text(yaml_with_env)
+    text = _yaml_with_overrides(headers={"Authorization": "Bearer ${VLA_API_TOKEN}"})
+    spec = ContractSpec.from_yaml_text(text)
     assert spec.endpoint.headers["Authorization"] == "Bearer secret123"
 
 
 def test_missing_env_var_fails(monkeypatch):
     monkeypatch.delenv("VLA_API_TOKEN", raising=False)
-    yaml_with_env = YAML_OK.replace(
-        '  retry: { max_attempts: 0 }',
-        '  headers: { Authorization: "Bearer ${VLA_API_TOKEN}" }\n  retry: { max_attempts: 0 }',
-    )
+    text = _yaml_with_overrides(headers={"Authorization": "Bearer ${VLA_API_TOKEN}"})
     with pytest.raises(ValueError, match="VLA_API_TOKEN"):
-        ContractSpec.from_yaml_text(yaml_with_env)
+        ContractSpec.from_yaml_text(text)
 
 
 def test_image_fields_must_be_unique():
-    bad = YAML_OK.replace(
-        "images:\n    front: { field: image_primary",
-        "images:\n    front: { field: SAME, encoding: jpeg_base64, resize: [224, 224], jpeg_quality: 90 }\n    wrist: { field: SAME"
-    ).replace(", encoding: jpeg_base64, resize: [224, 224], jpeg_quality: 90 }\n  state:",
-              ", encoding: jpeg_base64, resize: [224, 224], jpeg_quality: 90 }\n  state:")
+    text = _yaml_with_overrides(image_field_dup=True)
     with pytest.raises(ValueError, match="unique"):
-        ContractSpec.from_yaml_text(bad)
+        ContractSpec.from_yaml_text(text)
 
 
 def test_done_scope_step_rejected():
-    yaml_done = YAML_OK + """
-"""
-    yaml_done = YAML_OK.replace(
-        "loop:",
-        "  done: { path: done, type: bool, scope: step, action_on_done: auto_stop }\nloop:",
-    )
+    text = _yaml_with_overrides(done={
+        "path": "done", "type": "bool", "scope": "step", "action_on_done": "auto_stop",
+    })
     with pytest.raises(ValueError, match="done.scope"):
-        ContractSpec.from_yaml_text(yaml_done)
+        ContractSpec.from_yaml_text(text)
+
+
+def test_pose_units_mm_euler_deg_rejected_in_mvp():
+    """MVP only implements meter_axisangle_rad; mm_euler_deg must fail at load
+    so a config swap can't silently mis-scale by 1000x or mis-interpret rotation."""
+    text = _yaml_with_overrides(pose_units="mm_euler_deg")
+    with pytest.raises(ValueError, match="pose.units"):
+        ContractSpec.from_yaml_text(text)
 ```
 
 - [ ] **Step 2: Run to fail**
@@ -553,11 +576,21 @@ def _post_validate(self) -> None:
             f"done.scope='{self.response.done.scope}' not implemented in MVP "
             "(only 'chunk' is supported)"
         )
+    # MVP: only meter_axisangle_rad is implemented in the decoder. Rejecting
+    # unsupported units at load time prevents a silent 1000x mis-scale or
+    # rotation-format mismatch when an operator drops in a contract for a
+    # different VLA training stack.
+    units = self.response.action.pose.units
+    if units != "meter_axisangle_rad":
+        raise ValueError(
+            f"response.action.pose.units='{units}' not implemented in MVP "
+            "(only 'meter_axisangle_rad' is supported)"
+        )
 ```
 
 - [ ] **Step 4: Verify pass**
 
-Expected: 6 passed (2 + 4 new).
+Expected: 7 passed (2 + 5 new).
 
 - [ ] **Step 5: Commit**
 
@@ -615,6 +648,16 @@ def test_stats_length_mismatch_fails(tmp_path, monkeypatch):
     spec = ContractSpec.from_yaml_text(YAML_OK)
     with pytest.raises(ValueError, match="length"):
         spec.resolve_action_stats()
+
+
+def test_resolve_returns_none_when_method_is_none():
+    """method=none → no stats needed; lifecycle can call unconditionally."""
+    text = _yaml_with_overrides()
+    # Override action normalization to none in-place
+    d = _yaml.safe_load(text)
+    d["response"]["action"]["normalization"] = {"method": "none"}
+    spec = ContractSpec.from_yaml_text(_yaml.safe_dump(d))
+    assert spec.resolve_action_stats() is None
 ```
 
 - [ ] **Step 2: Run to fail**
@@ -652,10 +695,16 @@ def _expected_dim(components: list[str], narm: int | None = None) -> int:
     return total
 
 
-def _resolve_stats_path(spec: "ContractSpec") -> Path:
+def _resolve_stats_path(spec: "ContractSpec") -> Path | None:
+    """Return the resolved on-disk path for action_stats.json, or None if
+    the contract opts out of client-side normalization."""
+    if spec.response.action.normalization.method == "none":
+        return None
     sr = spec.response.action.normalization.stats_ref
-    if sr is None or spec.response.action.normalization.method == "none":
-        raise ValueError("action normalization is not configured (method=none)")
+    if sr is None:
+        raise ValueError(
+            "action.normalization.method != 'none' but stats_ref is missing"
+        )
     if sr.type == "vla_export":
         root = Path(os.environ.get("MIMICREC_VLA_DEST_ROOT",
                                    str(Path.home() / "vla-gemma-4" / "data" / "local"))).expanduser()
@@ -668,9 +717,13 @@ def _resolve_stats_path(spec: "ContractSpec") -> Path:
 Add to `ContractSpec`:
 
 ```python
-def resolve_action_stats(self) -> dict:
-    """Load action_stats.json and assert length matches sum(action.components dims)."""
+def resolve_action_stats(self) -> dict | None:
+    """Load action_stats.json and assert length matches sum(action.components dims).
+    Returns None when normalization is disabled (method='none'), so callers
+    (lifecycle, ActionDecoder) can pass through unconditionally."""
     path = _resolve_stats_path(self)
+    if path is None:
+        return None                                  # method=none → no stats needed
     if not path.exists():
         raise FileNotFoundError(f"action_stats.json not found: {path}")
     stats = json.loads(path.read_text())
@@ -686,7 +739,7 @@ def resolve_action_stats(self) -> dict:
 
 - [ ] **Step 4: Verify pass**
 
-Expected: 9 passed (6 + 3 new).
+Expected: 11 passed (7 + 4 new).
 
 - [ ] **Step 5: Commit**
 
@@ -716,8 +769,10 @@ from mimicrec.kinematics.fk import FKService, KinematicsConfig
 
 
 def _cfg() -> KinematicsConfig:
+    from pathlib import Path
+    urdf = Path(__file__).resolve().parents[2] / "configs/urdf/so101/so101.urdf"
     return KinematicsConfig(
-        urdf_path="configs/urdf/so101/so101.urdf",
+        urdf_path=str(urdf),
         target_frame="gripper_frame_link",
         joint_names=["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll"],
     )
@@ -733,7 +788,7 @@ def test_fk_service_returns_4x4_matrix():
 def test_fk_service_retains_cfg():
     cfg = _cfg()
     fk = FKService(cfg)
-    assert fk._cfg is cfg
+    assert fk.cfg is cfg            # public attribute — IKService(fk.cfg) is the supported call
 
 
 def test_fk_service_pose_still_works():
@@ -756,7 +811,7 @@ def test_fk_service_pose_still_works():
           from lerobot.model.kinematics import RobotKinematics
           from lerobot.utils.rotation import Rotation
 
-          self._cfg = cfg                                # ← NEW: retain for IKService reuse
+          self.cfg = cfg                                # ← NEW: public attr; IKService(fk.cfg)
           urdf = str(Path(cfg.urdf_path).resolve())
           self._k = RobotKinematics(
               urdf_path=urdf,
@@ -807,8 +862,13 @@ from mimicrec.kinematics.ik import IKService
 
 @pytest.fixture
 def cfg() -> KinematicsConfig:
+    # Build an absolute URDF path so the test passes regardless of pytest cwd
+    # (existing FK tests run from `backend/` cwd; this protects future moves).
+    from pathlib import Path
+    urdf = Path(__file__).resolve().parents[2] / "configs/urdf/so101/so101.urdf"
+    assert urdf.exists(), f"URDF not found at {urdf}"
     return KinematicsConfig(
-        urdf_path="configs/urdf/so101/so101.urdf",
+        urdf_path=str(urdf),
         target_frame="gripper_frame_link",
         joint_names=[
             "shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll",
@@ -1367,7 +1427,7 @@ class FakeFK:
 
 def test_decode_zero_delta_chunk_round_trips():
     spec = ContractSpec.from_yaml_text(YAML_CONTRACT)
-    dec = ActionDecoder(spec=spec, fk=FakeFK(), ik=FakeIK(), narm=5)
+    dec = ActionDecoder(spec=spec, fk=FakeFK(), ik=FakeIK(), narm=5, action_stats=None)
     raw = {"actions": [
         [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5],
         [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5],
@@ -1376,6 +1436,71 @@ def test_decode_zero_delta_chunk_round_trips():
     assert len(chunk) == 2
     assert chunk[0].gripper == 0.5
     assert chunk[0].ik_failed is False
+
+
+def test_decode_mean_std_de_normalization():
+    """Critical safety test: de-normalize must apply BEFORE building T_delta.
+    Without this, a normalized 1.0 from the VLA gets treated as 1.0 m of motion.
+    With mean=0, std=0.001, a normalized 1.0 should map to 0.001 m (1 mm)."""
+    import yaml as _yaml
+    d = _yaml.safe_load(YAML_CONTRACT)
+    d["response"]["action"]["normalization"] = {"method": "mean_std"}
+    spec = ContractSpec.from_yaml_text(_yaml.safe_dump(d))
+
+    # mean=0, std=0.001 (typical SO-101-scale stats); 7-dim ee_delta + gripper
+    stats = {"mean": [0.0]*7, "std": [0.001]*7}
+
+    captured_T = []
+    class CaptureIK:
+        def solve(self, T, seed):
+            captured_T.append(T.copy())
+            return seed.copy(), True
+
+    dec = ActionDecoder(spec=spec, fk=FakeFK(), ik=CaptureIK(), narm=5, action_stats=stats)
+    # Send a normalized action with x=+1.0 (i.e. +1 std away from mean).
+    # Expected physical x = 0 + 1.0 * 0.001 = 0.001 m, NOT 1.0 m.
+    raw = {"actions": [[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5]]}
+    dec.decode(raw, current_state=_state())
+    # FakeFK returns identity, so T_curr = I, T_next = I @ T_delta = T_delta.
+    # Position component must equal de-normalized 0.001, not raw 1.0.
+    assert abs(captured_T[0][0, 3] - 0.001) < 1e-9, \
+        f"de-normalize FAILED: expected 0.001 m, got {captured_T[0][0,3]} m"
+
+
+def test_decode_minmax_neg1_pos1_de_normalization():
+    """method=minmax_neg1_pos1: arr in [-1, +1] → physical [low, high].
+    mean=0.0 represents the midpoint, std doubles as half-range."""
+    import yaml as _yaml
+    d = _yaml.safe_load(YAML_CONTRACT)
+    d["response"]["action"]["normalization"] = {"method": "minmax_neg1_pos1"}
+    spec = ContractSpec.from_yaml_text(_yaml.safe_dump(d))
+    # Convention: stats hold mean & std where physical = mean + arr * std (so for
+    # minmax-±1, std == half-range and mean == midpoint). MVP keeps this single
+    # interpretation; alternative scalings can be added later via stats_ref.
+    stats = {"mean": [0.0]*7, "std": [0.005]*7}
+
+    captured_T = []
+    class CaptureIK:
+        def solve(self, T, seed):
+            captured_T.append(T.copy())
+            return seed.copy(), True
+
+    dec = ActionDecoder(spec=spec, fk=FakeFK(), ik=CaptureIK(), narm=5, action_stats=stats)
+    raw = {"actions": [[-1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5]]}  # min of range
+    dec.decode(raw, current_state=_state())
+    assert abs(captured_T[0][0, 3] - (-0.005)) < 1e-9
+
+
+def test_decode_unknown_normalization_method_raises():
+    import yaml as _yaml
+    d = _yaml.safe_load(YAML_CONTRACT)
+    d["response"]["action"]["normalization"] = {"method": "none"}
+    spec = ContractSpec.from_yaml_text(_yaml.safe_dump(d))
+    # Patch in an invalid method post-load to test decoder hardening.
+    spec.response.action.normalization.method = "magic"  # type: ignore
+    dec = ActionDecoder(spec=spec, fk=FakeFK(), ik=FakeIK(), narm=5, action_stats=None)
+    with pytest.raises(ValueError, match="normalization"):
+        dec.decode({"actions": [[0.0]*7]}, current_state=_state())
 ```
 
 - [ ] **Step 2: Run to fail.**
@@ -1416,6 +1541,39 @@ class ActionDecoder:
     fk: FKLike
     ik: IKLike
     narm: int
+    # action_stats: dict with `mean` (list[float]) and `std` (list[float]) of length
+    # equal to sum(action.components dims), or None when normalization=='none'.
+    # Lifecycle (Task 16) wires this from `contract.resolve_action_stats()`.
+    action_stats: dict | None = None
+
+    def __post_init__(self) -> None:
+        method = self.spec.response.action.normalization.method
+        if method == "none":
+            self._action_mean = None
+            self._action_std = None
+        else:
+            if self.action_stats is None:
+                raise ValueError(
+                    f"action_stats required when normalization.method='{method}'"
+                )
+            self._action_mean = np.asarray(self.action_stats["mean"], dtype=np.float64)
+            self._action_std = np.asarray(self.action_stats["std"], dtype=np.float64)
+
+    def _de_normalize(self, arr: np.ndarray) -> np.ndarray:
+        """Convert a normalized action vector to physical units.
+        For BOTH `mean_std` and `minmax_neg1_pos1` we apply `physical = mean + arr * std`:
+          - mean_std: stats hold population mean/std → straightforward.
+          - minmax_neg1_pos1: by convention, stats encode midpoint (mean) and
+            half-range (std), so arr ∈ [-1, +1] maps to [mean-std, mean+std].
+            See `vla_compat/stats.py` for how stats are produced.
+        Servers that already produce physical units should set
+        `normalization.method: none` in their contract."""
+        method = self.spec.response.action.normalization.method
+        if method == "none":
+            return arr
+        if method in ("mean_std", "minmax_neg1_pos1"):
+            return self._action_mean + arr * self._action_std
+        raise ValueError(f"unknown normalization.method: '{method}'")
 
     def decode(self, response_body: dict, current_state: RobotState) -> list[StepAction]:
         actions = self._extract_actions(response_body)
@@ -1424,11 +1582,12 @@ class ActionDecoder:
         chunk: list[StepAction] = []
         for raw in actions:
             arr = np.asarray(raw, dtype=np.float64)
-            ee_delta_norm = arr[:6]
-            gripper_raw = float(arr[6]) if arr.shape[0] >= 7 else None
-            # MVP: normalization=none → de-normalize is identity
-            pos = ee_delta_norm[:3]
-            axisangle = ee_delta_norm[3:6]
+            arr_phys = self._de_normalize(arr)             # ← critical: de-normalize FIRST
+            ee_delta_phys = arr_phys[:6]
+            gripper_raw = float(arr_phys[6]) if arr_phys.shape[0] >= 7 else None
+            # pose.units is validated to "meter_axisangle_rad" at contract load time.
+            pos = ee_delta_phys[:3]
+            axisangle = ee_delta_phys[3:6]
             T_delta = _to_T(pos, axisangle)
             if self.spec.response.action.frame == "ee_local":
                 T_next = T_curr @ T_delta
@@ -1463,13 +1622,13 @@ class ActionDecoder:
         raise ValueError(f"unknown gripper.kind: {kind}")
 ```
 
-- [ ] **Step 4: Verify pass** — 1 passed.
+- [ ] **Step 4: Verify pass** — 4 passed (zero-delta + mean_std + minmax + unknown method).
 
 - [ ] **Step 5: Commit**
 
 ```
 git add backend/mimicrec/inference/action_decoder.py tests/unit/test_inference_action_decoder.py
-git commit -m "feat(inference): ActionDecoder ee_delta chain"
+git commit -m "feat(inference): ActionDecoder ee_delta chain + de-normalize"
 ```
 
 ### Task 12: Action decoder gripper kinds + frame variants + IK fail hold
@@ -1486,7 +1645,7 @@ def test_gripper_binary_kind():
         "units: normalized_0_1", "units: binary_threshold_0p5",
     )
     spec = ContractSpec.from_yaml_text(yaml_bin)
-    dec = ActionDecoder(spec=spec, fk=FakeFK(), ik=FakeIK(), narm=5)
+    dec = ActionDecoder(spec=spec, fk=FakeFK(), ik=FakeIK(), narm=5, action_stats=None)
     raw = {"actions": [[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.7]]}
     chunk = dec.decode(raw, current_state=_state())
     assert chunk[0].gripper == 1.0
@@ -1495,7 +1654,7 @@ def test_gripper_binary_kind():
 def test_gripper_delta_kind_accumulates():
     yaml_delta = YAML_CONTRACT.replace("kind: absolute", "kind: delta")
     spec = ContractSpec.from_yaml_text(yaml_delta)
-    dec = ActionDecoder(spec=spec, fk=FakeFK(), ik=FakeIK(), narm=5)
+    dec = ActionDecoder(spec=spec, fk=FakeFK(), ik=FakeIK(), narm=5, action_stats=None)
     raw = {"actions": [[0.0]*6 + [0.1]]}
     state = _state(); state.gripper_pos = 0.4
     chunk = dec.decode(raw, current_state=state)
@@ -1533,6 +1692,14 @@ git commit -m "test(inference): action decoder gripper kinds + IK-fail hold"
 - Create: `backend/mimicrec/inference/client.py`
 - Test: `tests/unit/test_inference_client.py`
 - Reference: spec §7.2 (snapshot extras), §6 (request/response shape)
+
+- [ ] **Step 0: Verify `Frame` and `Stamped` field names**
+
+```
+cd backend && grep -A3 'class Frame\|class Stamped\|class RobotState' mimicrec/types.py | head -40
+```
+
+Expected: `Frame.image: np.ndarray`, `Stamped(value=T, t_mono_ns=int)`. If the actual field name differs (e.g. `Frame.frame` or `Frame.array`), update the test fixture and `client._build_request_body` accordingly.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1791,6 +1958,17 @@ def _slot(value, t=0):
     return s
 
 
+async def _wait_for(predicate, timeout=5.0, step=0.02):
+    """Event-driven polling. Returns True when predicate fires, False on timeout.
+    Avoids fixed `asyncio.sleep(0.3)` waits that break under CI load."""
+    deadline = asyncio.get_event_loop().time() + timeout
+    while asyncio.get_event_loop().time() < deadline:
+        if predicate():
+            return True
+        await asyncio.sleep(step)
+    return False
+
+
 async def test_producer_pushes_one_chunk():
     buf = ChunkBuffer.create()
     state_slot = _slot(RobotState(
@@ -1808,47 +1986,51 @@ async def test_producer_pushes_one_chunk():
         safety=safety, session=session,
         metrics=FakeMetrics(), error_bus=FakeErrorBus(),
     ))
-    # wait until first push
-    for _ in range(50):
-        await asyncio.sleep(0.02)
-        if buf.depth() > 0:
-            break
-    assert buf.depth() > 0
+    assert await _wait_for(lambda: buf.depth() > 0)
     assert safety.new_chunk_calls == 1
     session.stopped.set()
     await task
 
 
 async def test_producer_recovers_from_initial_state_none():
+    """Producer must self-re-arm in the not-ready path, then push as soon as
+    state appears. Don't sleep-and-hope — observe that the FakeClient was
+    called a non-trivial number of times before state arrives, and depth
+    becomes > 0 once it does."""
     buf = ChunkBuffer.create()
     state_holder = type("H", (), {"value": None})()
     state_slot = type("S", (), {"peek": lambda self: state_holder.value})()
     instr_slot = _slot("hi")
     cam_slot = _slot(Frame(image=np.zeros((16,16,3), dtype=np.uint8), t_mono_ns=1))
     session = FakeSession()
+    client = FakeClient()
     task = asyncio.create_task(run_inference_producer(
-        client=FakeClient(), decoder=FakeDecoder(), buffer=buf,
+        client=client, decoder=FakeDecoder(), buffer=buf,
         camera_slots={"front": cam_slot},
         robot_state_slot=state_slot, instruction_slot=instr_slot,
         safety=FakeSafety(), session=session,
         metrics=FakeMetrics(), error_bus=FakeErrorBus(),
     ))
-    await asyncio.sleep(0.3)  # let it loop while not_ready
-    assert buf.depth() == 0
-    # Now make state available
+    # Producer should NOT push (state is None) but MUST keep cycling — so
+    # buffer stays empty for a meaningful window and client is never called.
+    assert await _wait_for(lambda: buf.depth() == 0 and client.calls == 0,
+                           timeout=0.5) is True
+    # Make state available; producer must observe and push.
     state_holder.value = Stamped(value=RobotState(
         joint_pos=np.zeros(5), joint_vel=np.zeros(5),
         joint_effort=np.zeros(5), gripper_pos=0.0, t_mono_ns=1), t_mono_ns=1)
-    for _ in range(50):
-        await asyncio.sleep(0.02)
-        if buf.depth() > 0:
-            break
-    assert buf.depth() > 0
+    assert await _wait_for(lambda: buf.depth() > 0)
     session.stopped.set()
     await task
 
 
-async def test_producer_recovers_after_3_errors():
+async def test_producer_recovers_after_3_errors(monkeypatch):
+    """3 consecutive transport errors then success. Patch the module-level
+    backoff base to keep the test fast in CI (default 0.1s × 2^3 ≈ 0.7s of
+    cumulative real-time waits, which is acceptable but borderline)."""
+    from mimicrec.inference import producer as _prod_mod
+    monkeypatch.setattr(_prod_mod, "INITIAL_BACKOFF_S", 0.01, raising=False)
+
     buf = ChunkBuffer.create()
     state_slot = _slot(RobotState(
         joint_pos=np.zeros(5), joint_vel=np.zeros(5),
@@ -1865,16 +2047,14 @@ async def test_producer_recovers_after_3_errors():
         safety=FakeSafety(), session=session,
         metrics=FakeMetrics(), error_bus=err,
     ))
-    for _ in range(150):
-        await asyncio.sleep(0.05)
-        if buf.depth() > 0:
-            break
-    assert buf.depth() > 0
+    assert await _wait_for(lambda: buf.depth() > 0, timeout=5.0)
     assert client.calls >= 4
     assert len(err.errors) == 3
     session.stopped.set()
     await task
 ```
+
+(The producer module exposes `INITIAL_BACKOFF_S = 0.1` at module level so tests can override it without polluting other producer parameters.)
 
 - [ ] **Step 2: Run to fail.**
 
@@ -1895,13 +2075,24 @@ def classify(e: Exception) -> str:
     return "transport"
 
 
+INITIAL_BACKOFF_S = 0.1                          # module-level so tests can monkeypatch
+NOT_READY_RETRY_S = 0.05
+
+
 async def run_inference_producer(
     client, decoder, buffer, camera_slots, robot_state_slot, instruction_slot,
     safety, session, metrics, error_bus,
+    publish_event=None,                          # Callable[[dict], Awaitable[None]] | None
 ):
+    """`publish_event` is the WS broadcast hook (inference_hub.publish). It is
+    optional so unit tests can pass `None` and verify metrics+buffer behavior
+    without requiring a full hub. Task 19 wires the real hub via lifecycle."""
     buffer.request_refill_now()
-    backoff_s = 0.1
-    NOT_READY_RETRY_S = 0.05
+    backoff_s = INITIAL_BACKOFF_S
+
+    async def _publish(event: dict) -> None:
+        if publish_event is not None:
+            await publish_event(event)
 
     async def stop_aware_sleep(seconds: float) -> bool:
         try:
@@ -1945,15 +2136,27 @@ async def run_inference_producer(
             pushed = buffer.try_push_chunk(chunk, generation=gen)
             if not pushed:
                 metrics.inc("inference_chunk_dropped_stale")
+                await _publish({"type": "inference_chunk_dropped_stale",
+                                "generation_was": gen,
+                                "current_generation": buffer.current_generation()})
                 buffer.request_refill_now()
             else:
                 safety.on_new_chunk()
-                metrics.observe("inference_latency_ms",
-                                (time.perf_counter() - t0) * 1000)
-                backoff_s = 0.1
+                latency_ms = (time.perf_counter() - t0) * 1000
+                metrics.observe("inference_latency_ms", latency_ms)
+                await _publish({"type": "inference_done",
+                                "latency_ms": latency_ms,
+                                "chunk_size": len(chunk)})
+                await _publish({"type": "buffer_state",
+                                "depth": buffer.depth(),
+                                "origin_size": buffer.origin_size(),
+                                "generation": buffer.current_generation()})
+                backoff_s = INITIAL_BACKOFF_S
         except Exception as e:
             metrics.inc("inference_error_count")
-            await error_bus.publish_inference_error(kind=classify(e), message=str(e))
+            kind = classify(e)
+            await error_bus.publish_inference_error(kind=kind, message=str(e))
+            await _publish({"type": "inference_error", "kind": kind, "message": str(e)})
             if await stop_aware_sleep(backoff_s):
                 return
             backoff_s = min(backoff_s * 2, 1.0)
@@ -2117,8 +2320,10 @@ async def start_inference_session(
     self.session.locked_instruction = None
     self.session.producer_paused = False
 
-    # Build inference subsystem
-    action_stats = contract.resolve_action_stats() if contract.response.action.normalization.method != "none" else None
+    # Build inference subsystem.
+    # `resolve_action_stats()` returns None when normalization.method == "none",
+    # so we can call it unconditionally and pass the result straight through.
+    action_stats = contract.resolve_action_stats()
     self._chunk_buffer = ChunkBuffer.create(
         prefetch_threshold=contract.loop.prefetch_threshold,
     )
@@ -2137,8 +2342,12 @@ async def start_inference_session(
     camera_slots = {name: self._cameras.latest(name) for name in self._cameras._cameras}
 
     fk = self._fk
-    ik = IKService(fk._cfg)  # share KinematicsConfig (FKService retains _cfg as of Task 5b)
-    decoder = ActionDecoder(spec=contract, fk=fk, ik=ik, narm=self._robot.dof)
+    ik = IKService(fk.cfg)  # share KinematicsConfig (FKService.cfg public, see Task 5b)
+    decoder = ActionDecoder(
+        spec=contract, fk=fk, ik=ik,
+        narm=self._robot.dof,
+        action_stats=action_stats,         # ← critical: de-normalize stats flow into decoder
+    )
     client = InferenceClient(spec=contract)
     self._inference_client = client
 
@@ -2241,22 +2450,18 @@ async def test_start_inference_against_mock_robot(monkeypatch, tmp_path, fake_vl
     - SessionMode = INFERENCE, SessionState = READY
     - dispatcher + writer present
     """
-    # Use the in-test fixture from conftest that sets up a SessionManager
-    # with mock_robot adapter and ensures a configs/inference/test.yaml exists.
-    # NOTE: This test depends on conftest.py providing a `make_session_manager`
-    # fixture; if not present, add one in tests/conftest.py.
-    ...
+    pytest.skip("complete after Task 26 (fake_vla_server fixture + make_session_manager)")
 
 
 async def test_409_when_session_already_active():
-    ...
+    pytest.skip("complete after Task 26")
 
 
 async def test_pause_and_resume_helpers():
-    ...
+    pytest.skip("complete after Task 26")
 ```
 
-(Keep this test high-level to avoid duplicating producer-loop tests. Verifies wiring + tasks exist + 409 path.)
+(Use `pytest.skip(...)` rather than bare `...`. A bare ellipsis silently passes — making the placeholder invisible in CI. `skip` makes the deferred status explicit. Replace each `pytest.skip` with the real test body when Task 26's fixtures are in place.)
 
 - [ ] **Step 2: Run the integration test against the fake server fixture (Task 26 prerequisite)** — defer if `fake_vla_server` fixture is not yet set up; revisit after Task 26.
 
@@ -2364,18 +2569,24 @@ async def stop_inference(request: Request):
 @router.put("/session/inference/instruction")
 async def update_instruction(request: Request, body: UpdateInstructionRequest):
     sm = get_session_manager_or_none(request.app)
-    if sm is None:
-        raise HTTPException(409, "no active session")
+    if sm is None or sm.session.mode != SessionMode.INFERENCE:
+        raise HTTPException(409, "no inference session active")
+    if sm._chunk_buffer is None:
+        raise HTTPException(409, "no inference session active")             # paranoia
     if sm.session.state == SessionState.RECORDING:
         raise HTTPException(409, "cannot update instruction during RECORDING")
+    if sm.session.state not in (SessionState.READY, SessionState.REVIEW):
+        raise HTTPException(409, f"cannot update instruction in state={sm.session.state.value}")
+
     # Per spec §8.1 Q17: PUT during READY just flushes and re-arms the producer.
     # We do NOT pause the producer here — that helper (pause_producer_and_flush)
-    # is for REVIEW only, where we don't want a fresh fetch until the operator
-    # commits/discards. During READY we WANT the producer to immediately fetch
-    # a chunk under the new instruction.
+    # is for REVIEW entry only. During REVIEW the producer is already paused
+    # by lifecycle.pause_producer_and_flush(); flushing again here is a no-op
+    # data-wise but bumps generation, which is harmless (already in_flight chunks
+    # were dropped at REVIEW entry). The next chunk fetch resumes when the
+    # operator commits/discards (lifecycle.resume_producer()).
     sm._instruction_slot.set(body.text, t_mono_ns=0)
     flushed = sm._chunk_buffer.flush()
-    # Publish to inference_hub
     await sm.inference_hub.publish({
         "type": "instruction_updated", "text": body.text, "flushed_steps": flushed,
     })
@@ -2474,9 +2685,21 @@ In `lifecycle.py`:
 - `episode_save` / `episode_discard` (REVIEW → READY): publish `{"type": "instruction_released"}` and `{"type": "episode_phase", "phase": "ready"}`. Calls `resume_producer()` (which does NOT publish either).
 - `_inference_watchdog_task`: publish `{"type": "watchdog_timeout", ...}` on fire, then `episode_stop(stop_reason="timeout")`.
 
-In `producer.py`: surface `inference_started` / `inference_done` / `inference_error` / `inference_chunk_dropped_stale` / `clamps_per_chunk`.
+In `producer.py`: the `publish_event` callable is already a constructor parameter (Task 14). Lifecycle (Task 16) passes `inference_hub.publish` here so the producer emits `inference_done` / `inference_error` / `inference_chunk_dropped_stale` / `buffer_state` events without importing the hub directly.
 
-(Plumb the hub via a callback/queue; don't import the hub directly in `inference/` to keep the module standalone — pass an `events: asyncio.Queue` or a `publish_event: Callable[[dict], Awaitable]` parameter.)
+Specifically Task 16's `start_inference_session` becomes:
+
+```python
+self._producer_task = asyncio.create_task(run_inference_producer(
+    client=client, decoder=decoder, buffer=self._chunk_buffer,
+    camera_slots=camera_slots, robot_state_slot=self._robot_state_slot,
+    instruction_slot=self._instruction_slot, safety=self._inference_safety,
+    session=self.session, metrics=self._metrics, error_bus=self._error_bus,
+    publish_event=self.inference_hub.publish,         # ← wires the hub in
+))
+```
+
+`clamps_per_chunk` is emitted by `run_inference_control_loop` at chunk boundaries (sample `safety.clamps_in_current_chunk()` after each `pop_next` that pulled the last step of a chunk). Add a `publish_event` parameter to `run_inference_control_loop` symmetrically.
 
 - [ ] **Step 4: Commit**
 
@@ -2567,13 +2790,23 @@ async def _run_watchdog(self, max_sec: float) -> None:
         pass
 ```
 
-- [ ] **Step 3: Add 3 columns to `recording/metadata.py`**
-
-Find the function that writes episode metadata:
+- [ ] **Step 3a (investigation, mandatory before Step 3b)**: locate the episode-metadata write path. The spec assumes `recording/metadata.py` but the LeRobot v3-native migration (spec §13) means the writer surface may have moved. Run all of these and capture the results in a scratch note before editing:
 
 ```
-cd backend && grep -n 'episodes.jsonl\|episodes_jsonl\|append_episode\|write_episode\|episode_record\|episodes_dir' mimicrec/recording/metadata.py
+cd backend
+grep -rn 'episodes\.jsonl\|episodes_jsonl\|append_episode\|write_episode' mimicrec/recording/
+grep -rn 'episodes_dir\|file-000\.parquet\|chunk-000' mimicrec/recording/
+grep -rn 'tasks\.parquet\|upsert_task' mimicrec/recording/
 ```
+
+Confirm:
+- Where the per-episode record is appended (one location, or multiple?)
+- Whether the format is JSONL or parquet (or both)
+- What dataclass / dict shape the writer accepts
+
+Only then proceed to Step 3b. If the write happens in 2+ places, **stop and surface to the user** rather than guess.
+
+- [ ] **Step 3b: Add 3 columns to the identified writer**
 
 Then add (preserve existing keys):
 
@@ -2893,22 +3126,30 @@ async def test_inference_60s_against_mock_robot(make_inference_session, fake_vla
 
 @pytest.mark.e2e
 async def test_review_tail_within_max_delta(make_inference_session, fake_vla_server):
+    """Verify the slow-stop tail after REVIEW entry never exceeds max_delta.
+
+    The captured list accumulates commands during READY/RECORDING too, so READY
+    setpoints (potentially clamped to ~max_delta themselves) would dominate
+    `max(deltas)` over the full series. We must isolate the REVIEW window
+    explicitly — that is the property the spec requires (slow-stop tail
+    discipline)."""
     sm = await make_inference_session(instruction="x", contract_url=fake_vla_server.url)
     captured: list[np.ndarray] = []
     sm._command_goal_slot.subscribe(lambda c: captured.append(c.value.q.copy()))
 
     await sm.episode_start()
     await asyncio.sleep(0.5)
-    await sm.episode_stop()
 
-    # Capture next 100ms of dispatched commands and assert deltas <= max_delta
-    t0 = time.monotonic()
-    while time.monotonic() - t0 < 0.1:
-        await asyncio.sleep(0.01)
+    review_entry_idx = len(captured)             # ← snapshot the list cursor
+    await sm.episode_stop()                       # → REVIEW
+    await asyncio.sleep(0.1)                      # let slow-stop tick a few times
 
-    deltas = [np.abs(captured[i+1] - captured[i]).max() for i in range(len(captured)-1)]
+    post_review = captured[review_entry_idx:]
+    deltas = [np.abs(post_review[i+1] - post_review[i]).max()
+              for i in range(len(post_review) - 1)]
     if deltas:
-        assert max(deltas) <= 2.0 + 1e-6, "REVIEW-tail must respect max_joint_delta_per_step_deg"
+        assert max(deltas) <= 2.0 + 1e-6, \
+            "REVIEW-tail must respect max_joint_delta_per_step_deg"
 ```
 
 - [ ] **Step 2: Add `e2e` marker to `pytest.ini`**
