@@ -704,7 +704,7 @@ git commit -m "feat(inference): contract stats_ref resolution + length validatio
 **Files:**
 - Create: `backend/mimicrec/kinematics/ik.py`
 - Test: `tests/unit/test_inference_ik_service.py`
-- Reference: spec §7.5; lerobot at `lerobot/src/lerobot/robots/so_follower/robot_kinematic_processor.py`
+- Reference: spec §7.5; lerobot at `lerobot/src/lerobot/model/kinematics.py:84` (`RobotKinematics.inverse_kinematics`). FKService already wraps the same class for FK — mirror its construction (`backend/mimicrec/kinematics/fk.py:30-43`). Note `KinematicsConfig.target_frame` (MimicRec) maps to `target_frame_name` (lerobot).
 
 - [ ] **Step 1: Write the failing test**
 
@@ -718,28 +718,43 @@ from mimicrec.kinematics.ik import IKService
 
 
 @pytest.fixture
-def ik() -> IKService:
-    cfg = KinematicsConfig(
+def cfg() -> KinematicsConfig:
+    return KinematicsConfig(
         urdf_path="configs/urdf/so101/so101.urdf",
         target_frame="gripper_frame_link",
         joint_names=[
             "shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll",
         ],
     )
+
+
+@pytest.fixture
+def ik(cfg) -> IKService:
     return IKService(cfg)
 
 
-def test_ik_round_trip(ik):
+@pytest.fixture
+def fk(cfg) -> FKService:
+    return FKService(cfg)
+
+
+def test_ik_round_trip(ik, fk):
     """FK(q) -> T, IK(T, seed=q) -> q' should be close to q."""
     q = np.array([10.0, -20.0, 30.0, -10.0, 5.0])
-    fk = FKService(ik._cfg)
-    T = fk.matrix(q)
+    T = fk._k.forward_kinematics(q)  # access underlying RobotKinematics for the 4x4
     q2, ok = ik.solve(T, seed=q)
     assert ok
     assert np.allclose(q, q2, atol=0.5)
-```
 
-(The FKService API may need small adjustment — use whatever method on `FKService` returns the 4×4 matrix. Read `kinematics/fk.py:24+` to confirm. If only `pose()` exists, derive `T` from `(pos, rotvec)` via `scipy.spatial.transform.Rotation` for the test.)
+
+def test_ik_unreachable_returns_not_ok(ik):
+    """A pose far outside the workspace should fail the FK round-trip check."""
+    T_far = np.eye(4)
+    T_far[:3, 3] = [10.0, 0.0, 0.0]  # 10 m away — clearly unreachable
+    q_seed = np.zeros(5)
+    q, ok = ik.solve(T_far, seed=q_seed)
+    assert not ok
+```
 
 - [ ] **Step 2: Run to fail**
 
@@ -750,52 +765,66 @@ Expected: `ModuleNotFoundError: mimicrec.kinematics.ik`.
 ```python
 from __future__ import annotations
 import numpy as np
+
 from mimicrec.kinematics.fk import KinematicsConfig
-from lerobot.robots.so_follower.robot_kinematic_processor import (
-    InverseKinematicsEEToJoints,
-)
 
 
 class IKService:
     """Inverse kinematics for SO-101-class arms.
 
-    Wraps lerobot's `InverseKinematicsEEToJoints` so that joint values are
-    in **degrees** (matching `FKService` and `SO101Adapter`). Returns
-    `(q, success)` — failures are surfaced as `success=False` rather than
-    exceptions, so the inference action decoder can hold the seed on fail.
+    Wraps `lerobot.model.kinematics.RobotKinematics.inverse_kinematics`
+    (the same class FKService wraps for FK). Joint values are in **degrees**.
+    Returns `(q_solved, success)`. Because placo always returns *a*
+    solution, success is computed by a FK round-trip: position error < 2 cm
+    AND orientation error < 0.1 rad (≈6°). Failures don't raise — they are
+    surfaced as `success=False` so the action decoder can hold the seed.
     """
 
+    POS_TOL_M = 0.02
+    ANG_TOL_RAD = 0.1
+
     def __init__(self, cfg: KinematicsConfig):
+        from lerobot.model.kinematics import RobotKinematics
+
         self._cfg = cfg
-        self._impl = InverseKinematicsEEToJoints(
+        self._k = RobotKinematics(
             urdf_path=cfg.urdf_path,
-            target_frame=cfg.target_frame,
-            joint_names=list(cfg.joint_names),
+            target_frame_name=cfg.target_frame,
+            joint_names=cfg.joint_names,
         )
 
     def solve(self, T_target: np.ndarray, seed: np.ndarray) -> tuple[np.ndarray, bool]:
         """Solve IK for a 4x4 target pose. `seed` is in degrees.
 
-        Returns (q_solved_degrees, success). On non-convergence, returns (seed, False).
+        Returns (q_solved_degrees, success).
         """
         try:
-            q = self._impl.solve(T_target, q_seed=seed)
-            return np.asarray(q, dtype=np.float64), True
+            q = self._k.inverse_kinematics(seed.astype(np.float64), T_target.astype(np.float64))
+            q = np.asarray(q, dtype=np.float64)
         except Exception:
             return seed.copy(), False
+
+        # Verify by FK round-trip
+        T_actual = self._k.forward_kinematics(q)
+        pos_err = float(np.linalg.norm(T_target[:3, 3] - T_actual[:3, 3]))
+        R_err = T_target[:3, :3].T @ T_actual[:3, :3]
+        cos_ang = (np.trace(R_err) - 1.0) / 2.0
+        ang_err = float(np.arccos(np.clip(cos_ang, -1.0, 1.0)))
+        ok = (pos_err < self.POS_TOL_M) and (ang_err < self.ANG_TOL_RAD)
+        return q, ok
 ```
 
-(If lerobot's `InverseKinematicsEEToJoints` exposes a different method name — read the source — adjust the call. If it requires radians, convert with `np.deg2rad(seed)` before and `np.rad2deg(q)` after.)
+(`KinematicsConfig.target_frame` is the MimicRec field name, mapped to lerobot's `target_frame_name` parameter — same mapping FKService uses at `kinematics/fk.py:38`.)
 
 - [ ] **Step 4: Verify pass**
 
-Expected: 1 passed.
+Expected: 2 passed.
 
 - [ ] **Step 5: Commit**
 
 ```
 git add backend/mimicrec/kinematics/ik.py tests/unit/test_inference_ik_service.py
-git commit -m "feat(kinematics): IKService wraps lerobot SO-follower IK"
+git commit -m "feat(kinematics): IKService wraps RobotKinematics.inverse_kinematics"
 ```
 
 ---
@@ -2066,7 +2095,7 @@ def _robot_safety_config(self) -> dict | None:
     }
 ```
 
-(The `_robot_config_dict` is populated when the session manager is built — verify by reading the existing code that loads `configs/robot/<name>.yaml`. If the dict isn't currently retained, add `self._robot_config_dict = robot_cfg` at the relevant `__init__` point.)
+(The `_robot_config_dict` is populated when the session manager is built — verify by reading the existing code that loads `configs/robot/<name>.yaml`. If the dict isn't currently retained, add `self._robot_config_dict = robot_cfg` at the relevant `__init__` point. **See "Open implementation questions" at the bottom of this plan — confirm before coding.**)
 
 - [ ] **Step 5: Add stop + pause/resume helpers**
 
@@ -2103,6 +2132,7 @@ git commit -m "feat(session): lifecycle scaffolding for SessionMode.INFERENCE"
 **Files:**
 - Test: `tests/integration/test_inference_lifecycle.py`
 - Reference: spec §8.1, §8.2 (409 if active session)
+- **Ordering note**: this task's tests need the `fake_vla_server` fixture from **Task 26** and the `make_inference_session` helper from `tests/conftest.py` (also added during Task 26). Implement Task 26 first, then return here. The skeleton can be checked in earlier as a placeholder if helpful.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -2247,9 +2277,13 @@ async def update_instruction(request: Request, body: UpdateInstructionRequest):
         raise HTTPException(409, "no active session")
     if sm.session.state == SessionState.RECORDING:
         raise HTTPException(409, "cannot update instruction during RECORDING")
+    # Per spec §8.1 Q17: PUT during READY just flushes and re-arms the producer.
+    # We do NOT pause the producer here — that helper (pause_producer_and_flush)
+    # is for REVIEW only, where we don't want a fresh fetch until the operator
+    # commits/discards. During READY we WANT the producer to immediately fetch
+    # a chunk under the new instruction.
     sm._instruction_slot.set(body.text, t_mono_ns=0)
-    flushed = sm.pause_producer_and_flush()  # but during READY don't pause; see lifecycle docs
-    sm.resume_producer()
+    flushed = sm._chunk_buffer.flush()
     # Publish to inference_hub
     await sm.inference_hub.publish({
         "type": "instruction_updated", "text": body.text, "flushed_steps": flushed,
@@ -2444,6 +2478,14 @@ async def _run_watchdog(self, max_sec: float) -> None:
 
 - [ ] **Step 3: Add 3 columns to `recording/metadata.py`**
 
+Find the function that writes episode metadata:
+
+```
+cd backend && grep -n 'episodes.jsonl\|episodes_jsonl\|append_episode\|write_episode\|episode_record\|episodes_dir' mimicrec/recording/metadata.py
+```
+
+Then add (preserve existing keys):
+
 ```python
 # In whichever function writes the episodes record:
 record = {
@@ -2454,7 +2496,7 @@ record = {
 }
 ```
 
-(Use the actual function name and structure — verify by reading `recording/metadata.py`.)
+(`source` is `None` for legacy/teleop episodes — additive, non-breaking.)
 
 - [ ] **Step 4: Verify pass.**
 

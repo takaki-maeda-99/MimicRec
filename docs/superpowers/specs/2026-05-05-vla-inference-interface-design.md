@@ -532,7 +532,7 @@ inference_safety:                              # REQUIRED for inference sessions
 
 ### 7.5 IKService
 
-Wraps `lerobot.robots.so_follower.robot_kinematic_processor.InverseKinematicsEEToJoints`. Degrees in/out, mirroring `FKService` conventions. Joint order from robot config. Returns `(q_solved, success: bool)`. Failures don't raise — `success=False` is propagated as `ik_failed` through `StepAction`.
+Wraps `lerobot.model.kinematics.RobotKinematics.inverse_kinematics(current_joint_pos_deg, desired_ee_pose_4x4)` — the same `RobotKinematics` class that `FKService` already wraps for forward kinematics. Degrees in/out, joint order from `KinematicsConfig.joint_names`. Returns `(q_solved, success: bool)`. The placo solver always returns *some* solution, so "success" is computed by a FK round-trip: `success = position_error < 0.02 m AND orientation_error < 0.1 rad` (≈6°). Failures don't raise — `success=False` is propagated as `ik_failed` through `StepAction`. (Earlier drafts of this spec referenced `lerobot.robots.so_follower.robot_kinematic_processor.InverseKinematicsEEToJoints`; that class is an action-processor step, not an IK solver, and is not used here.)
 
 ### 7.6 run_inference_control_loop
 
