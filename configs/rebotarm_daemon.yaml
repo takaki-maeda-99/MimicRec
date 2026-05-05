@@ -1,6 +1,14 @@
 arm_config: configs/rebotarm/arm.yaml   # provided by reBotArm_control_py user setup
 zmq_address: tcp://*:5558
 control_rate_hz: 500
+# Optional: world gravity expressed in the arm's base frame, m/s².
+# Default (omit this line) is [0.0, 0.0, -9.81] = upright/flat mount
+# (base +z = world up, base +x = forward, base +y = left).
+# For tilted mounts, rotate world gravity into the base frame and put
+# the result here. Examples:
+#   45° tilt to the right (about base +x) → [0.0, -6.937, -6.937]
+#   45° tilt forward       (about base +y) → [+6.937, 0.0, -6.937]
+gravity_in_base: [-6.937, 0.0, -6.937]   # 右 45° 傾斜マウント (manual verification)
 safety:
   joint_pos_min_rad: [-3.14, -3.14, -3.14, -3.14, -3.14, -3.14]
   joint_pos_max_rad: [3.14, 3.14, 3.14, 3.14, 3.14, 3.14]

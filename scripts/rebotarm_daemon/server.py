@@ -27,6 +27,7 @@ import numpy as np
 import zmq
 
 from reBotArm_control_py.actuator import Gripper, RobotArm
+from reBotArm_control_py.dynamics import load_dynamics_model, set_gravity
 
 from rebotarm_daemon.config import DaemonConfig
 from rebotarm_daemon.controllers import (
@@ -111,6 +112,20 @@ def _ramp_disable(arm: RobotArm, n: int, secs: float = 1.0, rate_hz: int = 100) 
 
 
 def run_server(cfg: DaemonConfig) -> None:
+    # Apply the configured mount-aware gravity vector to the cached
+    # dynamics model BEFORE any controller is constructed.
+    # controllers.py (GravityCompController.compute,
+    # PositionController.compute) and _ramp_disable in this file all
+    # call compute_generalized_gravity() without an explicit model, so
+    # they hit this cached instance. Setting it here once means the
+    # downstream controllers see the right gravity from the first tick.
+    model = load_dynamics_model()
+    set_gravity(model, tuple(cfg.gravity_in_base))
+    print(
+        f"[rebotarm-daemon] gravity_in_base = {cfg.gravity_in_base}",
+        flush=True,
+    )
+
     arm = RobotArm(cfg.arm_config)
     arm.connect()
     arm.enable()
