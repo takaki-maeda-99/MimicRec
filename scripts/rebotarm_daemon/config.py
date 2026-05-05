@@ -31,6 +31,14 @@ class GravityCompParams:
     kd: List[float] = field(
         default_factory=lambda: [1.5, 1.5, 1.0, 0.6, 0.4, 0.2]
     )
+    # Per-joint Coulomb friction compensation, applied as
+    # ``friction_tau_nm * sign(qdot)`` once ``|qdot|`` exceeds
+    # ``vel_deadband_rad_s``. Cancels reducer stiction so the arm feels
+    # light when back-driven by hand. Set entries to 0 to disable per
+    # joint. Deadband prevents sign() chatter at standstill — per-joint
+    # because noisy proximal joints need a wider dead zone than distal.
+    friction_tau_nm: List[float] = field(default_factory=lambda: [0.0] * 6)
+    vel_deadband_rad_s: List[float] = field(default_factory=lambda: [0.05] * 6)
 
 
 @dataclass
@@ -74,6 +82,12 @@ class GripperParams:
     control_rate_hz: int = 100
     position_kp: float = 8.0
     position_kd: float = 1.0
+    # Constant feed-forward torque applied in GRAVITY_COMP (and POSITION
+    # before any target has arrived) on top of the friction comp. Sign
+    # picks the direction — set positive or negative depending on which
+    # way is "open" for the gripper hardware. 0.0 disables (default,
+    # preserves prior behavior).
+    open_bias_tau_nm: float = 0.0
 
 
 @dataclass

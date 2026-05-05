@@ -53,15 +53,22 @@ class GravityCompController:
 
     def step(self, arm) -> None:
         q = arm.get_positions()
+        qdot = arm.get_velocities()
         tau_g = compute_generalized_gravity(q=q)
+        friction_tau = np.asarray(self._params.friction_tau_nm, dtype=float)
+        deadband = np.asarray(self._params.vel_deadband_rad_s, dtype=float)
+        # sign(qdot) gated by per-joint deadband — zero inside
+        # [-deadband[i], +deadband[i]] so we don't chatter at standstill.
+        sign = np.where(np.abs(qdot) > deadband, np.sign(qdot), 0.0)
+        tau = tau_g + friction_tau * sign
         if self._safety is not None:
-            tau_g = self._safety.clamp_torque(tau_g)
+            tau = self._safety.clamp_torque(tau)
         arm.mit(
             pos=q,
             vel=np.zeros(self._n),
             kp=np.asarray(self._params.kp, dtype=float),
             kd=np.asarray(self._params.kd, dtype=float),
-            tau=tau_g,
+            tau=tau,
             request_feedback=True,
         )
 

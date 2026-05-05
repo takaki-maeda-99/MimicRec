@@ -170,6 +170,9 @@ def run_server(cfg: DaemonConfig) -> None:
                 tau = gripper_params.friction_tau_nm * (1.0 if vel > 0 else -1.0)
             else:
                 tau = 0.0
+            # Constant open-direction bias so the gripper drifts toward
+            # open when not actively held. Added on top of friction comp.
+            tau += gripper_params.open_bias_tau_nm
             g.mit(pos=pos, vel=0.0, kp=0.0, kd=gripper_params.kd, tau=tau)
 
         gripper.start_control_loop(

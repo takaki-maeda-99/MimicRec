@@ -85,7 +85,22 @@ async def create_session_from_request(app, req) -> SessionManager:
         teleop = instantiate_adapter(str(teleop_cfg._target_), **teleop_kwargs)
     if mapper_name:
         mapper_cfg = OmegaConf.load(configs_root / "mapper" / f"{mapper_name}.yaml")
-        mapper = instantiate_adapter(str(mapper_cfg._target_))
+        mapper_kwargs = {k: v for k, v in OmegaConf.to_container(mapper_cfg).items()
+                        if k not in ("_target_",)}
+        # Resolve URDF / package-dir paths relative to the repo root
+        # (mirrors the robot kinematics block below).
+        for k in ("so101_urdf_path", "rebotarm_urdf_path"):
+            v = mapper_kwargs.get(k)
+            if isinstance(v, str) and not Path(v).is_absolute():
+                mapper_kwargs[k] = str((configs_root.parent / v).resolve())
+        pkg_dirs = mapper_kwargs.get("rebotarm_package_dirs")
+        if isinstance(pkg_dirs, list):
+            mapper_kwargs["rebotarm_package_dirs"] = [
+                str((configs_root.parent / d).resolve())
+                if isinstance(d, str) and not Path(d).is_absolute() else d
+                for d in pkg_dirs
+            ]
+        mapper = instantiate_adapter(str(mapper_cfg._target_), **mapper_kwargs)
 
     # Cameras
     cams = {}
