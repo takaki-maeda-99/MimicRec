@@ -10,7 +10,7 @@ For the corresponding client side, see `backend/mimicrec/inference/contract.py` 
 
 A small HTTP server that MimicRec calls in a closed control loop. On each call you receive **camera images + proprioceptive state + a natural-language instruction**, and you return a short **chunk of future actions** the robot should execute. MimicRec will run those actions through a safety filter and dispatch them to a real arm at 15–30 Hz.
 
-There is **no retry**, no idempotency, no batching. Latency matters. Wrong output shapes get rejected. Wrong output magnitudes get clamped (safe) but break performance.
+There is **no retry**, no idempotency, no batching. Latency matters. Wrong output shapes are partially coerced: extra columns past index 6 are ignored, and a missing column 6 (gripper) becomes `None`; rows with fewer than 6 ee_delta floats will fail or produce wrong motion when the pose is constructed. See "Current client gaps" below for what is *not* yet validated. Wrong output magnitudes get clamped (safe) but break performance.
 
 ---
 
@@ -20,7 +20,7 @@ There is **no retry**, no idempotency, no batching. Latency matters. Wrong outpu
 - Request: `Content-Type: application/json`
 - Response: `Content-Type: application/json`
 - Status: `200 OK` on success, anything else is treated as an inference error (logged, dropped, slow-stop kicks in).
-- Auth: optional `Authorization: Bearer <token>`. Token is interpolated from a client-side env var.
+- Auth: client passes through whatever headers the contract YAML declares under `endpoint.headers` verbatim (env vars in values are interpolated). `Authorization: Bearer <token>` is just the conventional choice in the example config — any header name/value the server expects works.
 - Concurrency: client uses `max_inflight=1` in MVP. You can serialize requests.
 
 ## Latency budget
@@ -55,16 +55,23 @@ Field names below are **examples**; the contract YAML on the client side maps yo
 
   // --- Proprioceptive state ---
   // Flat array of floats. The order is dictated by the contract's
-  // `request.state.components` list. For SO-101 the typical config is
+  // `request.state.components` list. For SO-101 with
   //   components: [joint_pos, gripper_pos]
-  // which produces length = (Narm arm joints + 1 packed gripper) + 1 gripper_pos
-  // i.e. 6 + 1 = 7 floats for SO-101. Confirm with the contract YAML.
-  // Units: joint_pos in DEGREES; gripper_pos normalized [-1, +1].
-  // Normalization: contract may declare `method: none` (raw values, what you see
-  // here) OR `mean_std`/`minmax_neg1_pos1` (client pre-normalizes). The
-  // CLIENT side does the normalization; you receive whatever the contract
-  // says. Default for MVP: method=none, raw values.
-  "proprio": [-8.31, -93.71, 96.44, 61.05, 20.88, 4.26, 4.26],
+  // the array is length 7: SO-101's `read_state()` returns joint_pos as a
+  // 6-vector (5 arm joints + 1 packed gripper, all DEGREES) followed by
+  // gripper_pos as a single scalar. **CAVEAT** (real-code gotcha, not
+  // aspirational doc): SO101Adapter.read_state currently leaves
+  // RobotState.gripper_pos as 0.0 — the gripper value lives in joint_pos[5].
+  // So today the actual proprio is [j1..j5, gripper_packed, 0.0]. If you
+  // condition on element 6 hoping for a redundant gripper signal, you'll
+  // be reading a constant zero. This is a SO-101 adapter quirk, not the
+  // contract's intent.
+  // Units: joint_pos in DEGREES; gripper_pos normalized [-1, +1] (when populated).
+  // Normalization: the contract YAML allows declaring
+  // `request.state.normalization`, but the CLIENT DOES NOT APPLY IT TODAY
+  // (see "Current client gaps" below). Today the values you receive are
+  // always RAW. Plan accordingly.
+  "proprio": [-8.31, -93.71, 96.44, 61.05, 20.88, 4.26, 0.00],
 
   // --- Natural-language instruction ---
   // UTF-8 string. May be empty in pre-start states; the client guards against
@@ -82,8 +89,9 @@ Field names below are **examples**; the contract YAML on the client side maps yo
   // The client sends per-source monotonic timestamps so you can verify the
   // images and state were captured at compatible times. If the spread is
   // huge (>1 chunk_duration), the chunk you produce is going to be stale
-  // by the time it dispatches — you can either return a smaller chunk or
-  // include a higher `done` value to encourage abort. Optional.
+  // by the time it dispatches — return a smaller / safer chunk in that case.
+  // (The `done` field is NOT a runtime escape hatch today — see
+  // "Current client gaps".) Optional.
   "_t_mono_ns": {
     "state": 488772663507753,
     "image:front": 488772692294906,
@@ -118,13 +126,13 @@ Field names below are **examples**; the contract YAML on the client side maps yo
     ...
   ],
 
-  // --- Optional model-side termination signal ---
-  // OMIT this field entirely if your model does not predict task completion.
-  // If present, type and threshold are declared in the contract YAML.
-  // - type=float (default): client compares `value >= threshold`
-  // - type=bool: client coerces to bool directly
-  // Scope is "chunk" in MVP — you're saying "this WHOLE chunk completes the
-  // task". Per-step done is reserved but not implemented.
+  // --- Optional model-side termination signal (NOT yet consumed at runtime) ---
+  // OMIT this field entirely; it is currently a no-op. The contract schema
+  // accepts `done.path / type / threshold / scope / action_on_done`, but
+  // the producer does not read the field today. See "Current client gaps".
+  // The shape is reserved as: type=float compares `value >= threshold`,
+  // type=bool coerces directly, scope="chunk" applies to the whole chunk.
+  // Per-step done is rejected at load time.
   "done": 0.7
 }
 ```
@@ -163,11 +171,23 @@ These are validated/exploited by `ActionDecoder`. Violations produce wrong robot
    - `minmax_neg1_pos1`: same formula. Convention: stats encode midpoint (`mean`) and half-range (`std`), so values in `[-1, +1]` map to `[mean - std, mean + std]`. Confirm your stats producer agrees.
    - **If the contract declares any non-`none` mode, the stats file MUST exist and its `mean`/`std` arrays MUST have length = sum(action.components dims) = 7 for the default SO-101 setup.** Mismatched length is a hard load-time error.
 
-7. **Chunk size** matches `response.chunk.expected_size` (default 16). The contract's `on_size_mismatch` rule controls what happens otherwise:
-   - `use_actual` (default): client takes whatever you return.
-   - `reject`: client treats any size mismatch as an inference error and drops the chunk. Slow-stop until the next request.
+7. **Chunk size** SHOULD match `response.chunk.expected_size` (default 16). The contract declares `on_size_mismatch: use_actual | reject`, but **the client does not actually enforce `reject` today** — it always uses what you return (see "Current client gaps" below). Don't rely on chunk-size validation as a safety check; produce the right size yourself.
 
 ---
+
+## Current client gaps (declared by the contract, NOT enforced today)
+
+The contract YAML accepts these fields but the client doesn't act on them yet. If your design assumes any of these will save you, **it won't** — handle them yourself or ignore them.
+
+1. **Request-side state normalization is not applied.** `request.state.normalization.method` is parseable as `none | mean_std | minmax_neg1_pos1`, but `_build_request_body()` always sends raw `RobotState` values. If your model needs normalized proprio, do the normalization server-side until this gap is closed.
+
+2. **The `done` signal is parsed but not consumed.** You can include `done` in your response and the contract YAML can declare `done.path/type/threshold/scope/action_on_done`, but the producer doesn't read the field at runtime. `auto_stop` will not actually stop the episode today. The `gemma_libero_v1.yaml` example has the `done` block commented out for this reason.
+
+3. **`response.chunk.on_size_mismatch: reject` is not enforced.** The decoder/producer accept whatever chunk you return; size mismatch is silent. Only `use_actual` semantics are implemented.
+
+4. **Wrong action-row width is not validated as a hard error.** `ActionDecoder.decode` slices `arr[:6]` for the ee_delta and reads `arr[6]` only if `arr.shape[0] >= 7`. Specifically: extra columns past index 6 are silently ignored; a missing gripper column (length 6) becomes `gripper=None` and the safety filter holds the last gripper command; **rows shorter than 6 floats will not be caught** — the pose construction will use a too-short slice and produce wrong motion. Validate your row width yourself.
+
+These are tracked as future-work items in `docs/superpowers/specs/2026-05-05-vla-inference-interface-design.md` §13. Don't design around them; design assuming they're not there.
 
 ## What MimicRec does on the client side (so you don't have to)
 
@@ -205,7 +225,7 @@ This means **transient errors are graceful but visible**. A 500 every other requ
 ```python
 # A skeleton you can fill in with your real model.
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 import base64
 import io
 import numpy as np
@@ -215,12 +235,17 @@ app = FastAPI()
 
 
 class PredictRequest(BaseModel):
+    # populate_by_name + alias is required because pydantic v2 reserves
+    # leading-underscore names as private fields. The wire format uses
+    # `_t_mono_ns` (underscore-prefixed); we expose it as `t_mono_ns`.
+    model_config = ConfigDict(populate_by_name=True)
+
     image_primary: str
     image_wrist: str | None = None
     proprio: list[float]
     instruction: str
     model_version: str | None = None
-    _t_mono_ns: dict | None = None
+    t_mono_ns: dict | None = Field(default=None, alias="_t_mono_ns")
 
 
 class PredictResponse(BaseModel):
