@@ -43,7 +43,7 @@ export default function EpisodesPage() {
                     to={`/datasets/${ds}/episodes/${ep.episode_index}/replay`}
                     className="text-blue-600 hover:underline font-medium"
                   >
-                    {ep.episode_index}
+                    {ep.display_index}
                   </Link>
                 </td>
                 <td className="py-3 text-gray-600">{ep.task}</td>
@@ -60,7 +60,7 @@ export default function EpisodesPage() {
                   <button
                     className="text-red-600 hover:text-red-800 text-sm"
                     onClick={() => {
-                      if (confirm(`Delete episode ${ep.episode_index}?`)) {
+                      if (confirm(`Delete episode #${ep.display_index}?`)) {
                         deleteMutation.mutate(ep.episode_index);
                       }
                     }}

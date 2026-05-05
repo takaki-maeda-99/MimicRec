@@ -22,8 +22,8 @@ class DatasetPaths:
 
     def episode_video(self, chunk_index: int, cam_name: str, episode_index: int) -> Path:
         return (
-            self.videos_dir / f"chunk-{chunk_index:03d}"
-            / f"observation.images.{cam_name}" / f"episode_{episode_index:06d}.mp4"
+            self.videos_dir / f"observation.images.{cam_name}"
+            / f"chunk-{chunk_index:03d}" / f"episode_{episode_index:06d}.mp4"
         )
 
 
@@ -82,8 +82,8 @@ def init_dataset(ds_root: Path, fps: int, joint_names: list[str], camera_names: 
         "video_files_size_in_mb": 0,
         "fps": fps,
         "splits": {"train": "0:0"},
-        "data_path": "data/chunk-{chunk_index:03d}/episode_{episode_index:06d}.parquet",
-        "video_path": "videos/{video_key}/chunk-{chunk_index:03d}/episode_{episode_index:06d}.mp4",
+        "data_path": "data/chunk-{chunk_index:03d}/episode_{file_index:06d}.parquet",
+        "video_path": "videos/{video_key}/chunk-{chunk_index:03d}/episode_{file_index:06d}.mp4",
         "features": features,
     }
     (p.meta_dir / "info.json").write_text(json.dumps(info, indent=2))

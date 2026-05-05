@@ -6,6 +6,7 @@ import RecordPage from "./pages/RecordPage";
 import EpisodesPage from "./pages/EpisodesPage";
 import ReplayPage from "./pages/ReplayPage";
 import SettingsPage from "./pages/SettingsPage";
+import { InferencePage } from "./pages/InferencePage";
 
 const queryClient = new QueryClient();
 
@@ -21,6 +22,7 @@ export default function App() {
             <Route path="/datasets/:ds/episodes" element={<EpisodesPage />} />
             <Route path="/datasets/:ds/episodes/:idx/replay" element={<ReplayPage />} />
             <Route path="/settings" element={<SettingsPage />} />
+            <Route path="/inference" element={<InferencePage />} />
           </Route>
         </Routes>
       </BrowserRouter>

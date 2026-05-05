@@ -10,7 +10,7 @@ if TYPE_CHECKING:
 def sample_bundle_to_row(
     bundle: SampleBundle,
     episode_start_t_mono_ns: int,
-    video_frame_index: dict[str, int],
+    video_frame_index: dict[str, int] | None = None,
     frame_index: int = 0,
     episode_index: int = 0,
     global_index: int = 0,
@@ -52,6 +52,8 @@ def sample_bundle_to_row(
     if fk is not None:
         n = fk.n_kin_joints
         act_ee_pos, act_ee_rotvec = fk.pose(bundle.action.q[:n])
+        if act_gripper is None and bundle.action.q.shape[0] > n:
+            act_gripper = float(bundle.action.q[n])
 
     if obs_ee_pos is not None:
         row["observation.state.ee_pos"] = obs_ee_pos
@@ -63,10 +65,11 @@ def sample_bundle_to_row(
         row["action.ee_rotvec"] = act_ee_rotvec
     if act_gripper is not None:
         row["action.gripper_pos"] = act_gripper
-    for cam_name, frame_idx in video_frame_index.items():
-        row[f"observation.images.{cam_name}.video_frame_index"] = frame_idx
-        stamped = bundle.frames.get(cam_name)
-        row[f"observation.images.{cam_name}.t_mono_ns"] = (
-            stamped.t_mono_ns if stamped is not None else 0
-        )
+    if video_frame_index:
+        for cam_name, frame_idx in video_frame_index.items():
+            row[f"observation.images.{cam_name}.video_frame_index"] = frame_idx
+            stamped = bundle.frames.get(cam_name)
+            row[f"observation.images.{cam_name}.t_mono_ns"] = (
+                stamped.t_mono_ns if stamped is not None else 0
+            )
     return row

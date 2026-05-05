@@ -121,13 +121,43 @@ async def session_config(request: Request):
 
 @router.post("/robot/estop")
 async def robot_estop(request: Request):
+    """Emergency stop. Hardware torque-off FIRST, then software abort.
+
+    Order is critical:
+    1. **Hardware torque-off immediately**. The arm is the priority — every
+       millisecond between the operator's intent and hardware response is
+       motion the safety filter could not prevent. Do this BEFORE any
+       async cleanup that could block (task cancel, writer drain, httpx
+       close), even if it means the software side runs for a tick longer.
+    2. **Latch the estop flag** so a concurrent `start_inference_session`
+       can observe it and refuse to spawn new inference tasks. This closes
+       the race where E-stop fires during Phase 2 of inference start.
+    3. **Software cleanup** (stop_inference_session) — cancels producer/
+       control_loop/dispatcher/writer, closes the HTTP client, resets
+       session.mode → TELEOP. After this, the operator must explicitly
+       call /robot/clear_estop AND start a new inference session.
+    """
+    from mimicrec.types import SessionMode
     sm = get_session_manager_or_none(request.app)
     if sm is None:
         raise InvalidTransitionError("no active session")
     adapter = sm._robot
     if not hasattr(adapter, "estop"):
         raise InvalidTransitionError("active robot adapter has no estop()")
-    return await adapter.estop()
+
+    # 1. Hardware torque-off immediately. Don't wait on anything.
+    estop_result = await adapter.estop()
+
+    # 2. Latch synchronously so any concurrent start_inference_session
+    #    can observe it. (Synchronous flip — no `await`.)
+    sm._estop_latched = True
+
+    # 3. Software cleanup if we were running inference. This may take a
+    #    moment (task cancel + writer drain + httpx close) but happens
+    #    AFTER the hardware is already torqued off.
+    if sm.session.mode == SessionMode.INFERENCE:
+        await sm.stop_inference_session()
+    return estop_result
 
 
 @router.post("/robot/clear_estop")
@@ -138,4 +168,8 @@ async def robot_clear_estop(request: Request):
     adapter = sm._robot
     if not hasattr(adapter, "clear_estop"):
         raise InvalidTransitionError("active robot adapter has no clear_estop()")
-    return await adapter.clear_estop()
+    result = await adapter.clear_estop()
+    # Clear the software latch too, so a follow-up start_inference_session
+    # is allowed. Operator must still explicitly start a new session.
+    sm._estop_latched = False
+    return result

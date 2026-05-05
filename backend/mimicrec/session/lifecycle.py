@@ -20,6 +20,15 @@ from mimicrec.session.dispatcher import run_command_dispatcher
 from mimicrec.session.replay_safety import ReplaySafetyConfig
 from mimicrec.session.state import Session
 from mimicrec.recording.writer import run_writer
+from mimicrec.inference.chunk_buffer import ChunkBuffer
+from mimicrec.inference.safety import InferenceSafety
+from mimicrec.inference.producer import run_inference_producer
+from mimicrec.inference.control_loop import run_inference_control_loop
+from mimicrec.inference.action_decoder import ActionDecoder
+from mimicrec.inference.client import InferenceClient
+from mimicrec.inference.contract import ContractSpec
+from mimicrec.kinematics.ik import IKService
+import numpy as np
 
 logger = logging.getLogger(__name__)
 from mimicrec.types import (
@@ -122,6 +131,31 @@ class SessionManager:
         # mode switch was performed (e.g. adapter doesn't support modes /
         # set_mode failed soft).
         self._mode_before_replay: RobotMode | None = None
+
+        # Inference subsystem (populated by start_inference_session)
+        self._robot_config_dict: dict = self._resolved_config.get("robot", {})
+        self._instruction_slot: LatestValue[str] = LatestValue()
+        # Serialize session-mode transitions (start_inference_session,
+        # stop_inference_session, replay_start, replay_stop). Without this
+        # lock, two concurrent HTTP handlers can both pass their READY/mode
+        # guards between the awaits inside a transition, leading to
+        # interleaved task spawns / cancels.
+        self._mode_transition_lock: asyncio.Lock = asyncio.Lock()
+        # E-stop latch. Set synchronously by /robot/estop; cleared by
+        # /robot/clear_estop. start_inference_session refuses to spawn
+        # while latched, so an E-stop arriving mid-Phase-2 prevents the
+        # inference tasks from coming up after hardware torque-off.
+        self._estop_latched: bool = False
+        self._chunk_buffer: ChunkBuffer | None = None
+        self._inference_safety: InferenceSafety | None = None
+        self._producer_task: asyncio.Task | None = None
+        self._inference_watchdog_task: asyncio.Task | None = None
+        self._inference_client: InferenceClient | None = None
+        self._inference_config_name: str | None = None
+        self._last_stop_reason: str | None = None
+
+        from mimicrec.api.ws.inference_hub import InferenceHub
+        self.inference_hub: InferenceHub | None = None
 
     # ------------------------------------------------------------------
     # Properties
@@ -349,13 +383,37 @@ class SessionManager:
         self._episode_start_t_mono_ns = time.monotonic_ns()
         self._episode_stop_t_mono_ns = None
         self.session.state = SessionState.RECORDING
+        if self.session.mode == SessionMode.INFERENCE:
+            instr_stamped = self._instruction_slot.peek()
+            self.session.locked_instruction = instr_stamped.value if instr_stamped is not None else None
+            if self.inference_hub is not None:
+                await self.inference_hub.publish({
+                    "type": "instruction_locked",
+                    "instruction": self.session.locked_instruction,
+                })
+                await self.inference_hub.publish({"type": "episode_phase", "phase": "recording"})
+            max_sec = getattr(self, "_session_config", None)
+            max_sec = (max_sec.max_episode_seconds if max_sec else None) or 120
+            self._inference_watchdog_task = asyncio.create_task(self._run_watchdog(max_sec))
 
-    async def episode_stop(self) -> None:
+    async def episode_stop(self, *, stop_reason: str = "manual") -> None:
         """RECORDING -> REVIEW. Drain writer, clear pending slot, finalize."""
+        # Validate state FIRST so a mistaken stop in READY/REVIEW doesn't
+        # cancel the watchdog or pause the producer before the 409. (The
+        # watchdog task can only be active during RECORDING anyway, so the
+        # earlier ordering was safe in practice — this is a defensive cleanup.)
         if self.session.state != SessionState.RECORDING:
             raise InvalidTransitionError(
                 f"episode_stop requires RECORDING, got {self.session.state}"
             )
+        if self._inference_watchdog_task is not None:
+            self._inference_watchdog_task.cancel()
+            self._inference_watchdog_task = None
+        if self.session.mode == SessionMode.INFERENCE:
+            self.pause_producer_and_flush()
+            self._last_stop_reason = stop_reason
+            if self.inference_hub is not None:
+                await self.inference_hub.publish({"type": "episode_phase", "phase": "review"})
         # Move out of RECORDING so the control loop stops enqueuing new
         # bundles. The pending slot stays non-None until drain finishes —
         # flipping it earlier caused the writer to drop every queued
@@ -393,11 +451,20 @@ class SessionManager:
             now_mono = time.monotonic_ns()
             # Make sure tasks.parquet has an entry for this task name so the
             # task -> task_index mapping is consistent across episodes.
+            # For INFERENCE mode the instruction was locked at episode_start
+            # (spec §8.3); use that exact value rather than self._instruction
+            # which may have been updated mid-episode by a stale code path.
             from mimicrec.recording.metadata import upsert_task
+            persisted_instruction = (
+                self.session.locked_instruction
+                if self.session.mode == SessionMode.INFERENCE
+                and self.session.locked_instruction is not None
+                else self._instruction
+            )
             upsert_task(
                 self._dataset_root / "meta",
                 self._task,
-                self._instruction,
+                persisted_instruction,
             )
             # Use the stop timestamp (set when state→REVIEW), not now_mono,
             # so duration reflects only the RECORDING window. Reviewing for
@@ -407,7 +474,7 @@ class SessionManager:
             self._pending.save(metadata_extra={
                 "episode_index": self._episode_index,
                 "task": self._task,
-                "instruction": self._instruction,
+                "instruction": persisted_instruction,
                 "robot": self._robot.name,
                 "teleop": self._teleop.name if self._teleop else None,
                 "mapper": "identity",
@@ -425,10 +492,19 @@ class SessionManager:
                 "session_boot_t_mono_ns": 0,
                 "resolved_config": self._resolved_config,
                 "recorded_at": datetime.now(timezone.utc).isoformat(),
+                "source": self.session.mode.value if self.session.mode == SessionMode.INFERENCE else None,
+                "inference_config": self._inference_config_name if self.session.mode == SessionMode.INFERENCE else None,
+                "stop_reason": self._last_stop_reason if self.session.mode == SessionMode.INFERENCE else None,
             })
             self._pending = None
             self._episode_index += 1
         self.session.state = SessionState.READY
+        if self.session.mode == SessionMode.INFERENCE:
+            self.resume_producer()
+            self.session.locked_instruction = None
+            if self.inference_hub is not None:
+                await self.inference_hub.publish({"type": "instruction_released"})
+                await self.inference_hub.publish({"type": "episode_phase", "phase": "ready"})
 
     async def episode_discard(self) -> None:
         """REVIEW -> READY. Discard pending episode."""
@@ -440,9 +516,30 @@ class SessionManager:
             self._pending.discard()
             self._pending = None
         self.session.state = SessionState.READY
+        if self.session.mode == SessionMode.INFERENCE:
+            self.resume_producer()
+            self.session.locked_instruction = None
+            if self.inference_hub is not None:
+                await self.inference_hub.publish({"type": "instruction_released"})
+                await self.inference_hub.publish({"type": "episode_phase", "phase": "ready"})
+
+    async def _run_watchdog(self, max_sec: float) -> None:
+        try:
+            await asyncio.sleep(max_sec)
+            if self.inference_hub is not None:
+                await self.inference_hub.publish({
+                    "type": "watchdog_timeout", "elapsed_sec": max_sec,
+                })
+            await self.episode_stop(stop_reason="timeout")
+        except asyncio.CancelledError:
+            pass
 
     async def replay_start(self, trajectory) -> None:
         """READY (not replay_active) -> spawn replay task."""
+        async with self._mode_transition_lock:
+            await self._replay_start_locked(trajectory)
+
+    async def _replay_start_locked(self, trajectory) -> None:
         from mimicrec.session.replay import run_replay
         if self.session.state != SessionState.READY:
             raise InvalidTransitionError(
@@ -523,6 +620,10 @@ class SessionManager:
 
     async def replay_stop(self) -> None:
         """Clear replay_active, await replay task, restore prior robot mode."""
+        async with self._mode_transition_lock:
+            await self._replay_stop_locked()
+
+    async def _replay_stop_locked(self) -> None:
         self.session.replay_active = False
         if self._replay_task and not self._replay_task.done():
             self._replay_task.cancel()
@@ -535,6 +636,314 @@ class SessionManager:
         # way out, but in race cases (cancel before the finally fires) we
         # call it again here to make sure mode is restored.
         await self._restore_mode_after_replay()
+
+    # ------------------------------------------------------------------
+    # Inference safety config helper
+    # ------------------------------------------------------------------
+
+    def _robot_safety_config(self) -> dict | None:
+        """Read inference_safety: from the active robot's YAML config."""
+        cfg = (self._robot_config_dict or {}).get("inference_safety")
+        if cfg is None:
+            return None
+        joint_names = self._robot.joint_names
+        limits = cfg["joint_limits_deg"]
+        joint_min = np.array([limits[n][0] for n in joint_names])
+        joint_max = np.array([limits[n][1] for n in joint_names])
+        return {
+            "max_joint_delta_per_step_deg": cfg["max_joint_delta_per_step_deg"],
+            "slow_stop_ticks": cfg.get("slow_stop_ticks", 5),
+            "joint_min": joint_min,
+            "joint_max": joint_max,
+        }
+
+    # ------------------------------------------------------------------
+    # Inference session lifecycle
+    # ------------------------------------------------------------------
+
+    async def start_inference_session(
+        self,
+        contract: ContractSpec,
+        instruction: str,
+        inference_config_name: str,
+    ) -> None:
+        """Replaces start_recording_session for INFERENCE mode."""
+        async with self._mode_transition_lock:
+            await self._start_inference_session_locked(contract, instruction, inference_config_name)
+
+    async def _start_inference_session_locked(
+        self,
+        contract: ContractSpec,
+        instruction: str,
+        inference_config_name: str,
+    ) -> None:
+        # E-stop latch check: if /robot/estop was hit (even concurrently
+        # while we were waiting for the lock), refuse to start a new
+        # inference session. The operator must call /robot/clear_estop
+        # first to acknowledge the abort.
+        if self._estop_latched:
+            raise InvalidTransitionError(
+                "start_inference_session: E-stop is latched; clear it before starting"
+            )
+        if self.session.state != SessionState.READY:
+            raise InvalidTransitionError(
+                f"start_inference_session requires READY, got {self.session.state}"
+            )
+        if self.session.mode == SessionMode.INFERENCE:
+            raise InvalidTransitionError(
+                "start_inference_session: inference session already active"
+            )
+        # Replay parks references to self._command_goal_slot inside its task
+        # and may restore RobotMode at exit. If we replace the slot or change
+        # mode while replay is in flight, replay keeps writing to the now-
+        # detached old slot and may flip the robot back to GRAVITY_COMP after
+        # this method sets POSITION. Reject the transition until replay ends.
+        # NOTE: `session.replay_active` is set INSIDE run_replay() (replay.py
+        # line 53), not synchronously by replay_start(). So there is a window
+        # where _replay_task exists but replay_active==False — checking only
+        # the flag would let inference start race with a freshly-spawned
+        # replay task. Check the task reference too.
+        replay_task_alive = (
+            self._replay_task is not None and not self._replay_task.done()
+        )
+        if self.session.replay_active or replay_task_alive:
+            raise InvalidTransitionError(
+                "start_inference_session: replay is active; stop replay first"
+            )
+
+        # ============================================================
+        # PHASE 1: VALIDATE + CONSTRUCT (no side effects on existing tasks)
+        # ============================================================
+        # Build everything that can fail BEFORE we cancel teleop. If any of
+        # these raise, the existing teleop session keeps running and the
+        # caller sees a clean error. Without this ordering, a bad config
+        # would leave the session half-destroyed (teleop killed, inference
+        # not running).
+
+        # Robot config: inference_safety is mandatory.
+        safety_cfg = self._robot_safety_config()
+        if safety_cfg is None:
+            raise InvalidTransitionError("inference_safety block is required in robot config")
+        new_inference_safety = InferenceSafety(
+            max_delta=safety_cfg["max_joint_delta_per_step_deg"],
+            joint_min=safety_cfg["joint_min"],
+            joint_max=safety_cfg["joint_max"],
+            slow_stop_ticks=safety_cfg["slow_stop_ticks"],
+        )
+
+        # Stats resolution: returns None when method=none, raises on
+        # missing/malformed stats file.
+        action_stats = contract.resolve_action_stats()
+
+        # FK/IK: FKService is already constructed in __init__ (self._fk).
+        # IKService construction can fail if URDF load / placo init fails.
+        if self._fk is None:
+            raise InvalidTransitionError("FKService is not configured for this robot")
+        new_ik = IKService(self._fk.cfg)
+        new_decoder = ActionDecoder(
+            spec=contract, fk=self._fk, ik=new_ik,
+            narm=self._robot.dof,
+            action_stats=action_stats,
+        )
+        new_client = InferenceClient(spec=contract)
+        new_chunk_buffer = ChunkBuffer.create(
+            prefetch_threshold=contract.loop.prefetch_threshold,
+        )
+
+        # ============================================================
+        # PHASE 2: DESTRUCTIVE — past this point we don't roll back.
+        # ============================================================
+        # Re-check the E-stop latch one more time. The lock blocks
+        # /robot/estop's `await sm.stop_inference_session()` (because
+        # that also takes the lock), but `_estop_latched = True` itself
+        # is set synchronously before that — it can flip while we hold
+        # the lock from Phase 1's `resolve_action_stats()` etc.
+        if self._estop_latched:
+            raise InvalidTransitionError(
+                "start_inference_session: E-stop latched mid-start; aborting"
+            )
+        # Cancel tasks spawned by the prior teleop/handteach session.start().
+        # Those tasks share the slots/queues we're about to spawn fresh
+        # tasks against — letting both run causes 2 robot readers writing
+        # the state slot, 2 dispatchers commanding the robot, 2 writers
+        # consuming the recorder queue. Cancel + await for clean handoff.
+        prior_tasks = [
+            t for t in (
+                self._teleop_reader_task,
+                self._robot_reader_task,
+                self._control_loop_task,
+                self._dispatcher_task,
+                self._writer_task,
+            )
+            if t is not None and not t.done()
+        ]
+        for t in prior_tasks:
+            t.cancel()
+        if prior_tasks:
+            await asyncio.gather(*prior_tasks, return_exceptions=True)
+        self._teleop_reader_task = None
+        self._control_loop_task = None
+        self._dispatcher_task = None
+        self._writer_task = None
+        self._robot_reader_task = None
+
+        # Clear the command goal slot so the fresh dispatcher doesn't
+        # immediately replay whatever teleop left in it. The new inference
+        # control_loop will publish a safety-filtered command on its first
+        # tick (slow-stop or the first decoded chunk step).
+        self._command_goal_slot = LatestValue()
+
+        # If we bootstrapped from a HAND_TEACH session, the robot is in
+        # GRAVITY_COMP and will refuse joint commands. Switch to POSITION
+        # explicitly. (start() already does this at session boot for
+        # non-hand-teach modes, but the inference handoff was missing it.)
+        try:
+            await self._robot.set_mode(RobotMode.POSITION)
+        except (HardwareError, NotImplementedError):
+            logger.warning(
+                "robot adapter %r refused set_mode(POSITION) at inference start; proceeding",
+                self._robot.name,
+            )
+
+        # Commit the validated subsystem onto the SessionManager. From here
+        # on out, the session is in INFERENCE mode and any further error
+        # leaves it in a recoverable state (stop_inference_session can
+        # clean up).
+        self.session.mode = SessionMode.INFERENCE
+        self._inference_config_name = inference_config_name
+        # Update both the live slot (read by the producer) and the persisted
+        # attribute (read by episode_save → tasks.parquet).
+        self._instruction_slot.set(instruction, t_mono_ns=0)
+        self._instruction = instruction
+        self.session.locked_instruction = None
+        self.session.producer_paused = False
+        self._last_stop_reason = None
+        self._inference_safety = new_inference_safety
+        self._chunk_buffer = new_chunk_buffer
+        self._inference_client = new_client
+
+        # Spawn readers same as TELEOP, except teleop reader is NOT spawned
+        self._robot_reader_task = asyncio.create_task(self._run_robot_reader())
+        camera_slots = {name: self._cameras.latest(name) for name in self._cameras._cameras}
+        # Keep local refs for the spawn block (decoder, client, fk, ik above)
+        decoder = new_decoder
+        client = new_client
+
+        publish_event = self.inference_hub.publish if self.inference_hub else None
+
+        self._producer_task = asyncio.create_task(run_inference_producer(
+            client=client, decoder=decoder, buffer=self._chunk_buffer,
+            camera_slots=camera_slots, robot_state_slot=self._robot_state_slot,
+            instruction_slot=self._instruction_slot, safety=self._inference_safety,
+            session=self.session, metrics=self._metrics, error_bus=self._error_bus,
+            publish_event=publish_event,
+        ))
+        self._control_loop_task = asyncio.create_task(run_inference_control_loop(
+            session=self.session, fps=self._fps,
+            robot_state_slot=self._robot_state_slot, camera_slots=camera_slots,
+            chunk_buffer=self._chunk_buffer, safety=self._inference_safety,
+            command_goal_slot=self._command_goal_slot,
+            enqueue=self._recorder_queue.put_nowait,
+            clock=RealClock(), metrics=self._metrics,
+        ))
+        self._dispatcher_task = asyncio.create_task(run_command_dispatcher(
+            self._robot, self._command_goal_slot, self._error_bus, self.session.stopped,
+        ))
+        self._writer_task = asyncio.create_task(run_writer(
+            current_pending=self._current_pending,
+            queue=self._recorder_queue, metrics=self._metrics,
+            stopped=self.session.stopped, fk=self._fk,
+        ))
+
+    async def stop_inference_session(self) -> None:
+        async with self._mode_transition_lock:
+            await self._stop_inference_session_locked()
+
+    async def _stop_inference_session_locked(self) -> None:
+        """Inverse of start_inference_session. Cancels + awaits all spawned
+        tasks (including the watchdog), closes the HTTP client, clears the
+        inference-specific state, and resets `session.mode` so a follow-up
+        start_inference_session (or even a teleop session via end+restart)
+        can proceed cleanly. Without this, the next start hits the
+        "inference session already active" guard."""
+        # Cancel all tasks the inference start spawned, plus the watchdog.
+        # session.stopped acts as a soft hint to producer/control_loop; we
+        # also cancel directly so cancellation doesn't depend on the loops
+        # observing the flag.
+        self.session.stopped.set()
+        tasks = [
+            t for t in (
+                self._producer_task,
+                self._control_loop_task,
+                self._dispatcher_task,
+                self._writer_task,
+                self._robot_reader_task,
+                self._inference_watchdog_task,
+            )
+            if t is not None and not t.done()
+        ]
+        for t in tasks:
+            t.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        # Drop refs so a follow-up start_inference_session doesn't see stale
+        # task handles (the cleanup in start_inference_session itself reads
+        # these to decide what to cancel; if they point at done tasks the
+        # cancel/await is a no-op, but None is cleaner).
+        self._producer_task = None
+        self._control_loop_task = None
+        self._dispatcher_task = None
+        self._writer_task = None
+        self._robot_reader_task = None
+        self._inference_watchdog_task = None
+
+        if self._inference_client is not None:
+            await self._inference_client.aclose()
+            self._inference_client = None
+
+        # Drop inference-mode state so the SessionManager can either be
+        # ended cleanly or accept a new inference start.
+        self._chunk_buffer = None
+        self._inference_safety = None
+        self.session.locked_instruction = None
+        self.session.producer_paused = False
+        # Reset stopped so a follow-up start can re-arm it (Event() doesn't
+        # support .clear() at instance level on the existing Event — recreate).
+        self.session.stopped = asyncio.Event()
+        # Mode reverts to TELEOP (the default at SessionManager construction)
+        # so the "inference session already active" guard at the top of
+        # start_inference_session passes for a clean follow-up start.
+        self.session.mode = SessionMode.TELEOP
+
+    def pause_producer_and_flush(self) -> int:
+        """Order-locked: producer_paused FIRST, then flush.
+        Returns the flushed step count for telemetry."""
+        self.session.producer_paused = True
+        return self._chunk_buffer.flush() if self._chunk_buffer else 0
+
+    def resume_producer(self) -> None:
+        self.session.producer_paused = False
+        if self._chunk_buffer is not None:
+            self._chunk_buffer.request_refill_now()
+
+    def inference_state_snapshot(self) -> dict:
+        """Return the current INFERENCE-mode session state for polling clients.
+        Reads in-memory state only (no I/O). Returns {phase: pre_start} when not
+        currently in INFERENCE mode."""
+        if self.session.mode != SessionMode.INFERENCE:
+            return {"phase": "pre_start"}
+        instr = self._instruction_slot.peek()
+        return {
+            "phase": self.session.state.value,
+            "instruction": instr.value if instr is not None else None,
+            "locked_instruction": self.session.locked_instruction,
+            "buffer_depth": self._chunk_buffer.depth() if self._chunk_buffer else 0,
+            "buffer_origin": self._chunk_buffer.origin_size() if self._chunk_buffer else 0,
+            "chunks_consumed": self._metrics.get("chunks_consumed"),
+            "last_inference_latency_ms": self._metrics.get_last("inference_latency_ms"),
+            "inference_errors": self._metrics.get("inference_error_count"),
+            "last_safety_event": self._inference_safety.last_event() if self._inference_safety else None,
+        }
 
     async def end(self) -> None:
         """Any -> IDLE. Shut down everything in order."""
@@ -554,11 +963,16 @@ class SessionManager:
             self._pending.discard()
             self._pending = None
 
-        # Await tasks in order
+        # Await tasks in order. Inference-mode tasks (_producer_task,
+        # _inference_watchdog_task) are also cancelled here because
+        # `end()` may be called while a session is still in INFERENCE
+        # mode; without these the watchdog could later fire
+        # `episode_stop` after teardown has begun.
         for task in [
             self._teleop_reader_task, self._robot_reader_task,
             self._control_loop_task, self._writer_task,
             self._dispatcher_task, self._error_handler_task,
+            self._producer_task, self._inference_watchdog_task,
         ]:
             if task and not task.done():
                 task.cancel()

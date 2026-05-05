@@ -17,6 +17,7 @@ class Stamped(Generic[T]):
 class SessionMode(str, Enum):
     TELEOP = "teleop"
     HAND_TEACH = "hand_teach"
+    INFERENCE = "inference"
 
 
 class SessionState(str, Enum):

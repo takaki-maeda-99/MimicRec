@@ -32,6 +32,7 @@ class FKService:
         from lerobot.model.kinematics import RobotKinematics
         from lerobot.utils.rotation import Rotation
 
+        self.cfg = cfg
         urdf = str(Path(cfg.urdf_path).resolve())
         self._k = RobotKinematics(
             urdf_path=urdf,
@@ -54,6 +55,11 @@ class FKService:
         pos = T[:3, 3].astype(np.float32)
         rotvec = self._rotation.from_matrix(T[:3, :3]).as_rotvec().astype(np.float32)
         return pos, rotvec
+
+    def matrix(self, joint_pos_deg: np.ndarray) -> np.ndarray:
+        """Return the 4x4 end-effector transform for joint_pos_deg (degrees).
+        Convenience accessor for ActionDecoder; FK convention matches `pose()`."""
+        return self._k.forward_kinematics(np.asarray(joint_pos_deg, dtype=np.float64))
 
 
 def load_kinematics(cfg: KinematicsConfig | dict | None) -> FKService | None:

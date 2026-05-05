@@ -141,7 +141,10 @@ export function useEpisodeSave() {
         method: "POST",
         body: JSON.stringify(body ?? {}),
       }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["session-state"] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["session-state"] });
+      qc.invalidateQueries({ queryKey: ["episodes"] });
+    },
   });
 }
 

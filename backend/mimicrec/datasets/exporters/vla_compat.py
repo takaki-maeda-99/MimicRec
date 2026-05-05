@@ -49,6 +49,12 @@ _DROP_COLUMNS = frozenset({
 })
 
 
+def _normalize_gripper(raw: float) -> float:
+    """Map lerobot RANGE_0_100 gripper (0=closed, 100=open) to VLA convention
+    (-1=open, +1=close). vla = 1 - raw/50."""
+    return 1.0 - float(raw) / 50.0
+
+
 def _stack_with_gripper(joint_col: pa.ChunkedArray, gripper_col: pa.ChunkedArray) -> list[list[float]]:
     joints = joint_col.to_pylist()
     grippers = gripper_col.to_pylist()
@@ -60,7 +66,7 @@ def _stack_with_gripper(joint_col: pa.ChunkedArray, gripper_col: pa.ChunkedArray
             raise ValueError("null entries are not supported in joint/gripper columns")
         if len(j) != 6:
             raise ValueError(f"expected 6 joint values per row, got {len(j)}")
-        out.append([float(x) for x in j] + [float(g)])
+        out.append([float(x) for x in j] + [_normalize_gripper(g)])
     return out
 
 
@@ -109,18 +115,15 @@ def convert_episode_table(*, table: pa.Table, instruction_text: str) -> Converte
         if col in table.column_names:
             arrays[col] = table.column(col)
 
-    # camera columns: preserve every ``observation.images.<cam>.<suffix>`` column.
-    for col in table.column_names:
-        if col.startswith("observation.images.") and col not in arrays:
-            arrays[col] = table.column(col)
+    # LeRobot v3 spec: video features are referenced via mp4 + timestamp,
+    # not via per-row data parquet columns. observation.images.* columns
+    # (legacy from older recordings) are dropped so LeRobotDataset.load_hf_dataset
+    # doesn't fail with arrow CastError.
 
-    # Anything else not in _DROP_COLUMNS and not already added stays too.
-    # (Defensive — current schema has nothing else, but future fields shouldn't
-    # silently disappear.)
-    for col in table.column_names:
-        if col in arrays or col in _DROP_COLUMNS:
-            continue
-        arrays[col] = table.column(col)
+    # info.json declares timestamp float32; ensure output matches even when input
+    # came from older recordings written before pending.finalize cast.
+    if "timestamp" in arrays:
+        arrays["timestamp"] = arrays["timestamp"].cast(pa.float32())
 
     out = pa.table(arrays)
     return ConvertedEpisode(table=out)

@@ -158,13 +158,14 @@ def _export_vla_compat(
         num_episodes += 1
         num_frames += out_episode.table.num_rows
 
-        # mp4 copy -- preserve full LeRobot video tree.
-        videos_chunk = p.videos_dir / f"chunk-{chunk:03d}"
-        if videos_chunk.exists():
-            for cam_dir in videos_chunk.iterdir():
-                src_mp4 = cam_dir / f"episode_{ep_idx:06d}.mp4"
+        # mp4 copy -- LeRobot v3 layout: videos/observation.images.<cam>/chunk-XXX/...
+        if p.videos_dir.exists():
+            for cam_dir in p.videos_dir.iterdir():
+                if not cam_dir.name.startswith("observation.images."):
+                    continue
+                src_mp4 = cam_dir / f"chunk-{chunk:03d}" / f"episode_{ep_idx:06d}.mp4"
                 if src_mp4.exists():
-                    dst_dir = out_videos / f"chunk-{chunk:03d}" / cam_dir.name
+                    dst_dir = out_videos / cam_dir.name / f"chunk-{chunk:03d}"
                     dst_dir.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(src_mp4, dst_dir / src_mp4.name)
 

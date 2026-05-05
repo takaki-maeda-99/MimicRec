@@ -73,7 +73,7 @@ def _seed_dataset(ds_root: Path, *, num_episodes: int, num_frames: int,
             })
         pq.write_table(pa.Table.from_pylist(rows), p.episode_parquet(0, idx))
         # Also create a tiny mp4 placeholder so the orchestrator can copy it.
-        cam_dir = p.videos_dir / "chunk-000" / "observation.images.front"
+        cam_dir = p.videos_dir / "observation.images.front" / "chunk-000"
         cam_dir.mkdir(parents=True, exist_ok=True)
         (cam_dir / f"episode_{idx:06d}.mp4").write_bytes(b"\x00fake\x00")
         append_episode(p.meta_dir, {
@@ -104,7 +104,7 @@ def test_vla_compat_export_writes_full_tree(tmp_path: Path):
     assert (out / "meta" / "tasks.parquet").exists()
     assert (out / "data" / "chunk-000" / "episode_000000.parquet").exists()
     assert (out / "data" / "chunk-000" / "episode_000001.parquet").exists()
-    assert (out / "videos" / "chunk-000" / "observation.images.front" / "episode_000000.mp4").exists()
+    assert (out / "videos" / "observation.images.front" / "chunk-000" / "episode_000000.mp4").exists()
 
     info = json.loads((out / "meta" / "info.json").read_text())
     assert info["features"]["action"]["shape"] == [7]

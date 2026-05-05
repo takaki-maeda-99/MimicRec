@@ -7,6 +7,7 @@ import pyarrow.parquet as pq
 
 from mimicrec.datasets.reader import iter_episodes
 from mimicrec.recording.dataset_layout import dataset_paths, resolve_chunk
+from mimicrec.recording.metadata import _sanitize_for_parquet
 
 
 def build_archive_stream(ds_root: Path) -> Iterator[tuple[str, bytes | Path]]:
@@ -22,9 +23,11 @@ def build_archive_stream(ds_root: Path) -> Iterator[tuple[str, bytes | Path]]:
     if tasks_pq.exists():
         yield "meta/tasks.parquet", tasks_pq
 
-    # Rewrite episodes parquet with only live rows
+    # Rewrite episodes parquet with only live rows. read_episodes
+    # deserialized JSON-encoded fields back to dicts; re-sanitize so
+    # pa.Table.from_pylist can infer parquet-safe types.
     if live_rows:
-        table = pa.Table.from_pylist(live_rows)
+        table = pa.Table.from_pylist([_sanitize_for_parquet(r) for r in live_rows])
         import io
         buf = io.BytesIO()
         pq.write_table(table, buf)
@@ -37,10 +40,12 @@ def build_archive_stream(ds_root: Path) -> Iterator[tuple[str, bytes | Path]]:
             rel = parquet.relative_to(ds_root).as_posix()
             yield rel, parquet
 
-        videos_chunk = p.videos_dir / f"chunk-{chunk:03d}"
-        if videos_chunk.exists():
-            for cam_dir in videos_chunk.iterdir():
-                mp4 = cam_dir / f"episode_{idx:06d}.mp4"
+        # LeRobot v3 layout: videos/observation.images.<cam>/chunk-XXX/episode_XXXXXX.mp4
+        if p.videos_dir.exists():
+            for cam_dir in p.videos_dir.iterdir():
+                if not cam_dir.name.startswith("observation.images."):
+                    continue
+                mp4 = cam_dir / f"chunk-{chunk:03d}" / f"episode_{idx:06d}.mp4"
                 if mp4.exists():
                     rel = mp4.relative_to(ds_root).as_posix()
                     yield rel, mp4
