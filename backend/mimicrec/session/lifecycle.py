@@ -662,7 +662,15 @@ class SessionManager:
         # mode while replay is in flight, replay keeps writing to the now-
         # detached old slot and may flip the robot back to GRAVITY_COMP after
         # this method sets POSITION. Reject the transition until replay ends.
-        if self.session.replay_active:
+        # NOTE: `session.replay_active` is set INSIDE run_replay() (replay.py
+        # line 53), not synchronously by replay_start(). So there is a window
+        # where _replay_task exists but replay_active==False — checking only
+        # the flag would let inference start race with a freshly-spawned
+        # replay task. Check the task reference too.
+        replay_task_alive = (
+            self._replay_task is not None and not self._replay_task.done()
+        )
+        if self.session.replay_active or replay_task_alive:
             raise InvalidTransitionError(
                 "start_inference_session: replay is active; stop replay first"
             )
@@ -785,15 +793,60 @@ class SessionManager:
         ))
 
     async def stop_inference_session(self) -> None:
+        """Inverse of start_inference_session. Cancels + awaits all spawned
+        tasks (including the watchdog), closes the HTTP client, clears the
+        inference-specific state, and resets `session.mode` so a follow-up
+        start_inference_session (or even a teleop session via end+restart)
+        can proceed cleanly. Without this, the next start hits the
+        "inference session already active" guard."""
+        # Cancel all tasks the inference start spawned, plus the watchdog.
+        # session.stopped acts as a soft hint to producer/control_loop; we
+        # also cancel directly so cancellation doesn't depend on the loops
+        # observing the flag.
         self.session.stopped.set()
-        for t in (
-            self._producer_task, self._control_loop_task,
-            self._dispatcher_task, self._writer_task, self._robot_reader_task,
-        ):
-            if t is not None:
-                t.cancel()
+        tasks = [
+            t for t in (
+                self._producer_task,
+                self._control_loop_task,
+                self._dispatcher_task,
+                self._writer_task,
+                self._robot_reader_task,
+                self._inference_watchdog_task,
+            )
+            if t is not None and not t.done()
+        ]
+        for t in tasks:
+            t.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        # Drop refs so a follow-up start_inference_session doesn't see stale
+        # task handles (the cleanup in start_inference_session itself reads
+        # these to decide what to cancel; if they point at done tasks the
+        # cancel/await is a no-op, but None is cleaner).
+        self._producer_task = None
+        self._control_loop_task = None
+        self._dispatcher_task = None
+        self._writer_task = None
+        self._robot_reader_task = None
+        self._inference_watchdog_task = None
+
         if self._inference_client is not None:
             await self._inference_client.aclose()
+            self._inference_client = None
+
+        # Drop inference-mode state so the SessionManager can either be
+        # ended cleanly or accept a new inference start.
+        self._chunk_buffer = None
+        self._inference_safety = None
+        self.session.locked_instruction = None
+        self.session.producer_paused = False
+        # Reset stopped so a follow-up start can re-arm it (Event() doesn't
+        # support .clear() at instance level on the existing Event — recreate).
+        self.session.stopped = asyncio.Event()
+        # Mode reverts to TELEOP (the default at SessionManager construction)
+        # so the "inference session already active" guard at the top of
+        # start_inference_session passes for a clean follow-up start.
+        self.session.mode = SessionMode.TELEOP
 
     def pause_producer_and_flush(self) -> int:
         """Order-locked: producer_paused FIRST, then flush.
