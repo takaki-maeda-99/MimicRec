@@ -3,6 +3,7 @@ import asyncio
 import numpy as np
 
 from mimicrec.adapters.robot import RobotMode
+from mimicrec.adapters.types import GripperConvention, ProprioLayout
 from mimicrec.errors import HandTeachNotSupportedError
 from mimicrec.types import RobotState
 
@@ -13,6 +14,25 @@ class SO101Adapter:
     name = "so101"
     dof = 6
     joint_names = JOINT_NAMES
+
+    @classmethod
+    def default_gripper_convention(cls) -> GripperConvention:
+        """SO-101 gripper raw range: lerobot RANGE_0_100, 0=closed, 100=open."""
+        return GripperConvention(closed_at=0.0, open_at=100.0)
+
+    @classmethod
+    def proprio_layout(cls) -> ProprioLayout:
+        """SO-101's joint_pos already includes the packed gripper at index 5;
+        no separate column needs concatenation."""
+        return ProprioLayout(
+            columns=("observation.state.joint_pos",),
+            output_names=(
+                "shoulder_pan", "shoulder_lift", "elbow_flex",
+                "wrist_flex", "wrist_roll", "gripper",
+            ),
+            gripper_via_column="observation.state.joint_pos",
+            gripper_index_in_column=5,
+        )
 
     def __init__(self, port: str = "/dev/ttyACM0", id: str = "my_awesome_follower_arm"):
         self._port = port
