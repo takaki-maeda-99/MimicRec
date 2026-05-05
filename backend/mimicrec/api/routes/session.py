@@ -121,12 +121,28 @@ async def session_config(request: Request):
 
 @router.post("/robot/estop")
 async def robot_estop(request: Request):
+    """Emergency stop. Hardware torque-off + software abort.
+
+    For an INFERENCE-mode session, hardware E-stop alone is not enough:
+    the producer keeps generating chunks and the dispatcher keeps trying
+    to send commands (logging HardwareError each time). After
+    `clear_estop`, the same in-flight inference stream would resume,
+    which is surprising. So we also halt the software side here:
+    `stop_inference_session` cancels producer/control/dispatcher/writer,
+    closes the HTTP client, and resets session.mode → TELEOP. The
+    operator must explicitly start a new inference session to resume.
+    """
+    from mimicrec.types import SessionMode
     sm = get_session_manager_or_none(request.app)
     if sm is None:
         raise InvalidTransitionError("no active session")
     adapter = sm._robot
     if not hasattr(adapter, "estop"):
         raise InvalidTransitionError("active robot adapter has no estop()")
+    # Halt software-side command production FIRST so the dispatcher
+    # doesn't keep retrying through the E-stop window.
+    if sm.session.mode == SessionMode.INFERENCE:
+        await sm.stop_inference_session()
     return await adapter.estop()
 
 

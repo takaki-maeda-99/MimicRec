@@ -675,13 +675,53 @@ class SessionManager:
                 "start_inference_session: replay is active; stop replay first"
             )
 
-        # CRITICAL: cancel tasks spawned by the prior teleop/handteach
-        # session.start(). Those tasks share the slots/queues we're about
-        # to spawn fresh tasks against — letting both run causes:
-        #   - 2 robot readers writing to _robot_state_slot (last write wins)
-        #   - 2 dispatchers calling robot.send_joint_command (alternation)
-        #   - 2 writers consuming the same _recorder_queue (episode rows split)
-        # Cancel + await so the slots are clean before the new spawn block.
+        # ============================================================
+        # PHASE 1: VALIDATE + CONSTRUCT (no side effects on existing tasks)
+        # ============================================================
+        # Build everything that can fail BEFORE we cancel teleop. If any of
+        # these raise, the existing teleop session keeps running and the
+        # caller sees a clean error. Without this ordering, a bad config
+        # would leave the session half-destroyed (teleop killed, inference
+        # not running).
+
+        # Robot config: inference_safety is mandatory.
+        safety_cfg = self._robot_safety_config()
+        if safety_cfg is None:
+            raise InvalidTransitionError("inference_safety block is required in robot config")
+        new_inference_safety = InferenceSafety(
+            max_delta=safety_cfg["max_joint_delta_per_step_deg"],
+            joint_min=safety_cfg["joint_min"],
+            joint_max=safety_cfg["joint_max"],
+            slow_stop_ticks=safety_cfg["slow_stop_ticks"],
+        )
+
+        # Stats resolution: returns None when method=none, raises on
+        # missing/malformed stats file.
+        action_stats = contract.resolve_action_stats()
+
+        # FK/IK: FKService is already constructed in __init__ (self._fk).
+        # IKService construction can fail if URDF load / placo init fails.
+        if self._fk is None:
+            raise InvalidTransitionError("FKService is not configured for this robot")
+        new_ik = IKService(self._fk.cfg)
+        new_decoder = ActionDecoder(
+            spec=contract, fk=self._fk, ik=new_ik,
+            narm=self._robot.dof,
+            action_stats=action_stats,
+        )
+        new_client = InferenceClient(spec=contract)
+        new_chunk_buffer = ChunkBuffer.create(
+            prefetch_threshold=contract.loop.prefetch_threshold,
+        )
+
+        # ============================================================
+        # PHASE 2: DESTRUCTIVE — past this point we don't roll back.
+        # ============================================================
+        # Cancel tasks spawned by the prior teleop/handteach session.start().
+        # Those tasks share the slots/queues we're about to spawn fresh
+        # tasks against — letting both run causes 2 robot readers writing
+        # the state slot, 2 dispatchers commanding the robot, 2 writers
+        # consuming the recorder queue. Cancel + await for clean handoff.
         prior_tasks = [
             t for t in (
                 self._teleop_reader_task,
@@ -702,13 +742,10 @@ class SessionManager:
         self._writer_task = None
         self._robot_reader_task = None
 
-        # CRITICAL: clear the command goal slot so the fresh dispatcher
-        # doesn't immediately replay whatever teleop left in it. The new
-        # inference control_loop will publish a safety-filtered command on
-        # its first tick (slow-stop or the first decoded chunk step).
-        # Without this reset, run_command_dispatcher's `last_seen_seq=0`
-        # initialization sees the teleop value as "new" and sends it once
-        # at the mode transition.
+        # Clear the command goal slot so the fresh dispatcher doesn't
+        # immediately replay whatever teleop left in it. The new inference
+        # control_loop will publish a safety-filtered command on its first
+        # tick (slow-stop or the first decoded chunk step).
         self._command_goal_slot = LatestValue()
 
         # If we bootstrapped from a HAND_TEACH session, the robot is in
@@ -723,48 +760,29 @@ class SessionManager:
                 self._robot.name,
             )
 
+        # Commit the validated subsystem onto the SessionManager. From here
+        # on out, the session is in INFERENCE mode and any further error
+        # leaves it in a recoverable state (stop_inference_session can
+        # clean up).
         self.session.mode = SessionMode.INFERENCE
         self._inference_config_name = inference_config_name
         # Update both the live slot (read by the producer) and the persisted
-        # attribute (read by episode_save → tasks.parquet). Keeping them in
-        # sync at session start prevents the dataset from being saved with a
-        # stale instruction (e.g. the teleop seed instruction).
+        # attribute (read by episode_save → tasks.parquet).
         self._instruction_slot.set(instruction, t_mono_ns=0)
         self._instruction = instruction
         self.session.locked_instruction = None
         self.session.producer_paused = False
         self._last_stop_reason = None
-
-        # Build inference subsystem.
-        # `resolve_action_stats()` returns None when normalization.method == "none",
-        # so we can call it unconditionally and pass the result straight through.
-        action_stats = contract.resolve_action_stats()
-        self._chunk_buffer = ChunkBuffer.create(
-            prefetch_threshold=contract.loop.prefetch_threshold,
-        )
-        safety_cfg = self._robot_safety_config()
-        if safety_cfg is None:
-            raise InvalidTransitionError("inference_safety block is required in robot config")
-        self._inference_safety = InferenceSafety(
-            max_delta=safety_cfg["max_joint_delta_per_step_deg"],
-            joint_min=safety_cfg["joint_min"],
-            joint_max=safety_cfg["joint_max"],
-            slow_stop_ticks=safety_cfg["slow_stop_ticks"],
-        )
+        self._inference_safety = new_inference_safety
+        self._chunk_buffer = new_chunk_buffer
+        self._inference_client = new_client
 
         # Spawn readers same as TELEOP, except teleop reader is NOT spawned
         self._robot_reader_task = asyncio.create_task(self._run_robot_reader())
         camera_slots = {name: self._cameras.latest(name) for name in self._cameras._cameras}
-
-        fk = self._fk
-        ik = IKService(fk.cfg)  # FKService.cfg is public (see Task 5b)
-        decoder = ActionDecoder(
-            spec=contract, fk=fk, ik=ik,
-            narm=self._robot.dof,
-            action_stats=action_stats,
-        )
-        client = InferenceClient(spec=contract)
-        self._inference_client = client
+        # Keep local refs for the spawn block (decoder, client, fk, ik above)
+        decoder = new_decoder
+        client = new_client
 
         publish_event = self.inference_hub.publish if self.inference_hub else None
 
