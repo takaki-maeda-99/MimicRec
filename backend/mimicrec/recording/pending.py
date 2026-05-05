@@ -5,7 +5,7 @@ from pathlib import Path
 from mimicrec.recording.dataset_layout import (
     DatasetPaths, dataset_paths, resolve_chunk,
 )
-from mimicrec.recording.metadata import append_episode
+from mimicrec.recording.metadata import append_episode, read_episodes
 
 
 class PendingEpisode:
@@ -68,6 +68,12 @@ class PendingEpisode:
         import pyarrow as pa
         import pyarrow.parquet as pq
         table = pa.Table.from_pylist(self._rows)
+        # info.json declares timestamp as float32, but pa.Table.from_pylist
+        # infers float64 from Python floats. Cast so the data parquet matches
+        # the declared schema (LeRobotDataset.load_hf_dataset rejects mismatch).
+        if "timestamp" in table.column_names:
+            idx = table.schema.get_field_index("timestamp")
+            table = table.set_column(idx, "timestamp", table.column("timestamp").cast(pa.float32()))
         pq.write_table(table, self._stage / f"episode_{self._episode_index:06d}.parquet")
         for w in getattr(self, "_video_writers", {}).values():
             w.close()
@@ -76,11 +82,37 @@ class PendingEpisode:
     def save(self, metadata_extra: dict) -> None:
         if not self._finalized:
             raise RuntimeError("call finalize() before save()")
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
         chunk_idx = resolve_chunk(self._episode_index)
         self._paths.chunk_dir(chunk_idx).mkdir(parents=True, exist_ok=True)
         src = self._stage / f"episode_{self._episode_index:06d}.parquet"
         dst = self._paths.episode_parquet(chunk_idx, self._episode_index)
-        shutil.move(str(src), str(dst))
+
+        # LeRobot v3 spec requires:
+        #   timestamp = frame_index / fps (idealized; wall-clock breaks decode_video_frames)
+        #   index = dataset_from_index + frame_index (dataset-absolute, cumulative)
+        # Compute dataset_from_index BEFORE append_episode mutates meta.
+        fps = metadata_extra["fps"]
+        existing = list(read_episodes(self._paths.meta_dir, include_deleted=False))
+        dataset_from_index = sum(
+            e.get("length", e.get("num_frames", 0)) for e in existing
+        )
+
+        table = pq.read_table(src)
+        n = table.num_rows
+        timestamps = pa.array([i / fps for i in range(n)], type=pa.float32())
+        indices = pa.array([dataset_from_index + i for i in range(n)], type=pa.int64())
+        table = table.set_column(
+            table.schema.get_field_index("timestamp"), "timestamp", timestamps,
+        )
+        table = table.set_column(
+            table.schema.get_field_index("index"), "index", indices,
+        )
+        pq.write_table(table, dst)
+        src.unlink()
+
         for mp4 in self._stage.glob("*.mp4"):
             cam_name = mp4.stem
             vdst = self._paths.episode_video(chunk_idx, cam_name, self._episode_index)

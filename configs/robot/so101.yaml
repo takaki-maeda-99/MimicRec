@@ -1,29 +1,30 @@
 _target_: mimicrec.adapters.so101.SO101Adapter
-port: /dev/ttyACM2
+port: /dev/ttyACM1
 id: my_awesome_follower_arm
 replay:
-  # All thresholds are in DEGREES (and deg/s, deg/s²) — SO-101 reports
-  # joint positions in degrees via LeRobot. Sized so a recorded teleop
-  # trajectory replays cleanly: gripper close-fast events alone hit
-  # ~445 deg/s and ~11000 deg/s² in real captures.
-  ramp_duration_sec: 2.0
-  max_joint_velocity: 720.0          # deg/s (2 rev/s)
-  # Accel limit is mostly a smoothness check, not a safety gate (the real
-  # safety gates are position_jump + velocity). Hand-teleop trajectories at
-  # 30 Hz amplify position jitter by 900x via discrete second derivative,
-  # so a 1° per-frame wobble shows up as ~900 deg/s² on this metric.
-  max_joint_acceleration: 30000.0    # deg/s²
-  # max_joint_position_jump = how far the MEASURED arm is allowed to lag
-  # behind the COMMANDED target. The arm physically lags during fast moves
-  # (peak teleop velocity ~440°/s × 1/15 s ≈ 30° per tick), so 15° was way
-  # too tight for natural replays. 60° catches "motor stuck / mechanism
-  # jammed" while leaving normal physical lag alone.
-  max_joint_position_jump: 60.0      # deg between command and measured
+  ramp_duration_sec: 2
+  max_joint_velocity: 720
+  max_joint_acceleration: 30000
+  max_joint_position_jump: 60
   command_timeout_sec: 0.2
   watchdog_hz: 20
-# Optional: enables EE pose columns in recordings via forward kinematics.
-# Remove or comment out this block to disable EE recording.
 kinematics:
   urdf_path: configs/urdf/so101/so101.urdf
   target_frame: gripper_frame_link
-  joint_names: [shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll]
+  joint_names:
+  - shoulder_pan
+  - shoulder_lift
+  - elbow_flex
+  - wrist_flex
+  - wrist_roll
+inference_safety:
+  # REQUIRED for inference sessions; missing block → 400 at start_inference_session.
+  # Conservative defaults — tighten as you validate against your VLA's chunks.
+  max_joint_delta_per_step_deg: 2.0   # 30 deg/s at 15 fps
+  slow_stop_ticks: 5                   # ~333 ms ramp at 15 fps
+  joint_limits_deg:                    # required; inside URDF mechanical limits
+    shoulder_pan: [-180.0, 180.0]
+    shoulder_lift: [-110.0, 110.0]
+    elbow_flex: [-110.0, 110.0]
+    wrist_flex: [-110.0, 110.0]
+    wrist_roll: [-180.0, 180.0]

@@ -73,6 +73,7 @@ class DatasetSummary(BaseModel):
 
 class EpisodeSummary(BaseModel):
     episode_index: int
+    display_index: int
     task: str
     duration_sec: float
     num_frames: int
