@@ -18,6 +18,7 @@ from mimicrec.adapters.rebotarm_protocol import (
     CMD_SET_MODE, CMD_HEARTBEAT, CMD_ESTOP, CMD_CLEAR_ESTOP,
     DEFAULT_ZMQ_ADDRESS,
 )
+from mimicrec.adapters.types import GripperConvention, ProprioLayout
 from mimicrec.errors import HardwareError
 from mimicrec.types import RobotState
 
@@ -26,6 +27,34 @@ class ReBotArmZmqAdapter:
     name = "rebotarm"
     dof = 6                     # finalized in connect() from daemon reply
     joint_names: list[str] = [f"j{i}" for i in range(1, 7)]
+
+    @classmethod
+    def default_gripper_convention(cls) -> GripperConvention:
+        """Inferred from configs/mapper/so_to_rebotarm_ee.yaml:
+        gripper_invert=true + out_min/max=0/1 → 1=closed, 0=open. This is
+        a default; future per-session calibration override would replace it.
+        """
+        return GripperConvention(closed_at=1.0, open_at=0.0)
+
+    @classmethod
+    def proprio_layout(cls) -> ProprioLayout:
+        """reBot stores arm joints in joint_pos (6-dim) and the gripper as a
+        separate scalar gripper_pos column.
+
+        NOTE: `join3` (no `t`) intentional — reBotArm URDF spells joint3 as
+        `join3` upstream (tracked in configs/mapper/so_to_rebotarm_ee.yaml:12).
+        """
+        return ProprioLayout(
+            columns=(
+                "observation.state.joint_pos",
+                "observation.state.gripper_pos",
+            ),
+            output_names=(
+                "joint1", "joint2", "join3", "joint4", "joint5", "joint6", "gripper",
+            ),
+            gripper_via_column="observation.state.gripper_pos",
+            gripper_index_in_column=0,
+        )
 
     def __init__(
         self,
