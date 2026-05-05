@@ -177,3 +177,50 @@ def test_ik_failure_falls_back_to_seed():
     assert chunk[0].ik_failed
     assert np.allclose(chunk[0].q, 7.0)
     # IK failure path is independent of normalization; either contract works.
+
+
+def test_ik_failure_does_not_drift_t_curr():
+    """When IK fails on step k, T_curr must revert to FK(seed) so step k+1
+    chains from the actual achievable pose, not from the unreachable T_next.
+    Without this, repeated IK failures compound drift and later steps target
+    poses far from the physical seed."""
+    fk_calls: list[np.ndarray] = []
+
+    class CountingFK:
+        def matrix(self, q):
+            fk_calls.append(np.asarray(q).copy())
+            T = np.eye(4)
+            T[:3, 3] = q[:3] * 0.001  # arbitrary deterministic mapping
+            return T
+
+    captured_T_for_ik: list[np.ndarray] = []
+
+    class TFailIK:
+        """Fails on step 0 (so T_curr would otherwise advance to T_next), then
+        succeeds on step 1 — we observe what T was passed to IK on step 1."""
+        def __init__(self):
+            self.calls = 0
+
+        def solve(self, T, seed):
+            self.calls += 1
+            captured_T_for_ik.append(T.copy())
+            if self.calls == 1:
+                return seed.copy(), False  # IK fail
+            return seed.copy(), True
+
+    spec = ContractSpec.from_yaml_text(YAML_CONTRACT)
+    dec = ActionDecoder(spec=spec, fk=CountingFK(), ik=TFailIK(), narm=5, action_stats=None)
+    raw = {"actions": [
+        [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5],
+        [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5],
+    ]}
+    seed = np.full(5, 7.0)
+    dec.decode(raw, current_state=_state(joint_pos=seed))
+
+    # On step 0 we fail. The fix: T_curr must revert to FK(seed), so on
+    # step 1 we pass T = FK(seed) @ T_delta (ee_local frame), NOT
+    # captured_T_for_ik[0] @ T_delta which would compound the failed delta.
+    # FK(seed) for step 1 should be called AGAIN after the IK failure.
+    fk_first = fk_calls[0]    # initial FK at decode start
+    assert any(np.array_equal(c, seed) for c in fk_calls[1:]), \
+        "After IK failure, FK(seed) must be re-evaluated to revert T_curr"

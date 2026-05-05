@@ -44,9 +44,12 @@ class IKService:
         """
         q = seed.astype(np.float64)
         T_target_f64 = T_target.astype(np.float64)
-        # Tight inner tolerance ensures convergence before we accept the solution;
-        # the final round-trip check uses POS_TOL_M / ANG_TOL_RAD.
+        # Inner exit checks BOTH position and orientation. Earlier versions
+        # exited on position-only, which could leave orientation unconverged;
+        # the outer acceptance gate would then reject and IK reported failure
+        # even though more iterations could have succeeded.
         _INNER_POS_TOL = 1e-4
+        _INNER_ANG_TOL = 1e-3
         try:
             for _ in range(self.MAX_ITER):
                 q = np.asarray(
@@ -56,17 +59,23 @@ class IKService:
                     dtype=np.float64,
                 )
                 T_actual = self._k.forward_kinematics(q)
-                pos_err = float(np.linalg.norm(T_target_f64[:3, 3] - T_actual[:3, 3]))
-                if pos_err < _INNER_POS_TOL:
+                pos_err, ang_err = self._pose_error(T_target_f64, T_actual)
+                if pos_err < _INNER_POS_TOL and ang_err < _INNER_ANG_TOL:
                     break
         except Exception:
             return seed.copy(), False
 
-        # Final acceptance check
+        # Final acceptance check (loose tolerances for downstream consumers).
         T_actual = self._k.forward_kinematics(q)
-        pos_err = float(np.linalg.norm(T_target_f64[:3, 3] - T_actual[:3, 3]))
-        R_err = T_target_f64[:3, :3].T @ T_actual[:3, :3]
-        cos_ang = (np.trace(R_err) - 1.0) / 2.0
-        ang_err = float(np.arccos(np.clip(cos_ang, -1.0, 1.0)))
+        pos_err, ang_err = self._pose_error(T_target_f64, T_actual)
         ok = (pos_err < self.POS_TOL_M) and (ang_err < self.ANG_TOL_RAD)
         return q, ok
+
+    @staticmethod
+    def _pose_error(T_target: np.ndarray, T_actual: np.ndarray) -> tuple[float, float]:
+        """Position error (meters) and orientation error (radians)."""
+        pos_err = float(np.linalg.norm(T_target[:3, 3] - T_actual[:3, 3]))
+        R_err = T_target[:3, :3].T @ T_actual[:3, :3]
+        cos_ang = (np.trace(R_err) - 1.0) / 2.0
+        ang_err = float(np.arccos(np.clip(cos_ang, -1.0, 1.0)))
+        return pos_err, ang_err

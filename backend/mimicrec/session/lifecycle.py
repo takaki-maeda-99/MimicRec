@@ -135,6 +135,12 @@ class SessionManager:
         # Inference subsystem (populated by start_inference_session)
         self._robot_config_dict: dict = self._resolved_config.get("robot", {})
         self._instruction_slot: LatestValue[str] = LatestValue()
+        # Serialize session-mode transitions (start_inference_session,
+        # stop_inference_session, replay_start, replay_stop). Without this
+        # lock, two concurrent HTTP handlers can both pass their READY/mode
+        # guards between the awaits inside a transition, leading to
+        # interleaved task spawns / cancels.
+        self._mode_transition_lock: asyncio.Lock = asyncio.Lock()
         self._chunk_buffer: ChunkBuffer | None = None
         self._inference_safety: InferenceSafety | None = None
         self._producer_task: asyncio.Task | None = None
@@ -525,6 +531,10 @@ class SessionManager:
 
     async def replay_start(self, trajectory) -> None:
         """READY (not replay_active) -> spawn replay task."""
+        async with self._mode_transition_lock:
+            await self._replay_start_locked(trajectory)
+
+    async def _replay_start_locked(self, trajectory) -> None:
         from mimicrec.session.replay import run_replay
         if self.session.state != SessionState.READY:
             raise InvalidTransitionError(
@@ -605,6 +615,10 @@ class SessionManager:
 
     async def replay_stop(self) -> None:
         """Clear replay_active, await replay task, restore prior robot mode."""
+        async with self._mode_transition_lock:
+            await self._replay_stop_locked()
+
+    async def _replay_stop_locked(self) -> None:
         self.session.replay_active = False
         if self._replay_task and not self._replay_task.done():
             self._replay_task.cancel()
@@ -649,6 +663,15 @@ class SessionManager:
         inference_config_name: str,
     ) -> None:
         """Replaces start_recording_session for INFERENCE mode."""
+        async with self._mode_transition_lock:
+            await self._start_inference_session_locked(contract, instruction, inference_config_name)
+
+    async def _start_inference_session_locked(
+        self,
+        contract: ContractSpec,
+        instruction: str,
+        inference_config_name: str,
+    ) -> None:
         if self.session.state != SessionState.READY:
             raise InvalidTransitionError(
                 f"start_inference_session requires READY, got {self.session.state}"
@@ -811,6 +834,10 @@ class SessionManager:
         ))
 
     async def stop_inference_session(self) -> None:
+        async with self._mode_transition_lock:
+            await self._stop_inference_session_locked()
+
+    async def _stop_inference_session_locked(self) -> None:
         """Inverse of start_inference_session. Cancels + awaits all spawned
         tasks (including the watchdog), closes the HTTP client, clears the
         inference-specific state, and resets `session.mode` so a follow-up

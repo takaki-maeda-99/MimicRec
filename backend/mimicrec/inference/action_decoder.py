@@ -90,10 +90,18 @@ class ActionDecoder:
                 T_next = T_delta @ T_curr
             q_next, ok = self.ik.solve(T_next, seed=seed_q)
             if not ok:
+                # IK failed: hold the seed AND revert T_curr to the FK of the
+                # seed so subsequent chunk steps chain from the achievable
+                # pose, not from the fictional `T_next` we couldn't reach.
+                # Without this, repeated IK failures compound the drift
+                # between the model's intended pose and the actual robot
+                # pose, producing wildly off-target later targets.
                 q_next = seed_q
+                T_curr = self.fk.matrix(seed_q)
+            else:
+                T_curr = T_next
             gripper_cmd = self._decode_gripper(gripper_raw, current_state.gripper_pos)
             chunk.append(StepAction(q=q_next, gripper=gripper_cmd, ik_failed=not ok))
-            T_curr = T_next
             seed_q = q_next
         return chunk
 
