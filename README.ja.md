@@ -10,7 +10,8 @@
 - **ハンドティーチ**: 純コンプライアンス重力補償でロボットを手で動かして教示（reBotArm）。グリッパも摩擦補償付きで軽く動かせます
 - **レビュー**: 録ったエピソードを保存／破棄／成功・失敗ラベル付け
 - **リプレイ**: アーム＋グリッパ両方が録画通りに動作、安全ウォッチドッグ付き
-- **サブタスクアノテーション** (現状モック、本実装は `MimicAno/` で進行中)
+- **VLA 推論実行**: HTTP 契約経由で Vision-Language-Action モデルを実機に走らせる (`configs/inference/`)
+- **サブタスクアノテーション**: アプリ内の stub アノテータ（実 VLM はまだ）
 - **設定 UI**: デバイス検出・キャリブレーション状態・アダプタ config 編集
 - **ダウンロード**: LeRobot v3 互換 zip でデータセット書き出し
 
@@ -34,7 +35,7 @@ Browser (React)  ←→  FastAPI + WebSocket  ←→  SessionManager  ←→  Ha
 
 - **Backend**: Python 3.12, FastAPI, asyncio 制御ループ, LeRobot v3 形式
 - **Frontend**: React 19, TypeScript, Vite, TailwindCSS, TanStack Query
-- **119 backend テスト** 全件パス
+- **約 250 backend テスト** (unit / integration / exit-criteria / API)
 
 ## クイックスタート
 
@@ -67,7 +68,7 @@ apt: `ffmpeg`, `v4l-utils`, `libudev-dev`, `pkg-config`, `build-essential`, `git
 ハードウェア（任意）:
 - SO-101 follower / leader on `/dev/ttyACM*` (`dialout` グループ要)
 - USB カメラ on `/dev/video*` (`video` グループ要)
-- NVIDIA GPU + driver (将来 MimicAno の実 VLM が乗ったら必要。今のスタブは CPU でも動く)
+- NVIDIA GPU + driver (VLA 推論サーバを自前ホストする場合のみ必要。アプリ内のスタブアノテータは CPU で動きます)
 - Isaac Sim 5.0 (Omniverse Launcher から別途インストール)
 
 ### 手動インストール（setup.sh を使わない場合）
@@ -109,9 +110,9 @@ bash scripts/run_frontend.sh  # Vite :5173
 ### テスト実行
 
 ```bash
-bash scripts/test.sh tests/ -q        # 全 88 テスト
+bash scripts/test.sh tests/ -q                 # 全テスト
 bash scripts/test.sh tests/ -k exit_criterion  # Plan A 終了基準 (9 件)
-bash scripts/test.sh tests/api/ -q     # API テストのみ (33 件)
+bash scripts/test.sh tests/api/ -q             # API テストのみ
 ```
 
 ## 使い方
@@ -218,6 +219,11 @@ cp reBotArm_control_py/config/gripper.yaml configs/rebotarm/gripper.yaml
 `configs/rebotarm/arm.yaml` のモータ ID / channel を実機に合わせます。
 MimicRec の daemon config 側でチューニングする主なパラメータ:
 
+- `gravity_in_base` — ベース座標系で表したワールド重力 (m/s²)。直立/水平
+  マウントなら省略 (デフォルト `[0, 0, -9.81]`)。傾斜マウントの場合は
+  ワールド重力をベース座標に回した値をここに入れる。設定しないと重力補償
+  がオペレータと逆方向に働きます。`configs/rebotarm_daemon.yaml` に
+  45° 横傾斜・前傾斜の例があります。
 - `gravity_comp.kd` — ハンドティーチ時の関節別ダンピング。慣性が大きい
   近位 4340P (関節1〜3) ほど高く。デフォルト `[1.5, 1.5, 1.0, 0.6, 0.4, 0.2]`。
   手放した瞬間に「飛んでいく」なら上げ、押し感が重ければ下げます。
@@ -278,6 +284,7 @@ print(f"median {np.median(dt)*1000:.1f}ms  std {np.std(dt)*1000:.2f}ms  "
 | **Record** | `/record` | セッション設定 → 録画 → レビュー → 保存 |
 | **Episodes** | `/datasets/:ds/episodes` | エピソード表・削除・アノテーション |
 | **Replay** | `/datasets/:ds/episodes/:idx/replay` | 動画再生・実機リプレイ |
+| **Inference** | `/inference` | VLA モデルを実機に走らせる (start/stop, 指示文, 状態表示) |
 | **Settings** | `/settings` | デバイス検出・アダプタ設定・キャリブ状態 |
 
 ## REST API
@@ -318,6 +325,19 @@ print(f"median {np.median(dt)*1000:.1f}ms  std {np.std(dt)*1000:.2f}ms  "
 | `POST` | `/api/datasets/:ds/annotate-all` | データセット全件アノテート |
 | `GET` | `/api/datasets/:ds/annotate-progress` | アノテート進捗ポーリング |
 
+### 推論 (VLA)
+
+| Method | Endpoint | 説明 |
+|--------|----------|------|
+| `GET` | `/api/configs/inference` | 利用可能な推論コントラクト一覧 |
+| `GET` | `/api/configs/inference/:name` | パース＋検証済みコントラクト読み取り (env は伏字化) |
+| `POST` | `/api/session/inference/start` | アクティブロボットに対して推論セッション開始 |
+| `POST` | `/api/session/inference/stop` | 推論セッション停止 |
+| `PUT` | `/api/session/inference/instruction` | 自然言語指示文をセット (READY のみ) |
+| `GET` | `/api/session/inference/state` | 現在の推論状態 |
+
+コントラクト本体は `configs/inference/*.yaml`。スキーマ詳細(エンドポイント・リクエスト/レスポンス形・action 形式・正規化統計)は `configs/inference/README.md` を参照。
+
 ### 設定
 
 | Method | Endpoint | 説明 |
@@ -339,6 +359,7 @@ print(f"median {np.median(dt)*1000:.1f}ms  std {np.std(dt)*1000:.2f}ms  "
 | `/ws/state` | ~15 Hz | ロボットの関節位置・速度 |
 | `/ws/cameras/:cam` | ~15 Hz | JPEG バイナリフレーム |
 | `/ws/teleop` | イベント駆動 | ブラウザキーボード teleop 入力 |
+| `/ws/inference` | イベント駆動 | 推論セッション状態・チャンクイベント・エラー |
 
 ## データセット形式
 
@@ -387,10 +408,13 @@ ZMQ ブリッジプロトコルでどんなシムでも繋げられます:
 MimicRec/
   backend/mimicrec/
     adapters/     # ロボット & teleop アダプタ (SO-101, mock, sim bridge, web teleop)
+    annotator/    # アプリ内サブタスクアノテータ (現状 stub)
     api/          # FastAPI ルート + WebSocket ハブ
     cameras/      # CameraManager, OpenCV, sim camera
     config/       # OmegaConf ローダ
     datasets/     # リーダ, アーカイブビルダ
+    inference/    # VLA HTTP クライアント, contract ローダ, 制御ループ
+    kinematics/   # URDF ベース順運動学 (EE 列の生成)
     mappers/      # Teleop → ロボットコマンド変換
     recording/    # ライタ, pending, parquet, metadata
     session/      # SessionManager, control loop, dispatcher, replay
@@ -398,23 +422,28 @@ MimicRec/
   frontend/src/
     api/          # REST クライアント, WebSocket, TanStack Query フック
     components/   # UI コンポーネント (shadcn/ui スタイル)
-    pages/        # Datasets, Record, Episodes, Replay, Settings
-    state/        # Zustand session ストア
-  configs/        # ロボット, teleop, mapper, camera YAML
-  scripts/        # 起動スクリプト, キャリブ, sim ブリッジ
-  tests/          # 88 テスト (unit, integration, exit criteria, API)
-  MimicAno/       # スタンドアロンサブタスクアノテータ (開発中)
-    docs/design.md  # パイプライン設計書
-    sam3/           # SAM 3 (テキストプロンプトセグメント) クローン
+    pages/        # Datasets, Record, Episodes, Replay, Inference, Settings
+    state/        # Zustand session / inference ストア
+  configs/        # ロボット, teleop, mapper, camera, inference, rebotarm YAML
+  docs/           # アーキテクチャノート, VLA サーバ契約スペック
+  scripts/        # 起動スクリプト, キャリブ, sim ブリッジ, rebotarm デーモン
+  tests/          # unit, integration, exit criteria, API
 ```
 
-## MimicAno — サブタスクアノテータ
+## VLA 推論
 
-`MimicAno/` は MimicRec から呼べるスタンドアロン Python パッケージで、録画したエピソードをレビュー済みサブタスクセグメントへ変換します。
+MimicRec は HTTP で公開された任意の Vision-Language-Action モデルから実機を
+動かせます。`configs/inference/` 配下の YAML がリクエストの組み立て方
+（カメラ・proprio 状態・指示文）と、チャンク化された action レスポンスの
+解釈（座標系・単位・正規化統計）を記述します。
 
-パイプライン: 信号ベース境界検出 → SAM3 物体追跡 → クリップ分割 → Gemma 4 VLM ラベリング（許可ラベルのみ）→ 時系列スムージング → 人間レビュー UI。
+- スキーマ詳細: `configs/inference/README.md`
+- リファレンス契約: `configs/inference/gemma_libero_v1.yaml`
+- VLA サーバ実装側の要求仕様: `docs/vla-server-contract-prompt.md`
 
-設計の詳細は `MimicAno/docs/design.md` を参照。実装中で、現在の `/api/datasets/...` 配下のアノテートエンドポイントは MimicAno 統合までのつなぎです。
+MVP は `ee_delta` action（6-DoF EE 差分 + グリッパ）+ `mean_std` /
+`minmax_neg1_pos1` 正規化、次チャンク半消費プリフェッチ、RECORDING 中の
+オプション `done` 自動停止 をサポート。
 
 ## ライセンス
 
