@@ -1,49 +1,75 @@
-import json
-
 import numpy as np
 import pyarrow as pa
-import pytest
 
-from mimicrec.datasets.exporters.stats import compute_action_stats
+from mimicrec.datasets.exporters.stats import compute_stats
 
 
-def _converted(action_rows: list[list[float]]) -> pa.Table:
+def _table(actions: list[list[float]], proprios: list[list[float]]) -> pa.Table:
     return pa.table({
-        "action": pa.array(action_rows, type=pa.list_(pa.float32(), 7)),
+        "action": pa.array(actions, type=pa.list_(pa.float32(), len(actions[0]))),
+        "observation.state": pa.array(
+            proprios, type=pa.list_(pa.float32(), len(proprios[0])),
+        ),
     })
 
 
-def test_mean_and_std_over_single_episode():
-    t = _converted([[0, 0, 0, 0, 0, 0, 0], [2, 2, 2, 2, 2, 2, 2]])
-    out = compute_action_stats([t])
-    np.testing.assert_allclose(out["mean"], [1.0] * 7, atol=1e-6)
-    np.testing.assert_allclose(out["std"], [1.0] * 7, atol=1e-6)
+def _seven(action: list[float]) -> list[float]:
+    assert len(action) == 7
+    return action
 
 
-def test_combined_across_episodes():
-    a = _converted([[0]*7, [2]*7])
-    b = _converted([[4]*7, [6]*7])
-    out = compute_action_stats([a, b])
-    np.testing.assert_allclose(out["mean"], [3.0]*7, atol=1e-6)
-    # population std for [0,2,4,6] = sqrt(5) ≈ 2.236
-    np.testing.assert_allclose(out["std"], [np.std([0,2,4,6])]*7, atol=1e-6)
+def test_compute_stats_returns_three_blocks():
+    actions = [[0.0]*7, [1.0]*7]
+    proprios = [[0.0]*6, [1.0]*6]
+    a_stats, a_q99, p_q99 = compute_stats([_table(actions, proprios)])
+    assert "mean" in a_stats and "std" in a_stats and "convention" in a_stats
+    assert "q01" in a_q99 and "q99" in a_q99 and "mask" in a_q99
+    assert "q01" in p_q99 and "q99" in p_q99 and "mask" in p_q99
 
 
-def test_returns_serializable_floats():
-    t = _converted([[1]*7, [2]*7])
-    out = compute_action_stats([t])
-    s = json.dumps(out)
-    assert isinstance(s, str)
-    assert "mean" in s and "std" in s
+def test_action_stats_carries_convention_field():
+    a_stats, _, _ = compute_stats([_table([[0.0]*7, [1.0]*7], [[0.0]*6, [1.0]*6])])
+    assert a_stats["convention"] == "q99_derived_midpoint_halfrange"
 
 
-def test_empty_input_raises():
-    with pytest.raises(ValueError):
-        compute_action_stats([])
+def test_action_stats_mean_equals_midpoint_of_action_q99():
+    rng = np.random.default_rng(0)
+    actions = rng.normal(size=(200, 7)).tolist()
+    a_stats, a_q99, _ = compute_stats([_table(actions, [[0.0]*6 for _ in actions])])
+    midpoint = [(a + b) / 2 for a, b in zip(a_q99["q01"], a_q99["q99"])]
+    np.testing.assert_allclose(a_stats["mean"], midpoint, atol=1e-9)
 
 
-def test_std_floor_avoids_zero_division():
-    # All identical rows — std would be 0; we floor at 1e-6 to match Normalizer.fit.
-    t = _converted([[1]*7] * 5)
-    out = compute_action_stats([t])
-    assert all(s >= 1e-6 for s in out["std"])
+def test_action_stats_std_equals_half_range_of_action_q99():
+    rng = np.random.default_rng(1)
+    actions = rng.normal(size=(200, 7)).tolist()
+    a_stats, a_q99, _ = compute_stats([_table(actions, [[0.0]*6 for _ in actions])])
+    half_range = [max((b - a) / 2, 1e-6) for a, b in zip(a_q99["q01"], a_q99["q99"])]
+    np.testing.assert_allclose(a_stats["std"], half_range, atol=1e-9)
+
+
+def test_action_q99_mask_all_true_for_seven_dim_action():
+    _, a_q99, _ = compute_stats([_table([[0.0]*7, [1.0]*7], [[0.0]*6, [1.0]*6])])
+    assert a_q99["mask"] == [True] * 7
+
+
+def test_proprio_q99_length_matches_per_robot_dim():
+    rng = np.random.default_rng(2)
+    proprios_so101 = rng.normal(size=(50, 6)).tolist()
+    proprios_rebot = rng.normal(size=(50, 7)).tolist()
+    actions = [[0.0]*7] * 50
+
+    _, _, p_so101 = compute_stats([_table(actions, proprios_so101)])
+    _, _, p_rebot = compute_stats([_table(actions, proprios_rebot)])
+    assert len(p_so101["q01"]) == 6
+    assert len(p_rebot["q01"]) == 7
+
+
+def test_compute_stats_raises_on_no_rows():
+    import pytest
+    empty = pa.table({
+        "action": pa.array([], type=pa.list_(pa.float32(), 7)),
+        "observation.state": pa.array([], type=pa.list_(pa.float32(), 6)),
+    })
+    with pytest.raises(ValueError, match="no rows"):
+        compute_stats([empty])
