@@ -8,7 +8,7 @@ control_rate_hz: 500
 # the result here. Examples:
 #   45° tilt to the right (about base +x) → [0.0, -6.937, -6.937]
 #   45° tilt forward       (about base +y) → [+6.937, 0.0, -6.937]
-# gravity_in_base: [0.0, 0.0, -9.81]
+gravity_in_base: [-6.937, 0.0, -6.937]   # 右 45° 傾斜マウント (manual verification)
 safety:
   joint_pos_min_rad: [-3.14, -3.14, -3.14, -3.14, -3.14, -3.14]
   joint_pos_max_rad: [3.14, 3.14, 3.14, 3.14, 3.14, 3.14]
