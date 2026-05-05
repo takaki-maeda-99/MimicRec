@@ -95,10 +95,26 @@ class DaemonConfig:
     arm_config: str = "configs/rebotarm/arm.yaml"
     zmq_address: str = "tcp://*:5558"
     control_rate_hz: int = 500
+    # World gravity expressed in the arm's base frame, m/s². Default
+    # (0, 0, -9.81) assumes the arm is mounted upright on a horizontal
+    # surface (base +z = world up, base +x = forward, base +y = left).
+    # For tilted mounts, rotate world gravity (0,0,-9.81) into the base
+    # frame and put the result here. Example: 45° tilt to the right
+    # (about base +x) → (0.0, -6.937, -6.937).
+    gravity_in_base: List[float] = field(
+        default_factory=lambda: [0.0, 0.0, -9.81]
+    )
     safety: SafetyLimits = field(default_factory=SafetyLimits)
     gravity_comp: GravityCompParams = field(default_factory=GravityCompParams)
     position: PositionParams = field(default_factory=PositionParams)
     gripper: Optional[GripperParams] = None
+
+    def __post_init__(self) -> None:
+        if len(self.gravity_in_base) != 3:
+            raise ValueError(
+                f"gravity_in_base must be a length-3 list, got "
+                f"{self.gravity_in_base!r} (length {len(self.gravity_in_base)})"
+            )
 
 
 def load_daemon_config(path: str | Path) -> DaemonConfig:
@@ -113,6 +129,7 @@ def load_daemon_config(path: str | Path) -> DaemonConfig:
         arm_config=raw.get("arm_config", "configs/rebotarm/arm.yaml"),
         zmq_address=raw.get("zmq_address", "tcp://*:5558"),
         control_rate_hz=int(raw.get("control_rate_hz", 500)),
+        gravity_in_base=list(raw.get("gravity_in_base", [0.0, 0.0, -9.81])),
         safety=SafetyLimits(**safety_raw) if safety_raw else SafetyLimits(),
         gravity_comp=GravityCompParams(**grav_raw) if grav_raw else GravityCompParams(),
         position=PositionParams(**pos_raw) if pos_raw else PositionParams(),
