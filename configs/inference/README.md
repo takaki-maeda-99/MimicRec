@@ -148,3 +148,24 @@ loop:
 ## Switching to OpenVLA / π0 / RT-2
 
 Most of these accept comparable I/O — write a new YAML matching their field names. Action format may need a future task to support `joint_position` or absolute `ee_pose`.
+
+## Re-exporting legacy datasets recorded before the ee_delta refactor
+
+Datasets recorded before the recording-layer change in this PR have
+`info.json` `robot_type: "unknown"` and no `gripper_convention` /
+`proprio_layout` fields. The exporter rejects these by default to
+prevent silent gripper-polarity inversion.
+
+Pass `robot_type=so101` or `robot_type=rebot` (the `robot_type`
+field on the export API request) to override:
+
+    POST /datasets/<name>/export
+    {
+      "format": "VLA_COMPAT",
+      "instruction_template": "{task}",
+      "robot_type": "so101"
+    }
+
+The override only adds the convention + layout the exporter would have
+read from `info.json`. The output `info.json` is written with
+`robot_type` set to the real adapter class name (e.g. `SO101Adapter`).
