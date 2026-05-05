@@ -18,7 +18,7 @@ from mimicrec.api.schemas import (
 )
 from mimicrec.datasets.archive import build_archive_stream
 from mimicrec.datasets.exporters.errors import DestinationExistsError
-from mimicrec.datasets.exporters.orchestrator import export_dataset_to_local
+from mimicrec.datasets.exporters.orchestrator import export_dataset_to_local, ExportOverride
 from mimicrec.datasets.reader import iter_episodes, read_dataset_info
 from mimicrec.recording.dataset_layout import init_dataset, dataset_paths, resolve_chunk
 from mimicrec.recording.metadata import tombstone_episode, upsert_task
@@ -372,6 +372,7 @@ async def export_dataset(request: Request, ds: str, body: ExportRequest) -> Expo
     dest_root = get_vla_dest_root(request.app)
     dest_root.mkdir(parents=True, exist_ok=True)
     try:
+        override = ExportOverride(robot_type=body.robot_type) if body.robot_type else None
         result = await asyncio.to_thread(
             export_dataset_to_local,
             ds_root=ds_root,
@@ -379,6 +380,7 @@ async def export_dataset(request: Request, ds: str, body: ExportRequest) -> Expo
             format=body.format,
             instruction_template=body.instruction_template,
             force=body.force,
+            override=override,
         )
     except DestinationExistsError as e:
         raise HTTPException(status_code=409, detail=str(e))
