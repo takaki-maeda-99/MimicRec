@@ -114,11 +114,11 @@ def _ramp_disable(arm: RobotArm, n: int, secs: float = 1.0, rate_hz: int = 100) 
 def run_server(cfg: DaemonConfig) -> None:
     # Apply the configured mount-aware gravity vector to the cached
     # dynamics model BEFORE any controller is constructed.
-    # controllers.py and pre_release_settle call
-    # compute_generalized_gravity() without an explicit model, so they
-    # hit this cached instance. Must run before GravityCompController /
-    # PositionController are built (their __init__ may also touch the
-    # cache via compute_generalized_gravity).
+    # controllers.py (GravityCompController.compute,
+    # PositionController.compute) and _ramp_disable in this file all
+    # call compute_generalized_gravity() without an explicit model, so
+    # they hit this cached instance. Setting it here once means the
+    # downstream controllers see the right gravity from the first tick.
     model = load_dynamics_model()
     set_gravity(model, tuple(cfg.gravity_in_base))
     print(
