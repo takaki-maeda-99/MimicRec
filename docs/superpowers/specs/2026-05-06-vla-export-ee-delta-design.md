@@ -545,7 +545,7 @@ For pre-existing 240 episodes, exporting with `--robot-type so101` / `--robot-ty
 
 - `test_action_is_ee_delta_with_gripper_in_unit_range`
 - `test_action_uses_ee_local_frame_via_matrix_compose` — non-identity orientation; assert `T_curr @ T_delta` reconstructs `T_next` (translation 1e-6, rotation 1e-6 rad). Reconstruction-based, not component-similarity-based.
-- `test_rotation_delta_near_pi_almost_one_rad_passes_reconstruction` — `T_curr` and `T_next` whose relative rotation is ~0.9 rad; assert reconstruction succeeds.
+- `test_rotation_delta_below_sanity_bound_passes_reconstruction` — `T_curr` and `T_next` whose relative rotation is ~0.9 rad (just under the 1-rad sanity bound, well below π); assert reconstruction succeeds.
 - `test_rotation_delta_above_one_rad_raises_sanity` — relative rotation 1.1 rad triggers the `_ROT_DELTA_SANITY_RAD` guard.
 - `test_rotation_delta_near_zero_returns_small_axisangle`
 - `test_export_drops_last_frame_episode_n_to_n_minus_1` — input has n rows, output has n-1.
