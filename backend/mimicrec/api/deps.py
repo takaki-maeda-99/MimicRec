@@ -141,8 +141,33 @@ async def create_session_from_request(app, req) -> SessionManager:
     # Dataset
     ds_root = datasets_root / req.dataset
     if not ds_root.exists():
-        init_dataset(ds_root, fps=req.fps,
-                     joint_names=robot.joint_names, camera_names=list(req.cameras))
+        # Capture per-adapter declarations if available (None for mock adapters).
+        rt = type(robot).__name__
+        gc = (
+            robot.default_gripper_convention()
+            if hasattr(robot, "default_gripper_convention") else None
+        )
+        pl = (
+            robot.proprio_layout()
+            if hasattr(robot, "proprio_layout") else None
+        )
+        init_dataset(
+            ds_root, fps=req.fps,
+            joint_names=robot.joint_names,
+            camera_names=list(req.cameras),
+            robot_type=rt,
+            gripper_convention=(
+                {"closed_at": gc.closed_at, "open_at": gc.open_at} if gc else None
+            ),
+            proprio_layout=(
+                {
+                    "columns": list(pl.columns),
+                    "output_names": list(pl.output_names),
+                    "gripper_via_column": pl.gripper_via_column,
+                    "gripper_index_in_column": pl.gripper_index_in_column,
+                } if pl else None
+            ),
+        )
 
     # Resolved config snapshot
     resolved: dict[str, object] = {"robot": OmegaConf.to_container(robot_cfg)}

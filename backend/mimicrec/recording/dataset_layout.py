@@ -39,7 +39,16 @@ def dataset_paths(ds_root: Path) -> DatasetPaths:
     )
 
 
-def init_dataset(ds_root: Path, fps: int, joint_names: list[str], camera_names: list[str]) -> None:
+def init_dataset(
+    ds_root: Path,
+    fps: int,
+    joint_names: list[str],
+    camera_names: list[str],
+    *,
+    robot_type: str | None = None,
+    gripper_convention: dict | None = None,
+    proprio_layout: dict | None = None,
+) -> None:
     p = dataset_paths(ds_root)
     p.meta_dir.mkdir(parents=True, exist_ok=True)
     p.data_dir.mkdir(parents=True, exist_ok=True)
@@ -71,9 +80,9 @@ def init_dataset(ds_root: Path, fps: int, joint_names: list[str], camera_names: 
             },
         }
 
-    info = {
+    info: dict = {
         "codebase_version": "v3.0",
-        "robot_type": "unknown",
+        "robot_type": robot_type if robot_type is not None else "unknown",
         "total_episodes": 0,
         "total_frames": 0,
         "total_tasks": 0,
@@ -86,6 +95,10 @@ def init_dataset(ds_root: Path, fps: int, joint_names: list[str], camera_names: 
         "video_path": "videos/{video_key}/chunk-{chunk_index:03d}/episode_{file_index:06d}.mp4",
         "features": features,
     }
+    if gripper_convention is not None:
+        info["gripper_convention"] = gripper_convention
+    if proprio_layout is not None:
+        info["proprio_layout"] = proprio_layout
     (p.meta_dir / "info.json").write_text(json.dumps(info, indent=2))
 
     # Create empty tasks.parquet with proper schema
