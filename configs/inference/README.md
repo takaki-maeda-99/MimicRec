@@ -151,6 +151,10 @@ Most of these accept comparable I/O — write a new YAML matching their field na
 
 ## Re-exporting legacy datasets recorded before the ee_delta refactor
 
+> **Deployment prerequisite — the inference contract YAML is a separate follow-up.** This PR rewrites the exporter; it does NOT update `gemma_libero_v1.yaml` or the contract decoder. The exported `action_stats.json` has `convention: "q99_derived_midpoint_halfrange"` (mean = (q01+q99)/2, std = (q99-q01)/2 — derived from BOUNDS_Q99, not actual mean/std). The decoder formula `physical = mean + arr * std` happens to be the correct inverse for q99-normalized model outputs in `[-1, +1]`, but the operator-facing contract YAML must be reviewed and confirmed before deploying any model trained from this export to a live robot. Until then, treat exported datasets as training input only.
+>
+> If a model trained on this export is pointed at the live robot before the YAML follow-up confirms the matching normalization mode, gripper polarity or pose magnitudes may silently invert.
+
 Datasets recorded before the recording-layer change in this PR have
 `info.json` `robot_type: "unknown"` and no `gripper_convention` /
 `proprio_layout` fields. The exporter rejects these by default to
@@ -161,10 +165,12 @@ field on the export API request) to override:
 
     POST /datasets/<name>/export
     {
-      "format": "VLA_COMPAT",
+      "format": "vla_compat",
       "instruction_template": "{task}",
       "robot_type": "so101"
     }
+
+(`format` is a string-enum value; use the lowercase form `"vla_compat"` — Pydantic rejects `"VLA_COMPAT"` with a 422.)
 
 The override only adds the convention + layout the exporter would have
 read from `info.json`. The output `info.json` is written with
