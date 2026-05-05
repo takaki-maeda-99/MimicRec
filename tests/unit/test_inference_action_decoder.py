@@ -220,7 +220,18 @@ def test_ik_failure_does_not_drift_t_curr():
     # On step 0 we fail. The fix: T_curr must revert to FK(seed), so on
     # step 1 we pass T = FK(seed) @ T_delta (ee_local frame), NOT
     # captured_T_for_ik[0] @ T_delta which would compound the failed delta.
-    # FK(seed) for step 1 should be called AGAIN after the IK failure.
-    fk_first = fk_calls[0]    # initial FK at decode start
     assert any(np.array_equal(c, seed) for c in fk_calls[1:]), \
         "After IK failure, FK(seed) must be re-evaluated to revert T_curr"
+
+    # Stronger assertion: verify the actual T_target passed to IK on step 1.
+    # FakeFK.matrix(q) returns translation(q[:3] * 0.001). With seed=[7,7,7,7,7],
+    # FK(seed)[:3,3] = [0.007, 0.007, 0.007]. T_delta is translation(1.0, 0, 0)
+    # (arr[0] = 1.0). So under the FIX, captured_T_for_ik[1][:3,3] should be
+    # FK(seed) @ T_delta = [0.007 + 1.0, 0.007, 0.007] = [1.007, ...].
+    # Under the BUG (T_curr advanced to T_next on failure), step 1 would have
+    # T_curr[:3,3] = [1.007, ...] and step 1 T_next would compound to
+    # [2.007, ...]. Asserting against the correct value distinguishes them.
+    step1_T = captured_T_for_ik[1]
+    assert step1_T[0, 3] == pytest.approx(1.007, abs=1e-9), \
+        f"step 1 T_target.x should be 1.007 (FK(seed)+delta), got {step1_T[0, 3]:.6f} " \
+        f"— the bug case would produce ~2.007 (compounded from failed step)"
