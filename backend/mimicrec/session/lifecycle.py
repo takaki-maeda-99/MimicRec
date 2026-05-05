@@ -141,6 +141,11 @@ class SessionManager:
         # guards between the awaits inside a transition, leading to
         # interleaved task spawns / cancels.
         self._mode_transition_lock: asyncio.Lock = asyncio.Lock()
+        # E-stop latch. Set synchronously by /robot/estop; cleared by
+        # /robot/clear_estop. start_inference_session refuses to spawn
+        # while latched, so an E-stop arriving mid-Phase-2 prevents the
+        # inference tasks from coming up after hardware torque-off.
+        self._estop_latched: bool = False
         self._chunk_buffer: ChunkBuffer | None = None
         self._inference_safety: InferenceSafety | None = None
         self._producer_task: asyncio.Task | None = None
@@ -672,6 +677,14 @@ class SessionManager:
         instruction: str,
         inference_config_name: str,
     ) -> None:
+        # E-stop latch check: if /robot/estop was hit (even concurrently
+        # while we were waiting for the lock), refuse to start a new
+        # inference session. The operator must call /robot/clear_estop
+        # first to acknowledge the abort.
+        if self._estop_latched:
+            raise InvalidTransitionError(
+                "start_inference_session: E-stop is latched; clear it before starting"
+            )
         if self.session.state != SessionState.READY:
             raise InvalidTransitionError(
                 f"start_inference_session requires READY, got {self.session.state}"
@@ -740,6 +753,15 @@ class SessionManager:
         # ============================================================
         # PHASE 2: DESTRUCTIVE — past this point we don't roll back.
         # ============================================================
+        # Re-check the E-stop latch one more time. The lock blocks
+        # /robot/estop's `await sm.stop_inference_session()` (because
+        # that also takes the lock), but `_estop_latched = True` itself
+        # is set synchronously before that — it can flip while we hold
+        # the lock from Phase 1's `resolve_action_stats()` etc.
+        if self._estop_latched:
+            raise InvalidTransitionError(
+                "start_inference_session: E-stop latched mid-start; aborting"
+            )
         # Cancel tasks spawned by the prior teleop/handteach session.start().
         # Those tasks share the slots/queues we're about to spawn fresh
         # tasks against — letting both run causes 2 robot readers writing
@@ -941,11 +963,16 @@ class SessionManager:
             self._pending.discard()
             self._pending = None
 
-        # Await tasks in order
+        # Await tasks in order. Inference-mode tasks (_producer_task,
+        # _inference_watchdog_task) are also cancelled here because
+        # `end()` may be called while a session is still in INFERENCE
+        # mode; without these the watchdog could later fire
+        # `episode_stop` after teardown has begun.
         for task in [
             self._teleop_reader_task, self._robot_reader_task,
             self._control_loop_task, self._writer_task,
             self._dispatcher_task, self._error_handler_task,
+            self._producer_task, self._inference_watchdog_task,
         ]:
             if task and not task.done():
                 task.cancel()
