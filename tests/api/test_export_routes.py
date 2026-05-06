@@ -324,3 +324,25 @@ async def test_archive_vla_compat_with_rebot_override(app: FastAPI, tmp_path: Pa
     zf = zipfile.ZipFile(io.BytesIO(r.content))
     info = json.loads(zf.read("meta/info.json").decode())
     assert info["robot_type"] == "ReBotArmZmqAdapter"
+
+
+@pytest.mark.asyncio
+async def test_archive_vla_compat_rejects_invalid_robot_type(app: FastAPI, tmp_path: Path):
+    """FastAPI Literal validation must reject robot_type values
+    outside {so101, rebot} with 422 before any exporter code runs."""
+    from mimicrec.recording.dataset_layout import init_dataset
+
+    ds_name = "ds_validate"
+    init_dataset(tmp_path / "datasets" / ds_name, fps=15,
+                 joint_names=["j1", "j2", "j3", "j4", "j5", "j6"],
+                 camera_names=[])
+    app.state.datasets_root = tmp_path / "datasets"
+    app.state.vla_dest_root = tmp_path / "vla"
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://t") as ac:
+        r = await ac.get(
+            f"/api/datasets/{ds_name}/archive",
+            params={"format": "vla_compat", "robot_type": "totally_invalid"},
+        )
+    assert r.status_code == 422
