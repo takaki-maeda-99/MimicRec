@@ -58,10 +58,16 @@ export interface WsMessage {
 
 export type ExportFormat = "lerobot_v3_native" | "vla_compat";
 
+export type RobotTypeOverride = "so101" | "rebot";
+
 export interface ExportRequest {
   format: ExportFormat;
   instruction_template?: string;
   force?: boolean;
+  // Legacy-dataset override for VLA_COMPAT export. Set when info.json
+  // declares robot_type='unknown' (datasets recorded before the
+  // recording-layer adapter-declarations change).
+  robot_type?: RobotTypeOverride;
 }
 
 export interface ExportResponse {

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useExportDataset, useTasks } from "../api/queries.ts";
 import { ApiError } from "../api/client.ts";
-import type { ExportFormat } from "../api/types.ts";
+import type { ExportFormat, RobotTypeOverride } from "../api/types.ts";
 
 const DEFAULT_TEMPLATE = "What action should the robot take to {TASK}? A:";
 
@@ -15,13 +15,21 @@ export function ExportDatasetModal({ ds, onClose }: Props) {
   const [template, setTemplate] = useState<string>(DEFAULT_TEMPLATE);
   const [force, setForce] = useState<boolean>(false);
   const [needsForce, setNeedsForce] = useState<boolean>(false);
+  // "" = no override (use info.json); "so101" / "rebot" = override for legacy
+  // datasets where info.json declares robot_type='unknown'.
+  const [robotType, setRobotType] = useState<"" | RobotTypeOverride>("");
   const exportMutation = useExportDataset(ds);
   const { data: tasks } = useTasks(ds);
 
   const handleSubmit = () => {
     setNeedsForce(false);
     exportMutation.mutate(
-      { format, instruction_template: template, force },
+      {
+        format,
+        instruction_template: template,
+        force,
+        ...(robotType ? { robot_type: robotType } : {}),
+      },
       {
         onError: (err) => {
           if (err instanceof ApiError && err.status === 409) {
@@ -48,7 +56,7 @@ export function ExportDatasetModal({ ds, onClose }: Props) {
           <label className="flex items-center gap-2">
             <input type="radio" checked={format === "vla_compat"}
                    onChange={() => setFormat("vla_compat")} />
-            VLA-compat (joint 7-D, instruction-conditioned)
+            VLA-compat (EE-delta + gripper, instruction-conditioned)
           </label>
         </fieldset>
 
@@ -61,6 +69,20 @@ export function ExportDatasetModal({ ds, onClose }: Props) {
             <p className="mb-4 text-xs text-gray-500">
               <code>{"{TASK}"}</code> is replaced per episode with each task's instruction
               (or task name when instruction is empty).
+            </p>
+
+            <label className="mb-1 block text-sm font-medium">Robot-type override (legacy datasets)</label>
+            <select className="mb-1 w-full rounded border border-gray-300 p-2 text-sm"
+                    value={robotType}
+                    onChange={(e) => setRobotType(e.target.value as "" | RobotTypeOverride)}>
+              <option value="">Auto (use info.json)</option>
+              <option value="so101">SO-101</option>
+              <option value="rebot">reBot</option>
+            </select>
+            <p className="mb-4 text-xs text-gray-500">
+              Set this only if the export fails because <code>info.json</code> declares
+              <code className="mx-1">robot_type=&quot;unknown&quot;</code>
+              (datasets recorded before adapter declarations were tracked).
             </p>
 
             <div className="mb-4 max-h-32 overflow-auto rounded border border-gray-200 p-2 text-xs">
