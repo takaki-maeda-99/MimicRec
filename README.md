@@ -10,7 +10,8 @@ Local-first web application for collecting imitation-learning datasets from phys
 - **Hand-teach** by moving the robot under pure-compliance gravity compensation (reBotArm), with gripper friction compensation so the gripper feels light too
 - **Review** recorded episodes: save, discard, or label (success/failure)
 - **Replay** episodes on the robot — both arm and gripper follow the recorded trajectory, with a safety watchdog
-- **Annotate** episodes with subtask segments (Gemma 4 VLM; full pipeline lives in `MimicAno/`)
+- **Run a VLA model** (Vision-Language-Action) against the live robot via an HTTP contract — see `configs/inference/`
+- **Annotate** episodes with subtask segments via the in-app stub annotator
 - **Configure** devices, calibrations, and adapter configs from a Settings page
 - **Download** datasets as LeRobot v3 compatible zip archives
 
@@ -34,7 +35,7 @@ Browser (React)  ←→  FastAPI + WebSocket  ←→  SessionManager  ←→  Ha
 
 - **Backend**: Python 3.12, FastAPI, asyncio control loop, LeRobot v3 format
 - **Frontend**: React 19, TypeScript, Vite, TailwindCSS, TanStack Query
-- **119 backend tests**, all passing
+- **~250 backend tests** (unit, integration, exit-criteria, API)
 
 ## Quick start
 
@@ -75,8 +76,8 @@ Toolchains:
 Hardware (optional):
 - SO-101 follower / leader on `/dev/ttyACM*` (needs `dialout` group)
 - USB cameras on `/dev/video*` (needs `video` group)
-- NVIDIA GPU + driver (only needed once MimicAno's real VLM lands;
-  current stub annotator runs on CPU)
+- NVIDIA GPU + driver (only needed if you self-host a VLA inference
+  server; the in-app stub annotator runs on CPU)
 - Isaac Sim 5.0 for simulation (install separately via Omniverse Launcher)
 
 ### Manual install (if you skip setup.sh)
@@ -118,9 +119,9 @@ bash scripts/run_frontend.sh  # Vite on :5173
 ### Run tests
 
 ```bash
-bash scripts/test.sh tests/ -q        # All 88 tests
+bash scripts/test.sh tests/ -q                 # Full suite
 bash scripts/test.sh tests/ -k exit_criterion  # Plan A exit criteria (9)
-bash scripts/test.sh tests/api/ -q     # API tests only (33)
+bash scripts/test.sh tests/api/ -q             # API tests only
 ```
 
 ## Usage
@@ -242,8 +243,13 @@ cp reBotArm_control_py/config/gripper.yaml configs/rebotarm/gripper.yaml
 ```
 
 Edit `configs/rebotarm/arm.yaml` to match your motor IDs / channel.
-The MimicRec daemon config has three sections worth tuning:
+The MimicRec daemon config has these sections worth tuning:
 
+- `gravity_in_base` — world gravity expressed in the arm's base frame
+  (m/s²). Omit for upright/flat mounts (default `[0, 0, -9.81]`). For a
+  tilted base, rotate world gravity into the base frame and put the
+  result here, otherwise gravity comp will fight the operator. Examples
+  in `configs/rebotarm_daemon.yaml` cover 45° side and forward tilts.
 - `gravity_comp.kd` — per-joint damping during hand-teach. Higher on
   the proximal 4340P joints (1-3) which carry more reflected inertia.
   Default `[1.5, 1.5, 1.0, 0.6, 0.4, 0.2]`. Bump up if the arm "flies"
@@ -311,6 +317,7 @@ the default save-as-success, then automatically starts the next episode.
 | **Record** | `/record` | Session config → record → review → save |
 | **Episodes** | `/datasets/:ds/episodes` | Episode table, delete, annotate |
 | **Replay** | `/datasets/:ds/episodes/:idx/replay` | Video playback, replay on robot |
+| **Inference** | `/inference` | Run a VLA model against the live robot (start/stop, instruction, status) |
 | **Settings** | `/settings` | Device discovery, adapter configs, calibration status |
 
 ## REST API
@@ -351,6 +358,19 @@ the default save-as-success, then automatically starts the next episode.
 | `POST` | `/api/datasets/:ds/annotate-all` | Annotate every episode in the dataset |
 | `GET` | `/api/datasets/:ds/annotate-progress` | Poll annotation progress |
 
+### Inference (VLA)
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/configs/inference` | List available inference contracts |
+| `GET` | `/api/configs/inference/:name` | Read a parsed/validated contract (env vars elided) |
+| `POST` | `/api/session/inference/start` | Start an inference session against the active robot |
+| `POST` | `/api/session/inference/stop` | Stop the inference session |
+| `PUT` | `/api/session/inference/instruction` | Set the natural-language instruction (READY only) |
+| `GET` | `/api/session/inference/state` | Current inference state |
+
+Contracts live in `configs/inference/*.yaml`; see `configs/inference/README.md` for the full schema (endpoint, request/response shape, action format, normalization stats).
+
 ### Settings
 
 | Method | Endpoint | Description |
@@ -372,6 +392,7 @@ the default save-as-success, then automatically starts the next episode.
 | `/ws/state` | ~15 Hz | Robot joint positions, velocities |
 | `/ws/cameras/:cam` | ~15 Hz | JPEG binary frames |
 | `/ws/teleop` | Event-driven | Browser keyboard teleoperator input |
+| `/ws/inference` | Event-driven | Inference session state, chunk events, errors |
 
 ## Dataset format
 
@@ -420,10 +441,13 @@ See `scripts/sim_bridge_isaacsim.py` for a reference implementation.
 MimicRec/
   backend/mimicrec/
     adapters/     # Robot & teleop adapters (SO-101, mock, sim bridge, web teleop)
+    annotator/    # In-app subtask annotator (stub today)
     api/          # FastAPI routes + WebSocket hubs
     cameras/      # CameraManager, OpenCV, sim camera
     config/       # OmegaConf loader
     datasets/     # Reader, archive builder
+    inference/    # VLA HTTP client, contract loader, control loop
+    kinematics/   # URDF-based forward kinematics for EE columns
     mappers/      # Teleop → robot command mapping
     recording/    # Writer, pending episodes, parquet, metadata
     session/      # SessionManager, control loop, dispatcher, replay
@@ -431,28 +455,28 @@ MimicRec/
   frontend/src/
     api/          # REST client, WebSocket, TanStack Query hooks
     components/   # UI components (shadcn/ui style)
-    pages/        # Datasets, Record, Episodes, Replay, Settings
-    state/        # Zustand session store
-  configs/        # Robot, teleop, mapper, camera YAMLs
-  scripts/        # Run scripts, calibration, sim bridges
-  tests/          # 88 tests (unit, integration, exit criteria, API)
-  MimicAno/       # Standalone subtask annotator package (in development)
-    docs/design.md  # Pipeline design spec
-    sam3/           # SAM 3 (text-prompted segmentation) clone
+    pages/        # Datasets, Record, Episodes, Replay, Inference, Settings
+    state/        # Zustand session / inference stores
+  configs/        # Robot, teleop, mapper, camera, inference, rebotarm YAMLs
+  docs/           # Architecture notes, VLA server contract spec
+  scripts/        # Run scripts, calibration, sim bridges, rebotarm daemon
+  tests/          # Unit, integration, exit criteria, API
 ```
 
-## MimicAno — subtask annotator
+## VLA inference
 
-`MimicAno/` is a standalone Python package (also usable from MimicRec) that
-turns recorded episodes into reviewed subtask segments.
+MimicRec can drive the live robot from any HTTP-served Vision-Language-Action
+model. A YAML contract under `configs/inference/` describes how to pack each
+request (cameras, proprio state, instruction) and how to interpret the chunked
+action response (frame, units, normalization stats).
 
-Pipeline: signal-based boundary detection → SAM3 object tracking → clip
-segmentation → Gemma 4 VLM labeling (allowed labels only) → temporal
-smoothing → human review UI.
+- Contract schema: `configs/inference/README.md`
+- Reference contract: `configs/inference/gemma_libero_v1.yaml`
+- Server-side requirements (for someone implementing a VLA server): `docs/vla-server-contract-prompt.md`
 
-See `MimicAno/docs/design.md` for the full design. Implementation is in
-progress; the existing in-app annotation endpoints under `/api/datasets/...`
-are the bridge until MimicAno is wired in.
+The MVP supports `ee_delta` actions (6-DoF EE delta + gripper) with `mean_std`
+or `minmax_neg1_pos1` normalization, half-prefetch of the next chunk, and
+optional `done` auto-stop when running during RECORDING.
 
 ## License
 
