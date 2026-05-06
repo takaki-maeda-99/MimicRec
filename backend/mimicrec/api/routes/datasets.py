@@ -195,34 +195,34 @@ async def download_archive(
             headers={"Content-Disposition": f'attachment; filename="{ds}.zip"'},
         )
 
-    # format == VLA_COMPAT: convert into tempdir, then stream the tree as zip.
-    def generate_vla():
-        buf = io.BytesIO()
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_root = Path(tmp)
-            override = ExportOverride(robot_type=robot_type) if robot_type else None
-            try:
-                export_dataset_to_local(
-                    ds_root=ds_root,
-                    dest_root=tmp_root,
-                    format=ExportFormat.VLA_COMPAT,
-                    instruction_template=instruction_template,
-                    force=True,
-                    override=override,
-                )
-            except ValueError as e:
-                raise HTTPException(status_code=400, detail=str(e))
-            converted_root = tmp_root / ds
-            with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-                for fp in sorted(converted_root.rglob("*")):
-                    if fp.is_file():
-                        arcname = fp.relative_to(converted_root).as_posix()
-                        zf.write(fp, arcname=arcname)
-        buf.seek(0)
-        yield buf.read()
+    # format == VLA_COMPAT: convert into tempdir + build the zip eagerly so
+    # ValueError translates to a real 400 (a generator-raised HTTPException
+    # would fire after StreamingResponse already committed 200 OK headers).
+    buf = io.BytesIO()
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_root = Path(tmp)
+        override = ExportOverride(robot_type=robot_type) if robot_type else None
+        try:
+            export_dataset_to_local(
+                ds_root=ds_root,
+                dest_root=tmp_root,
+                format=ExportFormat.VLA_COMPAT,
+                instruction_template=instruction_template,
+                force=True,
+                override=override,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        converted_root = tmp_root / ds
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for fp in sorted(converted_root.rglob("*")):
+                if fp.is_file():
+                    arcname = fp.relative_to(converted_root).as_posix()
+                    zf.write(fp, arcname=arcname)
+    buf.seek(0)
 
     return StreamingResponse(
-        generate_vla(),
+        iter([buf.read()]),
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{ds}_vla.zip"'},
     )
