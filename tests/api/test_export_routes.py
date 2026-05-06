@@ -259,5 +259,7 @@ async def test_archive_vla_compat_returns_zip_so101(app: FastAPI, tmp_path: Path
     assert any(n.startswith("videos/observation.images.front/chunk-000/episode_")
                and n.endswith(".mp4") for n in names)
 
-    # Tempdir must not have leaked into the dest_root
-    assert not (tmp_path / "vla").exists() or not any((tmp_path / "vla").iterdir())
+    # Tempdir must not have leaked into the configured vla_dest_root.
+    # The archive route should never touch get_vla_dest_root — it converts
+    # into its own tempfile.TemporaryDirectory and zips from there.
+    assert not (tmp_path / "vla").exists()
