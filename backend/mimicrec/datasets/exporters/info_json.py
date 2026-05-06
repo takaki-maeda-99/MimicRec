@@ -4,38 +4,51 @@ from __future__ import annotations
 import copy
 from typing import Any
 
-GRIPPER_AXIS_NAME = "gripper"
+from mimicrec.adapters.types import ProprioLayout
+
+ACTION_NAMES = ["ee_dx", "ee_dy", "ee_dz", "ee_drx", "ee_dry", "ee_drz", "gripper"]
 
 
-def to_vla_info(info: dict[str, Any]) -> dict[str, Any]:
-    """Return a deep-copied info dict with action/observation.state at shape [7]
-    and a ``language_instruction`` feature added.
+def to_vla_info(
+    info: dict[str, Any],
+    *,
+    robot_type: str,
+    gripper_convention: dict,
+    proprio_layout: ProprioLayout,
+    n_proprio: int,
+) -> dict[str, Any]:
+    """Return a deep-copied info dict with action/observation.state for the
+    VLA-compat schema and the recording-time adapter declarations carried
+    through to the export.
 
-    The input dict is not mutated.
+    The input `info` dict is not mutated.
     """
     new = copy.deepcopy(info)
+    new["robot_type"] = robot_type
+    new["gripper_convention"] = gripper_convention
+    new["proprio_layout"] = {
+        "columns": list(proprio_layout.columns),
+        "output_names": list(proprio_layout.output_names),
+        "gripper_via_column": proprio_layout.gripper_via_column,
+        "gripper_index_in_column": proprio_layout.gripper_index_in_column,
+    }
     features = new.setdefault("features", {})
 
-    for key in ("action", "observation.state"):
-        spec = features.get(key)
-        if spec is None:
-            spec = {"dtype": "float32", "shape": [7], "names": []}
-            features[key] = spec
-        names = list(spec.get("names") or [])
-        # Ensure exactly 6 joint names + "gripper" — if input listed 6, append gripper;
-        # if input already listed 7 with gripper at the end, leave it.
-        if names and names[-1] != GRIPPER_AXIS_NAME:
-            names = names[:6] + [GRIPPER_AXIS_NAME]
-        elif not names:
-            names = [f"joint_{i}" for i in range(6)] + [GRIPPER_AXIS_NAME]
-        spec["names"] = names
-        spec["shape"] = [7]
-        spec["dtype"] = "float32"
-
-    features["language_instruction"] = {
-        "dtype": "string",
-        "shape": [1],
-        "names": None,
+    features["action"] = {
+        "dtype": "float32", "shape": [7], "names": list(ACTION_NAMES),
     }
 
+    obs_names = list(proprio_layout.output_names)
+    if len(obs_names) != n_proprio:
+        raise ValueError(
+            f"proprio name/shape mismatch: layout.output_names has {len(obs_names)} "
+            f"entries but n_proprio={n_proprio}"
+        )
+    features["observation.state"] = {
+        "dtype": "float32", "shape": [n_proprio], "names": obs_names,
+    }
+
+    features["language_instruction"] = {
+        "dtype": "string", "shape": [1], "names": None,
+    }
     return new

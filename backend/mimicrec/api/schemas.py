@@ -107,6 +107,13 @@ class ExportRequest(BaseModel):
     format: ExportFormat
     instruction_template: str = DEFAULT_INSTRUCTION_TEMPLATE
     force: bool = False
+    robot_type: str | None = Field(
+        default=None,
+        description=(
+            "Override for legacy datasets where info.json declares "
+            "robot_type='unknown'. Allowed values: 'so101', 'rebot'."
+        ),
+    )
 
 
 class ExportResponse(BaseModel):
