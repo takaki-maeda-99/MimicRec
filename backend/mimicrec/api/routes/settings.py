@@ -5,7 +5,7 @@ import glob
 import json
 from pathlib import Path
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Response
 from pydantic import BaseModel
 from omegaconf import OmegaConf
 
@@ -17,8 +17,9 @@ router = APIRouter()
 # --- Device discovery ---
 
 @router.get("/settings/devices/serial")
-async def list_serial_ports():
+async def list_serial_ports(response: Response):
     """List available serial ports."""
+    response.headers["Cache-Control"] = "no-store"
     ports = sorted(glob.glob("/dev/ttyACM*") + glob.glob("/dev/ttyUSB*"))
     result = []
     for port in ports:
@@ -33,8 +34,9 @@ async def list_serial_ports():
 
 
 @router.get("/settings/devices/cameras")
-async def list_camera_devices():
+async def list_camera_devices(response: Response):
     """List available camera devices."""
+    response.headers["Cache-Control"] = "no-store"
     import cv2
     devices = sorted(glob.glob("/dev/video*"))
     result = []
