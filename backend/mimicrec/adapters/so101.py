@@ -1,5 +1,6 @@
 from __future__ import annotations
 import asyncio
+from pathlib import Path
 import numpy as np
 
 from mimicrec.adapters.robot import RobotMode
@@ -8,6 +9,52 @@ from mimicrec.errors import HandTeachNotSupportedError
 from mimicrec.types import RobotState
 
 JOINT_NAMES = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"]
+
+
+def _so_calibrate_command(*, port: str, arm_id: str, calibrate_type: str) -> str:
+    return (
+        f"python scripts/calibrate_so101.py --port {port} --id {arm_id} "
+        f"--type {calibrate_type}"
+    )
+
+
+def _so_calib_missing_message(
+    *, role: str, arm_id: str, port: str, file_path: Path, calibrate_type: str,
+) -> str:
+    cmd = _so_calibrate_command(port=port, arm_id=arm_id, calibrate_type=calibrate_type)
+    return (
+        f"{role} '{arm_id}' on {port} has no calibration.\n\n"
+        f"If you already have a calibration file for this arm, place it at:\n"
+        f"  {file_path}\n\n"
+        f"Otherwise, run calibration:\n"
+        f"  {cmd}"
+    )
+
+
+def _so_calib_mismatch_message(
+    *, role: str, arm_id: str, port: str, file_path: Path, calibrate_type: str,
+) -> str:
+    cmd = _so_calibrate_command(port=port, arm_id=arm_id, calibrate_type=calibrate_type)
+    return (
+        f"{role} '{arm_id}' on {port} motors do not match the calibration file at:\n"
+        f"  {file_path}\n\n"
+        f"The motors may have been swapped, power-cycled, or the file is for a "
+        f"different arm. If you have the correct calibration file for these motors, "
+        f"place it at the path above.\n\n"
+        f"Otherwise, re-run calibration:\n"
+        f"  {cmd}"
+    )
+
+
+async def _is_calibrated_safely(loop, hw) -> bool:
+    """Read ``is_calibrated`` off-thread (lerobot's getter does motor I/O).
+
+    Treat any exception as 'not calibrated' so we surface a clean
+    HardwareError rather than crashing inside connect()."""
+    try:
+        return await loop.run_in_executor(None, lambda: hw.is_calibrated)
+    except Exception:
+        return False
 
 
 class SO101Adapter:
@@ -51,16 +98,54 @@ class SO101Adapter:
         cfg = SOFollowerRobotConfig(port=self._port, id=self._id)
         self._follower = SO101Follower(cfg)
         loop = asyncio.get_running_loop()
-        try:
-            async with self._bus_lock:
-                await loop.run_in_executor(None, functools.partial(self._follower.connect, calibrate=False))
-        except RuntimeError as e:
-            if "no calibration" in str(e).lower():
-                raise HardwareError(
-                    f"SO-101 follower '{self._id}' on {self._port} has no calibration. "
-                    f"Run: python scripts/calibrate_so101.py --port {self._port} --id {self._id} --type follower"
-                ) from e
-            raise
+
+        # Two things lerobot's connect(calibrate=False) does NOT do, both of
+        # which leave the session limping into READY only to fail downstream:
+        #   1. raise when the calibration JSON is missing
+        #   2. write the loaded JSON to the motors when they're out of sync
+        # Without these guards, the reader loop hits "has no calibration
+        # registered" tens of seconds later, declares a FatalHardwareError,
+        # and the operator is bounced back to the settings screen with no
+        # actionable context. Catch both here at startup.
+        fpath = self._follower.calibration_fpath
+        if not fpath.is_file():
+            raise HardwareError(_so_calib_missing_message(
+                role="SO-101 follower", arm_id=self._id, port=self._port,
+                file_path=fpath, calibrate_type="follower",
+            ))
+
+        async with self._bus_lock:
+            await loop.run_in_executor(None, functools.partial(self._follower.connect, calibrate=False))
+
+        # File loaded into self._follower.calibration but the motors may
+        # still hold stale (or zero) calibration from a power cycle / arm
+        # swap. Apply the file values to the motors — the same recovery
+        # lerobot performs when an operator presses ENTER at its prompt —
+        # then verify, and fail with an actionable message if it didn't
+        # take.
+        if not await _is_calibrated_safely(loop, self._follower):
+            try:
+                async with self._bus_lock:
+                    await loop.run_in_executor(
+                        None,
+                        lambda: self._follower.bus.write_calibration(self._follower.calibration),
+                    )
+            except Exception:
+                pass
+            if not await _is_calibrated_safely(loop, self._follower):
+                # Disconnect cleanly so the serial port isn't left held by a
+                # half-initialized adapter — otherwise the operator can't
+                # even retry without yanking the cable.
+                try:
+                    async with self._bus_lock:
+                        await loop.run_in_executor(None, self._follower.disconnect)
+                except Exception:
+                    pass
+                self._follower = None
+                raise HardwareError(_so_calib_mismatch_message(
+                    role="SO-101 follower", arm_id=self._id, port=self._port,
+                    file_path=fpath, calibrate_type="follower",
+                ))
 
     async def disconnect(self) -> None:
         if self._follower:

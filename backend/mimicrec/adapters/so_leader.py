@@ -20,26 +20,67 @@ class SOLeaderAdapter:
     async def connect(self) -> None:
         import functools
         from mimicrec.errors import HardwareError
+        from mimicrec.adapters.so101 import (
+            _is_calibrated_safely,
+            _so_calib_missing_message,
+            _so_calib_mismatch_message,
+        )
         from lerobot.teleoperators.so_leader.so_leader import SOLeader
         from lerobot.teleoperators.so_leader.config_so_leader import SOLeaderTeleopConfig
         cfg = SOLeaderTeleopConfig(port=self._port, id=self._id)
         self._leader = SOLeader(cfg)
         loop = asyncio.get_running_loop()
-        try:
-            await loop.run_in_executor(None, functools.partial(self._leader.connect, calibrate=False))
-        except RuntimeError as e:
-            if "no calibration" in str(e).lower():
-                raise HardwareError(
-                    f"SO leader '{self._id}' on {self._port} has no calibration. "
-                    f"Run: python scripts/calibrate_so101.py --port {self._port} --id {self._id} --type leader"
-                ) from e
-            raise
+
+        # See SO101Adapter.connect for the rationale; the leader's lerobot
+        # base class has the same calibrate=False blind spot.
+        fpath = self._leader.calibration_fpath
+        if not fpath.is_file():
+            raise HardwareError(_so_calib_missing_message(
+                role="SO leader", arm_id=self._id, port=self._port,
+                file_path=fpath, calibrate_type="leader",
+            ))
+
+        await loop.run_in_executor(None, functools.partial(self._leader.connect, calibrate=False))
+
+        if not await _is_calibrated_safely(loop, self._leader):
+            try:
+                await loop.run_in_executor(
+                    None,
+                    lambda: self._leader.bus.write_calibration(self._leader.calibration),
+                )
+            except Exception:
+                pass
+            if not await _is_calibrated_safely(loop, self._leader):
+                try:
+                    await loop.run_in_executor(None, self._leader.disconnect)
+                except Exception:
+                    pass
+                self._leader = None
+                raise HardwareError(_so_calib_mismatch_message(
+                    role="SO leader", arm_id=self._id, port=self._port,
+                    file_path=fpath, calibrate_type="leader",
+                ))
 
     async def disconnect(self) -> None:
         if self._leader:
+            import logging
             loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, self._leader.disconnect)
-            self._leader = None
+            try:
+                await loop.run_in_executor(None, self._leader.disconnect)
+            except Exception as e:
+                # lerobot's bus.disconnect() runs disable_torque(num_retry=5)
+                # before closing the port; an alarm-state or unplugged motor
+                # returns no status packet and lerobot raises ConnectionError.
+                # Letting that propagate makes /session/end return 500 and
+                # leaves the operator unable to exit the session without
+                # restarting the backend. Log it and clear state so the next
+                # session can re-init cleanly.
+                logging.getLogger(__name__).warning(
+                    "SO leader disconnect failed (motors may be in fault state — "
+                    "power-cycle the leader arm): %s", e,
+                )
+            finally:
+                self._leader = None
 
     async def read_action(self) -> TeleopAction:
         assert self._leader is not None

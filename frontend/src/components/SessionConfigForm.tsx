@@ -1,5 +1,6 @@
 import { useConfigs, useDatasets, useStartSession, useTasks } from "../api/queries.ts";
 import { useRecordFormStore } from "../state/record-form-store.ts";
+import { useSessionStore } from "../state/session-store.ts";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Select } from "./ui/select";
@@ -16,6 +17,9 @@ export default function SessionConfigForm({ onStarted }: Props) {
   const { data: datasets } = useDatasets();
   const startSession = useStartSession();
 
+  const lastError = useSessionStore((s) => s.lastError);
+  const clearError = useSessionStore((s) => s.clearError);
+
   const form = useRecordFormStore();
   const { mode, robot, teleop, mapper, selectedCams, dataset, task, fps } = form;
 
@@ -23,6 +27,10 @@ export default function SessionConfigForm({ onStarted }: Props) {
   const { data: tasks } = useTasks(datasetExists ? dataset : "");
 
   const handleStart = () => {
+    // Clear any error left over from a prior session that ended via
+    // FatalHardwareError — otherwise the stale message stays pinned next
+    // to the new attempt's spinner.
+    clearError();
     const body: Record<string, unknown> = {
       mode, dataset, task, robot, cameras: selectedCams, fps,
     };
@@ -169,6 +177,20 @@ export default function SessionConfigForm({ onStarted }: Props) {
         <pre className="text-red-600 text-sm whitespace-pre-wrap font-mono bg-red-50 border border-red-200 rounded-md p-3">
           {(startSession.error as Error).message}
         </pre>
+      )}
+      {/* Errors that arrive AFTER session_start succeeded — e.g. a
+          FatalHardwareError from the reader loop that ended the session
+          on its own. Without this, the session quietly returns to IDLE
+          and the operator is dropped back on this form with no context. */}
+      {!startSession.isError && lastError && (
+        <div className="bg-red-50 border border-red-200 rounded-md p-3 space-y-1">
+          <div className="text-red-800 text-sm font-semibold">
+            Previous session ended with an error: {lastError.error}
+          </div>
+          <pre className="text-red-600 text-sm whitespace-pre-wrap font-mono">
+            {lastError.message}
+          </pre>
+        </div>
       )}
     </div>
   );
