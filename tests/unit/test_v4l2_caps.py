@@ -79,3 +79,38 @@ def test_enumerate_nonzero_exit_returns_empty():
         stderr = "Cannot open device /dev/video99"
     with patch("mimicrec.cameras.v4l2_caps.subprocess.run", return_value=FakeResult()):
         assert enumerate_capabilities("/dev/video99") == []
+
+
+SAMPLE_EMULATED = """ioctl: VIDIOC_ENUM_FMT
+\tType: Video Capture
+
+\t[0]: 'MJPG' (Motion-JPEG, compressed) (emulated)
+\t\tSize: Discrete 640x480
+\t\t\tInterval: Discrete 0.033s (30.000 fps)
+"""
+
+SAMPLE_SIZE_WITHOUT_INTERVAL = """ioctl: VIDIOC_ENUM_FMT
+\tType: Video Capture
+
+\t[0]: 'YUYV' (YUYV 4:2:2)
+\t\tSize: Discrete 1280x720
+\t\tSize: Discrete 640x480
+\t\t\tInterval: Discrete 0.033s (30.000 fps)
+"""
+
+
+def test_parse_format_with_emulated_suffix():
+    formats = parse_v4l2_listfmts(SAMPLE_EMULATED)
+    assert len(formats) == 1
+    assert formats[0].fourcc == "MJPG"
+    # Description must be the inner annotation only, not corrupted with trailing suffix.
+    assert formats[0].description == "Motion-JPEG, compressed"
+
+
+def test_drops_size_without_intervals():
+    formats = parse_v4l2_listfmts(SAMPLE_SIZE_WITHOUT_INTERVAL)
+    assert len(formats) == 1
+    yuyv = formats[0]
+    # 1280x720 had no Interval line, so it must be dropped.
+    sizes = [(s.width, s.height) for s in yuyv.sizes]
+    assert sizes == [(640, 480)]

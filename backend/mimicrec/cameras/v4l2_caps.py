@@ -25,7 +25,7 @@ class FormatCaps:
     sizes: list[FrameSize]
 
 
-_FMT_RE = re.compile(r"^\s*\[\d+\]:\s+'([A-Z0-9]+)'\s+\((.+)\)\s*$")
+_FMT_RE = re.compile(r"^\s*\[\d+\]:\s+'([A-Z0-9]+)'\s+\(([^)]+)\)(?:\s+\([^)]*\))?\s*$")
 _SIZE_DISCRETE_RE = re.compile(r"^\s*Size:\s+Discrete\s+(\d+)x(\d+)\s*$")
 _INTERVAL_DISCRETE_RE = re.compile(
     r"^\s*Interval:\s+Discrete\s+[\d.]+s\s+\(([\d.]+)\s+fps\)\s*$"
@@ -83,6 +83,9 @@ def parse_v4l2_listfmts(stdout: str) -> list[FormatCaps]:
         if "Size: Stepwise" in line or "Size: Continuous" in line:
             current_size = None
 
+    # Drop sizes with no discrete intervals, then drop formats with no surviving sizes.
+    for f in formats:
+        f.sizes = [s for s in f.sizes if s.fps]
     return [f for f in formats if f.sizes]
 
 
