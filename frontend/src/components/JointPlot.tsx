@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { SegmentedTab, SegmentedTabBar } from "./ui/segmented-tab";
 import {
   LineChart,
   Line,
@@ -80,20 +81,14 @@ export default function JointPlot({ ds, idx }: Props) {
   return (
     <div>
       {hasVelocity && (
-        <div className="flex gap-2 mb-3">
-          <button
-            className={`px-3 py-1 rounded text-sm ${mode === "position" ? "bg-primary text-on-primary" : "bg-surface text-charcoal"}`}
-            onClick={() => setMode("position")}
-          >
+        <SegmentedTabBar className="mb-3">
+          <SegmentedTab active={mode === "position"} onClick={() => setMode("position")}>
             Position
-          </button>
-          <button
-            className={`px-3 py-1 rounded text-sm ${mode === "velocity" ? "bg-primary text-on-primary" : "bg-surface text-charcoal"}`}
-            onClick={() => setMode("velocity")}
-          >
+          </SegmentedTab>
+          <SegmentedTab active={mode === "velocity"} onClick={() => setMode("velocity")}>
             Velocity
-          </button>
-        </div>
+          </SegmentedTab>
+        </SegmentedTabBar>
       )}
       <ResponsiveContainer width="100%" height={300}>
         <LineChart data={data}>
