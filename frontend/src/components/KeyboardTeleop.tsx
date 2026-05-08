@@ -69,23 +69,23 @@ export default function KeyboardTeleop({ enabled }: Props) {
   if (!enabled) return null;
 
   return (
-    <div className="bg-gray-800 text-white rounded-lg p-4 text-sm">
+    <div className="bg-canvas-dark text-on-dark rounded-lg p-4 text-sm">
       <div className="font-medium mb-2">Keyboard Teleop</div>
-      <div className="text-gray-400 text-xs mb-3">
-        <span className="text-yellow-400">1-9</span> select joint &middot;{" "}
-        <span className="text-yellow-400">W/S</span> or <span className="text-yellow-400">↑/↓</span> move
+      <div className="text-on-dark-muted text-xs mb-3">
+        <span className="text-brand-warn">1-9</span> select joint &middot;{" "}
+        <span className="text-brand-warn">W/S</span> or <span className="text-brand-warn">↑/↓</span> move
       </div>
       <div className="space-y-1">
         {jointNames.map((name, i) => (
           <div
             key={i}
-            className={`flex justify-between px-2 py-0.5 rounded ${
-              i === activeJoint ? "bg-blue-600" : "hover:bg-gray-700"
+            className={`flex justify-between px-2 py-0.5 rounded cursor-pointer ${
+              i === activeJoint ? "bg-brand-tag" : "hover:bg-hairline-dark"
             }`}
             onClick={() => setActiveJoint(i)}
           >
             <span>
-              <span className="text-gray-500 mr-1">{i + 1}</span>
+              <span className="text-on-dark-muted mr-1">{i + 1}</span>
               {name}
             </span>
             <span className="font-mono">{(jointPos[i] || 0).toFixed(3)}</span>

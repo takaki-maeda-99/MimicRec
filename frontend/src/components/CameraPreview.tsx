@@ -31,7 +31,7 @@ export default function CameraPreview({ camName }: Props) {
   return (
     <div className="bg-black rounded-lg overflow-hidden">
       <img ref={imgRef} alt={camName} className="w-full h-auto" />
-      <div className="px-2 py-1 text-xs text-gray-400">{camName}</div>
+      <div className="px-2 py-1 text-xs text-stone">{camName}</div>
     </div>
   );
 }

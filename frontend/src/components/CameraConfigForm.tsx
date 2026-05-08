@@ -141,24 +141,24 @@ export function CameraConfigForm({ name, currentContent, onSave, onCancel }: Pro
       <h3 className="text-lg font-semibold">Edit cameras/{name}</h3>
 
       {staleWarning && (
-        <div className="bg-yellow-50 border border-yellow-200 rounded p-3 text-sm text-yellow-800">
+        <div className="bg-brand-warn/10 border border-brand-warn/30 rounded p-3 text-sm text-brand-warn">
           {staleWarning}
         </div>
       )}
       {capsError && (
-        <div className="bg-red-50 border border-red-200 rounded p-3 text-sm text-red-800">
+        <div className="bg-brand-error/10 border border-brand-error/30 rounded p-3 text-sm text-brand-error">
           Failed to load capabilities: {capsError}
         </div>
       )}
       {saveError && (
-        <div className="bg-red-50 border border-red-200 rounded p-3 text-sm text-red-800">
+        <div className="bg-brand-error/10 border border-brand-error/30 rounded p-3 text-sm text-brand-error">
           Save failed: {saveError}
         </div>
       )}
 
       <div className="grid grid-cols-2 gap-4">
         <label className="block">
-          <span className="text-sm text-gray-600">device_id</span>
+          <span className="text-sm text-slate">device_id</span>
           <input
             type="number"
             min={0}
@@ -169,7 +169,7 @@ export function CameraConfigForm({ name, currentContent, onSave, onCancel }: Pro
         </label>
 
         <label className="block">
-          <span className="text-sm text-gray-600">pixel_format</span>
+          <span className="text-sm text-slate">pixel_format</span>
           <select
             className="mt-1 w-full border rounded px-2 py-1 text-sm"
             value={pixelFormat}
@@ -186,7 +186,7 @@ export function CameraConfigForm({ name, currentContent, onSave, onCancel }: Pro
         </label>
 
         <label className="block">
-          <span className="text-sm text-gray-600">resolution</span>
+          <span className="text-sm text-slate">resolution</span>
           <select
             className="mt-1 w-full border rounded px-2 py-1 text-sm"
             value={sizeOptions.findIndex((s) => s.width === width && s.height === height)}
@@ -203,7 +203,7 @@ export function CameraConfigForm({ name, currentContent, onSave, onCancel }: Pro
         </label>
 
         <label className="block">
-          <span className="text-sm text-gray-600">capture_fps</span>
+          <span className="text-sm text-slate">capture_fps</span>
           <select
             className="mt-1 w-full border rounded px-2 py-1 text-sm"
             value={captureFps}
@@ -221,10 +221,10 @@ export function CameraConfigForm({ name, currentContent, onSave, onCancel }: Pro
       </div>
 
       <div className="flex gap-3 justify-end pt-2">
-        <Button variant="outline" onClick={onCancel} disabled={saving}>
+        <Button variant="secondary" onClick={onCancel} disabled={saving}>
           Cancel
         </Button>
-        <Button onClick={handleSave} disabled={saving || loadingCaps || !!capsError}>
+        <Button variant="primary" onClick={handleSave} disabled={saving || loadingCaps || !!capsError}>
           {saving ? "Saving..." : "Save"}
         </Button>
       </div>
