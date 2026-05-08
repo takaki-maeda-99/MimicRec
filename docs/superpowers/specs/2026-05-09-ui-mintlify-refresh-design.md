@@ -8,18 +8,18 @@
 
 Refresh the MimicRec frontend visual layer by adopting the Mintlify-inspired design tokens, primitives, and layout patterns described in `.claude/DESIGN.md`. The refresh applies the **system tokens only** — colors, typography, radius, spacing, components such as buttons / cards / inputs / tabs / sidebar nav. It does **not** import the marketing surfaces (hero gradients, cloud / rocket illustrations, testimonial-orange cards). The dashboard's information density and interaction model are preserved; only the visual language changes.
 
-Delivery is a single sweep: token foundation, primitive refactor, layout shell, then all six pages and their fourteen domain components in one pass.
+Delivery is a single sweep: token foundation, primitive refactor, layout shell, then all six pages and their thirteen domain components in one pass (`Layout.tsx` is treated separately as the shell).
 
 ## Goals
 
 - Replace the current ad-hoc Tailwind palette (`text-blue-600`, `bg-purple-100`, `text-red-600`, `bg-gray-*`) with a strict, named token set sourced from `.claude/DESIGN.md`.
 - Establish a typography pairing of **Inter** (UI prose) + **Geist Mono** (code, values, IDs) consistently across the app.
 - Reduce per-page styling decisions: each page consumes primitives (`Button`, `Card`, `PillTab`, `CodeInline`, `PropertyRow`, `SidebarNavItem`) rather than authoring ad-hoc class strings.
-- Reserve the brand mint (`brand-green`) for a single semantic role: **active session / connection indicators**.
+- Reserve the brand mint (`brand-green`) for a single semantic role: **session-state and connection indicators** (sidebar connection dot, ready / replaying / streaming pills, annotation-complete confirmation). Mint is NOT used as a primary CTA color and NOT as the input focus signal.
 
 ## Non-Goals
 
-- Marketing surfaces: hero atmospheric gradients, cloud / rocket illustrations, `testimonial-orange` cards, hero-display 72px headlines.
+- Marketing surfaces: hero atmospheric gradients, cloud / rocket illustrations, `testimonial-orange` cards.
 - 3-column documentation layout (sidebar / prose / TOC). The dashboard uses a 2-zone shell (sidebar / main).
 - Dark mode. The Mintlify spec itself flags dark tokens as unpublished. Tokens are named so dark mode can be added later without renaming.
 - New product features. No changes to data flow, API surface, routes, state stores, or websocket protocols.
@@ -30,37 +30,54 @@ Delivery is a single sweep: token foundation, primitive refactor, layout shell, 
 
 Three layers, each with a clear single responsibility:
 
-### 1. Token layer — `src/index.css`
+### 1. Token layer — `frontend/src/index.css`
 
-Tailwind v4 `@theme` declarations that re-export every Mintlify token consumed by the app as a Tailwind utility (`bg-canvas`, `text-ink`, `border-hairline`, `rounded-lg`, `font-mono`, `text-body-md`, etc.). Tokens originate here and only here.
+Tailwind v4 `@theme` declarations that re-export every Mintlify token consumed by the app as a Tailwind utility. Tokens originate here and only here. Every variable lives under one of v4's recognised theme namespaces so the corresponding utility is auto-generated:
 
-Imports Inter + Geist Mono via Google Fonts CDN:
+| Mintlify category | v4 theme namespace | Resulting utilities |
+|---|---|---|
+| Colors | `--color-*` | `bg-*`, `text-*`, `border-*`, `ring-*`, `from-*` etc. |
+| Font families | `--font-sans`, `--font-mono` | `font-sans`, `font-mono` (Inter and Geist Mono respectively) |
+| Type scale | `--text-*` (with paired `--text-*--line-height` and `--text-*--letter-spacing`) | `text-<name>` |
+| Radius | `--radius-*` | `rounded-<name>` |
+| Spacing | `--spacing-*` | `p-<name>`, `px-<name>`, `m-<name>`, `gap-<name>`, `w-<name>`, `h-<name>` etc. |
+
+Imports Inter + Geist Mono via Google Fonts CDN at the top of the file:
 
 ```css
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'Geist Mono', 'SF Mono', Menlo, Consolas, monospace;
+  /* --color-*, --text-*, --radius-*, --spacing-* declarations follow */
+}
 ```
 
-**Color tokens (22):** `primary`, `on-primary`, `brand-green`, `brand-green-deep`, `brand-green-soft`, `brand-tag`, `brand-error`, `canvas`, `canvas-dark`, `surface`, `surface-soft`, `surface-code`, `hairline`, `hairline-soft`, `hairline-dark`, `ink`, `charcoal`, `slate`, `steel`, `stone`, `muted`, `on-dark`, `on-dark-muted`. **Excluded:** `hero-sky-*`, `hero-dark-*`, `testimonial-orange`, `brand-warn`, `brand-annotate`, `brand-cursor` — none have a use case in scope.
+**Color tokens (24):** `primary`, `on-primary`, `brand-green`, `brand-green-deep`, `brand-green-soft`, `brand-tag`, `brand-warn`, `brand-error`, `canvas`, `canvas-dark`, `surface`, `surface-soft`, `surface-code`, `hairline`, `hairline-soft`, `hairline-dark`, `ink`, `charcoal`, `slate`, `steel`, `stone`, `muted`, `on-dark`, `on-dark-muted`. **Excluded:** `hero-sky-*`, `hero-dark-*`, `testimonial-orange` (pure marketing), `brand-annotate`, `brand-cursor` (twoslash docs annotation system, not used here). `brand-warn` is **kept** because the existing UI relies on amber warning states (e.g., `ExportDatasetModal.tsx:117,127,145`, `CameraConfigForm.tsx:144`, `Badge` `warning` variant).
 
-**Typography tokens (17):** `hero-display`, `display-lg`, `heading-1` through `heading-5`, `subtitle`, `body-md`, `body-md-medium`, `body-sm`, `body-sm-medium`, `caption`, `caption-bold`, `micro`, `micro-uppercase`, `button-md`, `code-md`, `code-sm`, `code-inline`. Defined as `--text-*` variables in `@theme`.
+**Typography tokens (16):** `display-lg`, `heading-1` through `heading-5`, `subtitle`, `body-md`, `body-md-medium`, `body-sm`, `body-sm-medium`, `caption`, `caption-bold`, `micro`, `micro-uppercase`, `button-md`, `code-md`, `code-sm`, `code-inline`. Each declared as a paired triplet — `--text-<name>` (size), `--text-<name>--line-height`, and `--text-<name>--letter-spacing` where the spec specifies negative tracking. **Excluded:** `hero-display` (72px) — pure marketing scale; the dashboard never renders headlines that large.
 
-**Radius scale (7):** `xs` (4px), `sm` (6px), `md` (8px), `lg` (12px), `xl` (16px), `xxl` (24px), `full` (9999px).
+**Radius scale (7):** `xs` (4px), `sm` (6px), `md` (8px), `lg` (12px), `xl` (16px), `xxl` (24px), `full` (9999px). Declared as `--radius-xs` … `--radius-full`.
 
-**Spacing scale (12):** `xxs` (4px), `xs` (8px), `sm` (12px), `md` (16px), `lg` (20px), `xl` (24px), `xxl` (32px), `xxxl` (40px), `section-sm` (48px), `section` (64px), `section-lg` (96px). **Excluded:** `hero` (120px) — marketing only.
+**Spacing scale (12):** `xxs` (4px), `xs` (8px), `sm` (12px), `md` (16px), `lg` (20px), `xl` (24px), `xxl` (32px), `xxxl` (40px), `section-sm` (48px), `section` (64px), `section-lg` (96px). Declared as `--spacing-xxs` … `--spacing-section-lg`. **Excluded:** `hero` (120px) — marketing only.
 
-### 2. Primitive layer — `src/components/ui/`
+Throughout this spec, references like "padding `xl`" mean `p-xl` (or `px-xl`/`py-xl`) at the call site; never literal `padding-xl`.
 
-Refactor existing primitives and add five new ones. CVA + `tailwind-merge` plumbing is retained.
+### 2. Primitive layer — `frontend/src/components/ui/`
+
+Refactor existing primitives and add five new ones. The current pattern — hand-rolled variant maps composed via `cn()` from `frontend/src/lib/utils.ts` (which uses `tailwind-merge`) — is preserved. The `class-variance-authority` package is in `frontend/package.json` but unused; this refresh does not introduce it.
 
 **Existing primitives (refactored):**
 
 | File | Change |
 |---|---|
-| `button.tsx` | All pill variants use `rounded-full`. Variants: `primary` (black), `accent` (mint), `secondary` (transparent + hairline border), `link` (underlined text), `iconCircular` (32×32 round). The `ghost` variant alone is rectangular (`rounded-md`, padding `8px 12px`) per the spec. Pill variants use padding `10px 20px`, `text-button-md`. Pressed/disabled states per spec. |
-| `badge.tsx` | Variants: `discount` (mint bg), `required` (error red + micro-uppercase), `type` (surface bg + code-sm), `tag` (brand-tag at 15% alpha). Existing semantic names (`success`, `warning`, `destructive`, `outline`) are retained as aliases mapping onto the new variants. |
-| `input.tsx` | Height 40px, `rounded-md`, `border-hairline`. Focus → `border-2 border-brand-green`. |
+| `button.tsx` | Variants: `primary` (black pill), `secondary` (transparent + hairline border, pill), `link` (underlined text), `iconCircular` (32×32 round). The `ghost` variant alone is rectangular (`rounded-md`, padding `8px 12px`). Pill variants use padding `10px 20px`, `text-button-md`. The Mintlify `accent` (mint) button variant is intentionally **not** introduced — mint is reserved for state indicators per Goals. Pressed and disabled states per spec. |
+| `badge.tsx` | New visual variants from spec: `discount` (mint bg), `required` (error red + micro-uppercase), `type` (surface bg + code-sm), `tag` (brand-tag at 15% alpha). The existing semantic names (`success`, `warning`, `destructive`, `outline`) are kept as the public API and re-mapped onto Mintlify visuals: `success` → mint pill, `warning` → amber pill via `brand-warn`, `destructive` → red pill via `brand-error`, `outline` → hairline outline. |
+| `input.tsx` | Height 40px, `rounded-md`, `border-hairline`. Focus → `border-2 border-ink` (black) — the input focus signal does **not** use mint, keeping mint exclusive to state indicators. |
 | `select.tsx` | Same height + focus rules as `input`. |
-| `card.tsx` | Two variants: `card-base` (canvas + hairline + `rounded-lg` + `padding-xl`) and `card-feature` (surface + `rounded-lg` + `padding-xxl`). |
+| `card.tsx` | Two variants: `base` (canvas + hairline + `rounded-lg` + `p-xl`) and `feature` (surface + `rounded-lg` + `p-xxl`). |
 
 **New primitives:**
 
@@ -74,7 +91,7 @@ Refactor existing primitives and add five new ones. CVA + `tailwind-merge` plumb
 
 ### 3. Layout + page layer
 
-`Layout.tsx` is rewritten to the shell spec below. Each of the six pages and fourteen domain components has its inline class strings replaced by primitives or token-based utilities. No new pages or routes.
+`Layout.tsx` is rewritten to the shell spec below. Each of the six pages and thirteen domain components has its inline class strings replaced by primitives or token-based utilities. No new pages or routes.
 
 ## Layout Shell
 
@@ -83,7 +100,7 @@ Refactor existing primitives and add five new ones. CVA + `tailwind-merge` plumb
 2. Nav list (flat, no section headers given only four items): `SidebarNavItem` for Datasets / Record / Inference / Settings.
 3. Footer: connection status indicator — mint dot + "Connected" or `text-muted` + "Disconnected". Drives off API/WS health where available; if no signal yet, shows a static "Connected" pill that can wire up later.
 
-**Main** — `bg-surface-soft`, scrollable, content `max-w-[1280px]` with `padding-xl` gutters.
+**Main** — `bg-surface-soft`, scrollable, content `max-w-[1280px]` with `px-xl py-xl` gutters.
 
 **Page header band** — every page renders a consistent header band at top: title (`heading-3`, 28px / 600), right-aligned action group, `border-b border-hairline-soft` divider underneath.
 
@@ -103,7 +120,7 @@ Robot name appears as `caption text-stone` underneath when state ≠ `idle`.
 ### Datasets (`pages/DatasetsPage.tsx`)
 - Page header band with title + "New Dataset" `button-primary` (black pill).
 - Inline create-form (Name + FPS) **moves into a modal** opened by the New Dataset button.
-- Table: header row in `text-steel + micro-uppercase`; rows use `border-b border-hairline-soft + padding-md`.
+- Table: header row in `text-steel text-micro-uppercase`; rows use `border-b border-hairline-soft py-md`.
 - Action column color resolution:
   - Export (was gray) → `button-link` `text-ink`
   - Annotate (was purple) → `button-link` `text-ink` in rest, `text-brand-tag text-body-sm-medium` while running
@@ -119,10 +136,10 @@ Robot name appears as `caption text-stone` underneath when state ≠ `idle`.
 
 ### Episodes / Replay
 - Episodes table mirrors the Datasets table conventions (same header / row / action treatment).
-- Replay screen: vertical stack of `VideoPlayer`, `JointPlot`, `EndEffectorPlot`, `SubtaskTimeline`, `SubtaskAnnotator`. Each block wrapped in `card-base` with `padding-xl`. Section titles in `heading-5`.
+- Replay screen: vertical stack of `VideoPlayer`, `JointPlot`, `EndEffectorPlot`, `SubtaskTimeline`, `SubtaskAnnotator`. Each block wrapped in `card-base` with `p-xl`. Section titles in `text-heading-5`.
 
 ### Settings (`pages/SettingsPage.tsx`)
-- Sub-section headings in `micro-uppercase text-steel`.
+- Sub-section headings in `text-micro-uppercase text-steel`.
 - Each settings entry rendered as a `PropertyRow` (name + optional `badge-type` + description + control).
 
 ### Inference (`pages/InferencePage.tsx`)
@@ -159,7 +176,7 @@ Robot name appears as `caption text-stone` underneath when state ≠ `idle`.
 
 **Pages (class-string replacement, no logic change):** `pages/DatasetsPage.tsx`, `pages/RecordPage.tsx`, `pages/EpisodesPage.tsx`, `pages/ReplayPage.tsx`, `pages/SettingsPage.tsx`, `pages/InferencePage.tsx`.
 
-**Domain components (class-string replacement, structure preserved):** `CameraConfigForm.tsx`, `CameraPreview.tsx`, `EEMonitor.tsx`, `EndEffectorPlot.tsx`, `EStopButton.tsx`, `ExportDatasetModal.tsx`, `JointPlot.tsx`, `KeyboardTeleop.tsx`, `RecordingControls.tsx`, `SessionConfigForm.tsx`, `SubtaskAnnotator.tsx`, `SubtaskTimeline.tsx`, `VideoPlayer.tsx`. **No prop / interface changes.**
+**Domain components (13 — class-string replacement, structure preserved):** `CameraConfigForm.tsx`, `CameraPreview.tsx`, `EEMonitor.tsx`, `EndEffectorPlot.tsx`, `EStopButton.tsx`, `ExportDatasetModal.tsx`, `JointPlot.tsx`, `KeyboardTeleop.tsx`, `RecordingControls.tsx`, `SessionConfigForm.tsx`, `SubtaskAnnotator.tsx`, `SubtaskTimeline.tsx`, `VideoPlayer.tsx`. **No prop / interface changes.**
 
 ## Verification
 
