@@ -104,8 +104,11 @@ ioctl: VIDIOC_ENUM_FMT
 既存エンドポイントを拡張。リクエスト body は今まで通り `{"content": <yaml dict>}`。
 
 `content._target_ == "mimicrec.cameras.opencv_camera.OpenCVCamera"` のとき:
+
+**全 cv2 操作は `loop.run_in_executor(None, ...)` 経由で実行** (`OpenCVCamera.connect()` と同じパターン)。FastAPI の event loop を 100ms 以上ブロックしない。
+
 1. 仮の `OpenCVCamera` を構築 (`device_id` / `width` / `height` / `pixel_format` / `capture_fps`)
-2. `cap.open()` を試行
+2. `cap.open()` を試行 — executor で
 3. `cap.get(CAP_PROP_FOURCC)` / `CAP_PROP_FRAME_WIDTH` / `CAP_PROP_FRAME_HEIGHT` / `CAP_PROP_FPS` を読み戻し、要求と一致するか比較
 4. 一致 → `cap.release()` → YAML 書き込み (既存ロジック)
 5. 不一致 → `cap.release()` → 409 Conflict + `{"detail": "validation failed: requested MJPG/1920x1080@30, got YUYV/1920x1080@10"}`
@@ -113,7 +116,55 @@ ioctl: VIDIOC_ENUM_FMT
 
 `_target_` が OpenCVCamera 以外なら検証ロジック無し (現状通り)。
 
+新規 capabilities endpoint も `subprocess.run(...)` を `run_in_executor` 経由で実行。
+
 ### Backend modified
+
+#### `backend/mimicrec/cameras/manager.py` — connect を up-front で同期させる
+
+現状の `_run_camera` は `cam.connect()` を内部で呼び、失敗を warning ログで握り潰す:
+
+```python
+async def _run_camera(self, name, cam):
+    if hasattr(cam, "connect"):
+        try:
+            await cam.connect()
+        except Exception as e:
+            logging.warning(f"camera {name} connect failed: {e}")
+            return  # silent
+    while ...
+```
+
+これでは `OpenCVCamera._open()` の strict mismatch RuntimeError がセッション起動には伝播せず、「ユーザーが意図しない fourcc/fps を避ける」という決定と矛盾する。
+
+修正: `manager.start()` で全カメラを upfront に connect し、いずれか失敗したらその場で raise してセッション起動を失敗させる:
+
+```python
+async def start(self) -> None:
+    # Connect all cameras synchronously up-front. Any failure aborts session_start.
+    connected: list[str] = []
+    try:
+        for name, cam in self._cameras.items():
+            if hasattr(cam, "connect"):
+                await cam.connect()
+            connected.append(name)
+    except Exception as e:
+        # Roll back: disconnect cameras we already connected.
+        for prev in connected:
+            prev_cam = self._cameras[prev]
+            if hasattr(prev_cam, "disconnect"):
+                try:
+                    await prev_cam.disconnect()
+                except Exception:
+                    pass
+        raise RuntimeError(f"camera startup failed: {e}") from e
+
+    # Then spawn the read loops. _run_camera no longer calls connect().
+    for name, cam in self._cameras.items():
+        self._tasks.append(asyncio.create_task(self._run_camera(name, cam)))
+```
+
+`_run_camera` から connect ブロックを削除し、純粋に read loop だけにする。
 
 #### `backend/mimicrec/cameras/opencv_camera.py`
 
@@ -170,11 +221,18 @@ class OpenCVCamera:
             )
 ```
 
-`_decode_fourcc(int)` は 4-byte unsigned int を 4-char string に変換するユーティリティ。
+`_decode_fourcc(int)` は 4-byte unsigned int を 4-char string に変換するユーティリティ。実装:
+
+```python
+def _decode_fourcc(v: int) -> str:
+    return bytes([v & 0xFF, (v >> 8) & 0xFF, (v >> 16) & 0xFF, (v >> 24) & 0xFF]).decode("ascii", errors="replace")
+```
+
+cv2 は little-endian で fourcc を返す。例: `MJPG` の場合、cv2 は `1196444237` を返し、上の関数で `"MJPG"` になる。
 
 #### `backend/mimicrec/recording/dataset_layout.py`
 
-`init_dataset()` のシグネチャを修正し、ハードコード `480×640` をカメラごとの実値で置換:
+`init_dataset()` シグネチャに **optional** な `camera_resolutions` を追加。`None` のときは従来のハードコード `(640, 480)` にフォールバック (既存の 51 callsites を破壊しない):
 
 ```python
 def init_dataset(
@@ -183,14 +241,17 @@ def init_dataset(
     fps: int,
     joint_names: list[str],
     camera_names: list[str],
-    camera_resolutions: dict[str, tuple[int, int]],  # NEW: {camera_name: (width, height)}
     robot_type: str,
     gripper_convention: dict | None = None,
     proprio_layout: dict | None = None,
+    camera_resolutions: dict[str, tuple[int, int]] | None = None,  # NEW: {cam: (width, height)}
 ):
     ...
     for cam in camera_names:
-        w, h = camera_resolutions[cam]  # was: hardcoded 480/640
+        if camera_resolutions and cam in camera_resolutions:
+            w, h = camera_resolutions[cam]
+        else:
+            w, h = 640, 480  # legacy fallback for callers that haven't migrated
         info["features"][f"observation.images.{cam}"] = {
             "shape": [h, w, 3],
             "names": ["height", "width", "channels"],
@@ -201,19 +262,52 @@ def init_dataset(
         }
 ```
 
-#### Caller update: `backend/mimicrec/api/deps.py::create_session_from_request`
+Defaultは `(640, 480)` (横×縦) — 現状の `[480, 640, 3]` (h, w, c) と一致。
 
-`init_dataset` の呼び出し時にカメラ解像度 dict を渡す:
+#### Caller updates (production)
+
+両方の production caller に解像度 dict を渡す:
+
+**`backend/mimicrec/api/deps.py::create_session_from_request`** — cam_cfgs から各カメラの `width`/`height` を取り出す。MockCamera/SimCamera など `width`/`height` を持たない adapter は `(640, 480)` フォールバック:
 
 ```python
 camera_resolutions = {
-    cam_name: (int(cam_cfgs[cam_name]["width"]), int(cam_cfgs[cam_name]["height"]))
+    cam_name: (
+        int(cam_cfgs[cam_name].get("width", 640)),
+        int(cam_cfgs[cam_name].get("height", 480)),
+    )
     for cam_name in req.cameras
 }
-init_dataset(ds_root, ..., camera_resolutions=camera_resolutions, ...)
+init_dataset(ds_root, ..., camera_resolutions=camera_resolutions)
 ```
 
-YAML に `width` / `height` が無い (MockCamera 等) ケース: その adapter は `device_id` も無く `OpenCVCamera` でもないので、camera_resolutions に含めない or fallback として adapter インスタンスから読む。`MockCamera(width=64, height=48)` のような値もコンストラクタ引数で持っているので `cam_kwargs.get("width", ...)` で取れる。
+**`backend/mimicrec/api/routes/datasets.py::create_dataset` (POST /datasets)** — body の `camera_names` から各カメラ YAML を読んで dict 化。同パターン:
+
+```python
+configs_root = get_configs_root(request.app)
+camera_resolutions = {}
+for cam_name in body.camera_names:
+    cam_path = configs_root / "cameras" / f"{cam_name}.yaml"
+    if cam_path.exists():
+        cam_cfg = OmegaConf.to_container(OmegaConf.load(cam_path))
+        camera_resolutions[cam_name] = (
+            int(cam_cfg.get("width", 640)),
+            int(cam_cfg.get("height", 480)),
+        )
+init_dataset(ds_root, ..., camera_resolutions=camera_resolutions)
+```
+
+YAML が見つからないカメラは dict から省く → `init_dataset` は legacy fallback (640, 480) を使う。
+
+#### Caller updates (tests) — non-blocking
+
+51 既存呼び出し箇所のうち、**info.json の解像度メタデータを assert しているテストのみ** を更新対象とする。それ以外は `camera_resolutions=None` のフォールバックで動き続ける (テストは `init_dataset` が何かを書くこと自体を確認しているだけで、書かれた解像度値を見ない場合がほとんど)。
+
+具体的に grep して assert があるテストのみ更新:
+```bash
+grep -l "video.height\|video.width\|480, 640\|640, 480" tests/
+```
+で出てきたファイルだけ最小修正。残りは無修正。
 
 ### Frontend new
 
@@ -238,7 +332,7 @@ State: `deviceId`, `pixelFormat`, `width`, `height`, `captureFps`, `capabilities
 - `pixelFormat` 選択肢 = `capabilities.map(f => f.fourcc)`
 - `(width, height)` 選択肢 = 選択中 format の `sizes`
 - `captureFps` 選択肢 = 選択中 (format, size) の `fps[]`
-- 初期値: 既存 YAML の値があればそれをデフォルト選択 (capabilities 取得後にマッチを探す)
+- 初期値: 既存 YAML の値があれば対応するキャパビリティを探して pre-select。**マッチしないとき** (例: 以前 MJPG/1920×1080@30 を保存していたが今は YUYV/640×480 しか出ない場合) はリストの最初の項目に fallback し、フォーム内に**警告バナー**を表示: `"⚠ Saved settings (MJPG/1920×1080@30) are not in this camera's current capabilities. Defaults selected. Verify before saving."`
 - Save クリック時: `apiFetch(...PUT...)` を呼んで、409 Conflict なら error フィールドに detail 表示、200 なら閉じて `loadConfigs()` を呼ぶ
 - 200 with `X-Validation-Skipped: device-busy` ヘッダーがあれば「保存されました (検証は session 開始時まで延期)」を出す
 
@@ -283,7 +377,7 @@ Edit モーダル内の textarea を、条件付きで `CameraConfigForm` に置
 2. `create_session_from_request` で各 cam YAML を読み、`camera_resolutions` dict を構築
 3. `init_dataset()` がそれを受け取り info.json に正しい (width, height) を書き込む
 4. `manager.start()` で `OpenCVCamera._open()` が走り、strict readback で要求と negotiated が一致しているか検証
-5. 一致しなければ RuntimeError → セッション起動失敗 (既存の `_run_camera` 例外ハンドリング経由でユーザーに伝播)
+5. 一致しなければ `OpenCVCamera._open()` が RuntimeError → `manager.start()` の up-front connect ループが catch して既接続のカメラを disconnect → `RuntimeError("camera startup failed: ...")` を re-raise → `session_start` API が 500 を返す → フロントは alert 表示。Strict 失敗が確実にユーザーへ伝播する
 6. 一致すれば録画は始まる。Mp4EpisodeWriter は frame buffer から実寸を読むので mp4 と info.json は一致
 
 ## Error handling
@@ -294,7 +388,8 @@ Edit モーダル内の textarea を、条件付きで `CameraConfigForm` に置
 | `/dev/video{N}` 無し | capabilities endpoint が 404、フロントは「デバイス未検出」表示 |
 | Save 時 cv2 negotiate ミスマッチ | PUT が 409 + detail。フロントは modal 内に error バナー、YAML は書き込まない |
 | Save 時 カメラビジー | PUT が 200 + `X-Validation-Skipped: device-busy`。YAML は書き込まれる。session_start で再検証される |
-| Session 起動時 ミスマッチ | `OpenCVCamera._open()` が RuntimeError → `_run_camera` がログ出して return (既存挙動)。session 自体は開始されるが、当該カメラだけ未接続。ユーザーは Settings で見直す |
+| Session 起動時 ミスマッチ | `OpenCVCamera._open()` が RuntimeError → `manager.start()` の up-front connect が catch、既接続カメラを roll back disconnect → re-raise → `session_start` API が 500 を返してユーザーに alert。Session は開始されない (strict) |
+| Session 起動時 既存 YAML が `pixel_format` / `capture_fps` を持たない | strict readback では None 指定の項目は比較スキップ。未指定 = チェック対象外。session は通常起動 |
 | YAML に `pixel_format` / `capture_fps` が無い | adapter は今まで通り cv2 デフォルトで開く。strict readback はその場合 fourcc / fps の比較を skip (「未指定」は「指定無し」として扱う) |
 
 ## Testing
@@ -332,10 +427,13 @@ Edit モーダル内の textarea を、条件付きで `CameraConfigForm` に置
 | 能力列挙の手段 | `v4l2-ctl` シェルアウト | 環境にあり、出力フォーマット安定、依存ゼロ、parser テストが書きやすい |
 | FPS 名 | `capture_fps` | session 側 `fps` (録画レート) との衝突回避 |
 | Mismatch 時 | session_start で RuntimeError | ユーザーが意図しない fourcc/fps で録画されるリスクを避ける |
+| Mismatch 伝播 | `manager.start()` で up-front connect、失敗で session 起動を中止 | `_run_camera` の握り潰しを迂回して strict 決定を実装上も貫徹 |
 | Save 時 検証 | open/readback して 409 で early-fail | session_start 失敗より UX が早い。ビジー時は session_start に延期 |
-| info.json 修正 | 同 spec で実施 | 解像度を選べるようにすると不整合がより目立つ。両方直さないと意味が半減 |
+| 重い cv2 操作 | `loop.run_in_executor` 経由 | FastAPI event loop をブロックさせない (既存 `OpenCVCamera.connect()` と同パターン) |
+| info.json 修正 | 同 spec で実施、optional フィールドで後方互換 | 51 callsite を破壊せずに 2 production caller だけ更新で意味のある修正になる |
 | Stepwise / mplane | parser で skip | cv2 V4L2 backend が非対応 |
 | MockCamera/SimCamera 用 UI | `_target_` でゲート、textarea のまま | device_id を持たないので構造化フォームに無理がある |
+| 既存 YAML がキャパビリティに無い場合 | 警告バナー + デフォルトに fallback | 黙って overwrite するより、ユーザーに気づかせる |
 
 ## Risk
 
@@ -343,7 +441,8 @@ Edit モーダル内の textarea を、条件付きで `CameraConfigForm` に置
 - **cv2 readback と実 streaming のずれ**: cap.get() が嘘をつくケースがゼロでない (一部のドライバ)。緩和策: 実際の最初のフレームの shape も session_start で確認する後続 enhancement (今回は scope 外、必要なら別 feature で追加)
 - **`/dev/video<N>` 番号が安定しない**: 実機で USB を抜き差しすると wrist.yaml の `device_id: 0` が別カメラを指す可能性。緩和策: spec で OOS と明記、別途 udev rules で対応 (運用課題)
 - **同時編集の競合**: 二人が同じ wrist.yaml を編集しても overwrite される (既存挙動)。本 feature では変更無し
-- **`init_dataset` シグネチャ変更による下位互換**: テストや別の呼び出し箇所で壊れる可能性。緩和策: `camera_resolutions: dict[...] | None = None` にして None なら従来の hardcode に fallback、ただし migration 期間後にデフォルト None を撤去 — もしくは破壊的変更で 1 回直す。今回は **破壊的変更 (None デフォルト無し) を選ぶ** — 呼び出し箇所は `deps.py` の 1 箇所のみで grep 容易
+- **`init_dataset` シグネチャ変更による下位互換**: 既存 callsite は 51 (production 2 + tests 49)。`camera_resolutions: dict | None = None` の optional 追加で完全後方互換、`None` のとき従来通り `(640, 480)` フォールバック。production caller 2 箇所 (`deps.py`, `datasets.py`) を更新して info.json バグを直す。tests は info.json 解像度メタを assert している箇所だけ最小修正
+- **`manager.start()` のセマンティクス変更**: 従来「カメラ接続失敗を warning ログで握り潰し、session は続行」 → 「いずれかの失敗で session 起動を中止」。MockCamera など `connect()` 自体を持たない adapter は影響なし。実 hardware カメラがある運用では、たまたま 1 台不調でも session を開始できなくなる ⇒ ユーザーには明示的にエラーが出るので「気づかず録画」よりは安全
 
 ## Files changed
 
@@ -355,12 +454,15 @@ Edit モーダル内の textarea を、条件付きで `CameraConfigForm` に置
 - `frontend/src/components/CameraConfigForm.tsx`
 
 **Modified:**
-- `backend/mimicrec/cameras/opencv_camera.py` (kwargs 追加 + readback 検証)
-- `backend/mimicrec/api/routes/settings.py` (capabilities endpoint, PUT validation)
-- `backend/mimicrec/recording/dataset_layout.py` (`init_dataset` シグネチャに `camera_resolutions`)
+- `backend/mimicrec/cameras/opencv_camera.py` (kwargs 追加 + readback 検証 + `_decode_fourcc`)
+- `backend/mimicrec/cameras/manager.py` (`start()` で connect を upfront 同期化、`_run_camera` から connect ブロック削除)
+- `backend/mimicrec/api/routes/settings.py` (capabilities endpoint, PUT validation, `run_in_executor`)
+- `backend/mimicrec/recording/dataset_layout.py` (`init_dataset` に optional `camera_resolutions`)
 - `backend/mimicrec/api/deps.py` (`create_session_from_request` から `camera_resolutions` を渡す)
+- `backend/mimicrec/api/routes/datasets.py` (`POST /datasets` も `camera_resolutions` を渡す)
 - `frontend/src/pages/SettingsPage.tsx` (Edit モーダルの分岐)
 - `tests/api/test_settings_routes.py` (新エンドポイント + PUT 検証)
+- `tests/unit/test_camera_manager.py` (新 connect セマンティクス検証)
 
 **Memory cleanup:**
 - `~/.claude/projects/-home-tirobot-MimicRec/memory/MEMORY.md` から info.json バグエントリを削除 (修正されたので)
