@@ -1357,10 +1357,16 @@ async def _run_ffmpeg(cmd: list[str]) -> None:
 
 
 async def ffmpeg_copy(src: Path, dst: Path) -> None:
-    """Stream copy all streams (preserve GPMF, no re-encode)."""
+    """Stream copy video + GPMF only (drop TCD + audio).
+
+    Phase 0 verification confirmed: -map 0 -c copy -copy_unknown FAILS on
+    Hero 11 because the TCD timecode track has codec=none which ffmpeg
+    cannot remux. Use explicit per-stream map. Stream index 0:d:1 is the
+    GPMF data stream (handler="GoPro MET") on Hero 11."""
     cmd = [
         "ffmpeg", "-y", "-nostdin", "-i", str(src),
-        "-map", "0", "-c", "copy", "-copy_unknown",
+        "-map", "0:v:0", "-map", "0:d:1",
+        "-c", "copy",
         str(dst),
     ]
     await _run_ffmpeg(cmd)
@@ -1372,8 +1378,9 @@ async def ffmpeg_downscale(
     aspect_mode: str,
     aspect_match: bool,
 ) -> None:
-    """Re-encode video with libx264 + scale; copy other streams (incl. GPMF).
-    aspect_match=True → simple scale; False → crop or stretch per aspect_mode."""
+    """Re-encode video with libx264 + scale; copy GPMF data stream.
+    Drops TCD timecode and audio. aspect_match=True → simple scale;
+    False → crop or stretch per aspect_mode."""
     if aspect_match:
         vf = f"scale={target_w}:{target_h}"
     elif aspect_mode == "crop":
@@ -1389,11 +1396,10 @@ async def ffmpeg_downscale(
 
     cmd = [
         "ffmpeg", "-y", "-nostdin", "-i", str(src),
-        "-map", "0",
-        "-c", "copy", "-copy_unknown",
+        "-map", "0:v:0", "-map", "0:d:1",
         "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
         "-vf", vf,
-        "-an",
+        "-c:d", "copy",
         str(dst),
     ]
     await _run_ffmpeg(cmd)
@@ -2703,7 +2709,9 @@ async def test_connect_calls_required_apis_in_order():
     fake_client.http_command.load_preset_group = AsyncMock(return_value=MagicMock(ok=True))
     fake_client.http_command.load_preset = AsyncMock(return_value=MagicMock(ok=True))
     fake_client.http_command.get_camera_state = AsyncMock(
-        return_value=MagicMock(ok=True, data={"sd_status_remaining": 1_000_000_000})
+        # Phase 0 confirmed: state.data is dict-of-status-id-string-keys.
+        # Key "54" is SD remaining IN KB (not bytes).
+        return_value=MagicMock(ok=True, data={"54": 25_000_000})
     )
     fake_ctx = MagicMock()
     fake_ctx.__aenter__ = AsyncMock(return_value=fake_client)
@@ -2736,13 +2744,16 @@ from mimicrec.gopro.types import GoProSpec, MediaItem, NativePreset
 log = logging.getLogger(__name__)
 
 try:
-    from open_gopro import WiredGoPro, constants  # type: ignore
+    from open_gopro import WiredGoPro                # type: ignore
+    from open_gopro.models import constants, proto   # type: ignore
 except Exception:
     WiredGoPro = None  # type: ignore[assignment]
     constants = None   # type: ignore[assignment]
+    proto = None       # type: ignore[assignment]
 
 
-_STORAGE_MIN_BYTES = 500_000_000
+# Phase 0 confirmed: SD remaining is at state.data["54"] in KB.
+_STORAGE_MIN_KB = 500_000   # 500 MB ≈ 500_000 KB
 
 
 class GoProDevice:
@@ -2804,7 +2815,7 @@ class GoProDevice:
         )
         await self._must_ok(
             self._client.http_command.load_preset_group(
-                group=constants.proto.EnumPresetGroup.PRESET_GROUP_ID_VIDEO),
+                group=proto.EnumPresetGroup.PRESET_GROUP_ID_VIDEO),
             "load_preset_group video",
         )
         await self._must_ok(
@@ -2815,10 +2826,11 @@ class GoProDevice:
             self._client.http_command.get_camera_state(), "get_camera_state",
         )
         # Phase 0 verification establishes the actual storage key name.
-        remaining = int(state.data.get("sd_status_remaining", 0))
-        if remaining < _STORAGE_MIN_BYTES:
+        # state.data is keyed by Status ID string. "54" = SD remaining in KB.
+        remaining_kb = int(state.data.get("54", 0))
+        if remaining_kb < _STORAGE_MIN_KB:
             raise HardwareError(
-                f"GoPro {self._name} storage too low: {remaining} bytes remaining")
+                f"GoPro {self._name} storage too low: {remaining_kb} KB remaining")
 
     async def disconnect(self) -> None:
         if self._client_ctx is None: return
@@ -2877,7 +2889,7 @@ class GoProDevice:
     async def get_storage_remaining(self) -> int:
         if self._disabled or self._client is None: return 0
         r = await self._must_ok(self._client.http_command.get_camera_state(), "get_camera_state")
-        return int(r.data.get("sd_status_remaining", 0))
+        return int(r.data.get("54", 0)) * 1024   # KB → bytes
 
     def disable(self, reason: str) -> None:
         if self._disabled: return

@@ -358,8 +358,8 @@ class GoProDevice:
           2. set_date_time(now)
           3. video モードへ切替
           4. selected_preset を適用（SDK の load_preset 系）
-          5. get_camera_state を見て storage_remaining が閾値（500MB）以下なら
-             FatalHardwareError を上げる
+          5. get_camera_state を見て `state.data["54"]` (SD remaining、**KB 単位**) が
+             閾値（500_000 KB ≒ 500MB）以下なら FatalHardwareError を上げる
           UDP preview は **ここでは開始しない**（GoProPreviewSource 側が start）。
           失敗時は disable() + HardwareError publish（registry 側で gather 結果 inspect）。"""
 
@@ -645,11 +645,15 @@ class GoProDLWorker:
 
 ```python
 async def ffmpeg_copy(src: Path, dst: Path) -> None:
-    """全 stream を stream copy で dst にコピー（GPMF 維持、再エンコードなし）。
-    ※ stdout は捨て、stderr のみ buffer する。`communicate()` 使用で deadlock 回避。"""
+    """video + GPMF を stream copy で dst にコピー（再エンコードなし、TCD/audio drop）。
+    ※ Phase 0 verification で `-map 0 -copy_unknown` は Hero 11 の TCD (codec=none) で
+    "Error initializing output stream" を起こすことが判明。明示的に v:0 + d:1 を map する。
+    stream index 0:d:1 が GPMF (handler="GoPro MET") であることは Hero 11 ファームウェアで
+    安定して観測されている。Phase 0 の verification doc 参照。"""
     cmd = [
         "ffmpeg", "-y", "-nostdin", "-i", str(src),
-        "-map", "0", "-c", "copy", "-copy_unknown",
+        "-map", "0:v:0", "-map", "0:d:1",
+        "-c", "copy",
         str(dst),
     ]
     proc = await asyncio.create_subprocess_exec(
@@ -682,13 +686,15 @@ async def ffmpeg_downscale(
     else:
         raise ConfigError(f"unknown aspect_mode: {aspect_mode}")
 
+    # Phase 0 verification で確定したパターン: video + GPMF data stream のみ map、
+    # TCD (codec=none) と audio は drop する。`-map 0 -copy_unknown` は Hero 11 の
+    # TCD で "Error initializing output stream" を起こすので使えない。
     cmd = [
         "ffmpeg", "-y", "-nostdin", "-i", str(src),
-        "-map", "0",
-        "-c", "copy", "-copy_unknown",       # まず全 stream を copy 設定
+        "-map", "0:v:0", "-map", "0:d:1",     # video + GPMF (Hero 11: 0:d:1 = GoPro MET)
         "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
-        "-vf", vf,                            # 上記の copy 設定を video のみ override
-        "-an",                                # audio drop（不可逆データ消失、Codec metadata 戦略 § 参照）
+        "-vf", vf,
+        "-c:d", "copy",                       # GPMF stream は copy
         str(dst),
     ]
     proc = await asyncio.create_subprocess_exec(
