@@ -140,3 +140,33 @@ def cleanup_orphan_snapshots(datasets_root: Path) -> int:
             shutil.rmtree(p, ignore_errors=True)
             n += 1
     return n
+
+
+def recover_interrupted_push(datasets_root: Path) -> list[str]:
+    """Called at startup BEFORE cleanup_orphan_snapshots.
+
+    For each `.push-snapshot-<ds>-<hex>` dir found, mark the corresponding
+    dataset's hub.json with last_push_error="interrupted ..." so the UI shows
+    the prior failure after a SIGKILL/restart.
+
+    Returns list of dataset names that were marked interrupted.
+    """
+    from mimicrec.cloud.hub_meta import read_hub_meta, write_hub_meta
+    if not datasets_root.exists():
+        return []
+    interrupted: list[str] = []
+    for p in datasets_root.iterdir():
+        if not p.is_dir() or not p.name.startswith(".push-snapshot-"):
+            continue
+        rest = p.name[len(".push-snapshot-"):]
+        ds_name = rest.rsplit("-", 1)[0]
+        ds_root = datasets_root / ds_name
+        if not ds_root.exists():
+            continue
+        meta = read_hub_meta(ds_root)
+        if meta is None:
+            continue
+        meta.last_push_error = "interrupted (process restarted during push)"
+        write_hub_meta(ds_root, meta)
+        interrupted.append(ds_name)
+    return interrupted

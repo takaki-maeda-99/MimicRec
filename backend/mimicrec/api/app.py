@@ -1,15 +1,22 @@
 from __future__ import annotations
 from contextlib import asynccontextmanager
+from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from mimicrec.api.routes import configs, cloud, datasets, episode, inference, replay, session, settings
 from mimicrec.api.ws import session_hub, state_hub, camera_hub, teleop_hub, inference_hub
 from mimicrec.api.errors import register_exception_handlers
 from mimicrec.cloud.push_state import PushCoordinator
+from mimicrec.cloud.snapshot import cleanup_orphan_snapshots, recover_interrupted_push
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    from mimicrec.api.deps import get_datasets_root
+    root = Path(get_datasets_root(app))
+    if root.exists():
+        recover_interrupted_push(root)
+        cleanup_orphan_snapshots(root)
     yield
     sm = getattr(app.state, "session_manager", None)
     if sm:
