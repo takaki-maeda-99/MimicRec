@@ -69,3 +69,37 @@ def test_init_dataset_omits_optional_fields_when_not_supplied(tmp_path):
     info = json.loads((tmp_path / "ds" / "meta" / "info.json").read_text())
     assert "gripper_convention" not in info
     assert "proprio_layout" not in info
+
+
+def test_init_dataset_writes_per_camera_resolution(tmp_path):
+    init_dataset(
+        tmp_path / "ds",
+        fps=30,
+        joint_names=["a", "b"],
+        camera_names=["wrist", "front"],
+        camera_resolutions={"wrist": (1920, 1080), "front": (640, 480)},
+    )
+    info = json.loads((tmp_path / "ds" / "meta" / "info.json").read_text())
+    wrist = info["features"]["observation.images.wrist"]
+    front = info["features"]["observation.images.front"]
+    assert wrist["shape"] == [1080, 1920, 3]  # [height, width, channels]
+    assert wrist["info"]["video.height"] == 1080
+    assert wrist["info"]["video.width"] == 1920
+    assert front["shape"] == [480, 640, 3]
+    assert front["info"]["video.height"] == 480
+    assert front["info"]["video.width"] == 640
+
+
+def test_init_dataset_falls_back_to_default_resolution(tmp_path):
+    # When camera_resolutions is not provided, the legacy 640x480 default applies.
+    init_dataset(
+        tmp_path / "ds",
+        fps=30,
+        joint_names=["a"],
+        camera_names=["cam0"],
+    )
+    info = json.loads((tmp_path / "ds" / "meta" / "info.json").read_text())
+    cam = info["features"]["observation.images.cam0"]
+    assert cam["shape"] == [480, 640, 3]
+    assert cam["info"]["video.height"] == 480
+    assert cam["info"]["video.width"] == 640
