@@ -5,7 +5,7 @@ import cv2
 from mimicrec.types import Frame
 
 
-def _decode_fourcc(v: int) -> str:
+def decode_fourcc(v: int) -> str:
     """Decode the 4-byte little-endian fourcc int returned by cv2 into a 4-char string."""
     return bytes(
         [v & 0xFF, (v >> 8) & 0xFF, (v >> 16) & 0xFF, (v >> 24) & 0xFF]
@@ -55,7 +55,7 @@ class OpenCVCamera:
         # mismatch. Skip the comparison for fields the user did not specify.
         actual_w = int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         actual_h = int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        actual_fourcc = _decode_fourcc(int(self._cap.get(cv2.CAP_PROP_FOURCC)))
+        actual_fourcc = decode_fourcc(int(self._cap.get(cv2.CAP_PROP_FOURCC)))
         # Round nominal frame rates: drivers report 29.97 when sensors run at
         # NTSC rates; rounding to 30 matches what users typically request.
         actual_fps = int(round(self._cap.get(cv2.CAP_PROP_FPS)))

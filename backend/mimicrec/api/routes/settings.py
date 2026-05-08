@@ -14,6 +14,7 @@ from omegaconf import OmegaConf
 
 from mimicrec.api.deps import get_configs_root
 from mimicrec.cameras.v4l2_caps import enumerate_capabilities
+from mimicrec.cameras.opencv_camera import decode_fourcc
 
 router = APIRouter()
 
@@ -166,13 +167,7 @@ async def _validate_camera_config_or_409(content: dict, response: Response) -> N
 
             actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            fourcc_int = int(cap.get(cv2.CAP_PROP_FOURCC))
-            actual_fourcc = bytes([
-                fourcc_int & 0xFF,
-                (fourcc_int >> 8) & 0xFF,
-                (fourcc_int >> 16) & 0xFF,
-                (fourcc_int >> 24) & 0xFF,
-            ]).decode("ascii", errors="replace")
+            actual_fourcc = decode_fourcc(int(cap.get(cv2.CAP_PROP_FOURCC)))
             actual_fps = int(round(cap.get(cv2.CAP_PROP_FPS)))
         finally:
             cap.release()
