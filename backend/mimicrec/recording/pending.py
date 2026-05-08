@@ -57,6 +57,8 @@ class PendingEpisode:
             for name, stamped in frames.items():
                 if stamped is None:
                     continue
+                if getattr(stamped.value, "preview_only", False):
+                    continue
                 writer = self._video_writers.get(name)
                 if writer is not None:
                     writer.write_frame(stamped.value.image)
@@ -75,8 +77,14 @@ class PendingEpisode:
             idx = table.schema.get_field_index("timestamp")
             table = table.set_column(idx, "timestamp", table.column("timestamp").cast(pa.float32()))
         pq.write_table(table, self._stage / f"episode_{self._episode_index:06d}.parquet")
-        for w in getattr(self, "_video_writers", {}).values():
+        for name, w in getattr(self, "_video_writers", {}).items():
             w.close()
+            # Ensure the file exists even if no frames were written (e.g. preview_only
+            # frames are skipped).  av/libx264 only creates the file on first mux, so
+            # touch it here so downstream code can always stat the path.
+            mp4_path = self._stage / f"{name}.mp4"
+            if not mp4_path.exists():
+                mp4_path.touch()
         self._finalized = True
 
     def save(self, metadata_extra: dict) -> None:
