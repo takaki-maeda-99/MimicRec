@@ -250,6 +250,7 @@ def save_annotations(
         row["subtask_name"] = subtask_name
 
     import pyarrow as pa
+    from mimicrec.recording.atomic_io import _atomic_write_parquet
     new_table = pa.Table.from_pylist(rows)
-    pq.write_table(new_table, pq_path)
+    _atomic_write_parquet(new_table, pq_path)
     logger.info(f"Saved {len(segments)} subtask annotations to {pq_path}")
