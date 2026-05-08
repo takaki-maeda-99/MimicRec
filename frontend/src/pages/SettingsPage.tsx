@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { apiFetch } from "../api/client";
 import { Button } from "../components/ui/button";
+import { CameraConfigForm } from "../components/CameraConfigForm";
 
 interface SerialDevice {
   port: string;
@@ -200,20 +201,42 @@ export default function SettingsPage() {
       {editingConfig && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
           <div className="bg-white rounded-lg p-6 w-[600px] max-h-[80vh] overflow-auto">
-            <h3 className="text-lg font-semibold mb-2">
-              Edit {editingConfig.group}/{editingConfig.name}
-            </h3>
-            <textarea
-              className="w-full h-64 font-mono text-sm border rounded p-3 mb-4"
-              value={editJson}
-              onChange={(e) => setEditJson(e.target.value)}
-            />
-            <div className="flex gap-3 justify-end">
-              <Button variant="outline" onClick={() => setEditingConfig(null)}>
-                Cancel
-              </Button>
-              <Button onClick={handleSaveConfig}>Save</Button>
-            </div>
+            {editingConfig.group === "cameras"
+              && (editingConfig.content as Record<string, unknown>)._target_
+                  === "mimicrec.cameras.opencv_camera.OpenCVCamera" ? (
+              <CameraConfigForm
+                name={editingConfig.name}
+                currentContent={editingConfig.content as Record<string, unknown>}
+                onSave={(validationSkipped) => {
+                  setEditingConfig(null);
+                  if (validationSkipped) {
+                    alert(
+                      "Saved. Camera was busy so the configured parameters " +
+                        "will be validated when the next session starts.",
+                    );
+                  }
+                  loadConfigs();
+                }}
+                onCancel={() => setEditingConfig(null)}
+              />
+            ) : (
+              <>
+                <h3 className="text-lg font-semibold mb-2">
+                  Edit {editingConfig.group}/{editingConfig.name}
+                </h3>
+                <textarea
+                  className="w-full h-64 font-mono text-sm border rounded p-3 mb-4"
+                  value={editJson}
+                  onChange={(e) => setEditJson(e.target.value)}
+                />
+                <div className="flex gap-3 justify-end">
+                  <Button variant="outline" onClick={() => setEditingConfig(null)}>
+                    Cancel
+                  </Button>
+                  <Button onClick={handleSaveConfig}>Save</Button>
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}
