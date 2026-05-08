@@ -30,24 +30,55 @@ export default function SettingsPage() {
   const [editingConfig, setEditingConfig] = useState<ConfigEntry | null>(null);
   const [editJson, setEditJson] = useState("");
   const [calibrations, setCalibrations] = useState<Record<string, Record<string, string[]>>>({});
+  const [refreshingDevices, setRefreshingDevices] = useState(false);
+  const [refreshingConfigs, setRefreshingConfigs] = useState(false);
+  const [refreshingCalibrations, setRefreshingCalibrations] = useState(false);
 
-  const loadDevices = () => {
-    apiFetch<SerialDevice[]>("/api/settings/devices/serial").then(setSerialPorts).catch(() => {});
-    apiFetch<CameraDevice[]>("/api/settings/devices/cameras").then(setCameras).catch(() => {});
+  const loadDevices = async () => {
+    setRefreshingDevices(true);
+    try {
+      const [serial, cams] = await Promise.all([
+        apiFetch<SerialDevice[]>("/api/settings/devices/serial"),
+        apiFetch<CameraDevice[]>("/api/settings/devices/cameras"),
+      ]);
+      setSerialPorts(serial);
+      setCameras(cams);
+    } catch (e) {
+      alert(`Failed to refresh devices: ${e}`);
+    } finally {
+      setRefreshingDevices(false);
+    }
   };
 
-  const loadConfigs = () => {
-    CONFIG_GROUPS.forEach((group) => {
-      apiFetch<ConfigEntry[]>(`/api/settings/configs/${group}`)
-        .then((data) => setConfigs((prev) => ({ ...prev, [group]: data })))
-        .catch(() => {});
-    });
+  const loadConfigs = async () => {
+    setRefreshingConfigs(true);
+    try {
+      const results = await Promise.all(
+        CONFIG_GROUPS.map(async (group) => {
+          const data = await apiFetch<ConfigEntry[]>(`/api/settings/configs/${group}`);
+          return [group, data] as const;
+        }),
+      );
+      setConfigs(Object.fromEntries(results));
+    } catch (e) {
+      alert(`Failed to refresh configs: ${e}`);
+    } finally {
+      setRefreshingConfigs(false);
+    }
   };
 
-  const loadCalibrations = () => {
-    apiFetch<Record<string, Record<string, string[]>>>("/api/settings/calibration")
-      .then(setCalibrations)
-      .catch(() => {});
+  const loadCalibrations = async () => {
+    setRefreshingCalibrations(true);
+    try {
+      const data = await apiFetch<Record<string, Record<string, string[]>>>(
+        "/api/settings/calibration",
+      );
+      setCalibrations(data);
+    } catch (e) {
+      alert(`Failed to refresh calibrations: ${e}`);
+    } finally {
+      setRefreshingCalibrations(false);
+    }
   };
 
   useEffect(() => {
@@ -79,8 +110,8 @@ export default function SettingsPage() {
       <section className="mb-8">
         <div className="flex items-center justify-between mb-3">
           <h3 className="text-lg font-semibold">Devices</h3>
-          <Button variant="outline" size="sm" onClick={loadDevices}>
-            Refresh
+          <Button variant="outline" size="sm" onClick={loadDevices} disabled={refreshingDevices}>
+            {refreshingDevices ? "Refreshing..." : "Refresh"}
           </Button>
         </div>
         <div className="grid grid-cols-2 gap-4">
@@ -124,7 +155,12 @@ export default function SettingsPage() {
 
       {/* Configs */}
       <section className="mb-8">
-        <h3 className="text-lg font-semibold mb-3">Configurations</h3>
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-lg font-semibold">Configurations</h3>
+          <Button variant="outline" size="sm" onClick={loadConfigs} disabled={refreshingConfigs}>
+            {refreshingConfigs ? "Refreshing..." : "Refresh"}
+          </Button>
+        </div>
         {CONFIG_GROUPS.map((group) => (
           <div key={group} className="mb-4">
             <h4 className="text-sm font-medium text-gray-500 mb-2 capitalize">{group}</h4>
@@ -184,7 +220,12 @@ export default function SettingsPage() {
 
       {/* Calibration */}
       <section>
-        <h3 className="text-lg font-semibold mb-3">Calibration</h3>
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-lg font-semibold">Calibration</h3>
+          <Button variant="outline" size="sm" onClick={loadCalibrations} disabled={refreshingCalibrations}>
+            {refreshingCalibrations ? "Refreshing..." : "Refresh"}
+          </Button>
+        </div>
         {Object.entries(calibrations).map(([category, robots]) => (
           <div key={category} className="mb-3">
             <h4 className="text-sm font-medium text-gray-500 mb-1 capitalize">{category}</h4>

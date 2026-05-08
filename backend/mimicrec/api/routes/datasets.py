@@ -2,9 +2,11 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import tempfile
 import time
 import zipfile
 from pathlib import Path
+from typing import Literal
 
 import pyarrow.parquet as pq
 from fastapi import APIRouter, Request, Query, HTTPException
@@ -15,6 +17,7 @@ from mimicrec.api.deps import get_datasets_root, get_configs_root, get_vla_dest_
 from mimicrec.api.schemas import (
     CreateDatasetRequest, CreateTaskRequest, DatasetSummary,
     EpisodeSummary, ExportFormat, ExportRequest, ExportResponse, TaskSummary,
+    DEFAULT_INSTRUCTION_TEMPLATE,
 )
 from mimicrec.datasets.archive import build_archive_stream
 from mimicrec.datasets.exporters.errors import DestinationExistsError
@@ -166,35 +169,62 @@ async def create_task(request: Request, ds: str, body: CreateTaskRequest):
 async def download_archive(
     request: Request, ds: str,
     format: ExportFormat = ExportFormat.LEROBOT_V3_NATIVE,
+    instruction_template: str = DEFAULT_INSTRUCTION_TEMPLATE,
+    robot_type: Literal["so101", "rebot"] | None = None,
 ):
-    if format != ExportFormat.LEROBOT_V3_NATIVE:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "format=vla_compat is not supported via the archive download. "
-                "Use POST /api/datasets/{ds}/export instead."
-            ),
-        )
     root = get_datasets_root(request.app)
     ds_root = root / ds
     if not ds_root.exists():
         raise FileNotFoundError(f"dataset '{ds}' not found")
 
-    def generate():
-        buf = io.BytesIO()
+    if format == ExportFormat.LEROBOT_V3_NATIVE:
+        def generate():
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                for path_in_zip, content in build_archive_stream(ds_root):
+                    if isinstance(content, Path):
+                        zf.write(content, arcname=path_in_zip)
+                    else:
+                        zf.writestr(path_in_zip, content)
+            buf.seek(0)
+            yield buf.read()
+
+        return StreamingResponse(
+            generate(),
+            media_type="application/zip",
+            headers={"Content-Disposition": f'attachment; filename="{ds}.zip"'},
+        )
+
+    # format == VLA_COMPAT: convert into tempdir + build the zip eagerly so
+    # ValueError translates to a real 400 (a generator-raised HTTPException
+    # would fire after StreamingResponse already committed 200 OK headers).
+    buf = io.BytesIO()
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_root = Path(tmp)
+        override = ExportOverride(robot_type=robot_type) if robot_type else None
+        try:
+            export_dataset_to_local(
+                ds_root=ds_root,
+                dest_root=tmp_root,
+                format=ExportFormat.VLA_COMPAT,
+                instruction_template=instruction_template,
+                force=True,
+                override=override,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        converted_root = tmp_root / ds
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-            for path_in_zip, content in build_archive_stream(ds_root):
-                if isinstance(content, Path):
-                    zf.write(content, arcname=path_in_zip)
-                else:
-                    zf.writestr(path_in_zip, content)
-        buf.seek(0)
-        yield buf.read()
+            for fp in sorted(converted_root.rglob("*")):
+                if fp.is_file():
+                    arcname = fp.relative_to(converted_root).as_posix()
+                    zf.write(fp, arcname=arcname)
+    buf.seek(0)
 
     return StreamingResponse(
-        generate(),
+        iter([buf.read()]),
         media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{ds}.zip"'},
+        headers={"Content-Disposition": f'attachment; filename="{ds}_vla.zip"'},
     )
 
 

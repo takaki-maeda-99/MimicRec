@@ -5,6 +5,8 @@ import type { ExportFormat, RobotTypeOverride } from "../api/types.ts";
 
 const DEFAULT_TEMPLATE = "What action should the robot take to {TASK}? A:";
 
+type Destination = "server" | "zip";
+
 interface Props {
   ds: string;
   onClose: () => void;
@@ -12,17 +14,25 @@ interface Props {
 
 export function ExportDatasetModal({ ds, onClose }: Props) {
   const [format, setFormat] = useState<ExportFormat>("vla_compat");
+  const [destination, setDestination] = useState<Destination>("server");
   const [template, setTemplate] = useState<string>(DEFAULT_TEMPLATE);
   const [force, setForce] = useState<boolean>(false);
   const [needsForce, setNeedsForce] = useState<boolean>(false);
-  // "" = no override (use info.json); "so101" / "rebot" = override for legacy
-  // datasets where info.json declares robot_type='unknown'.
   const [robotType, setRobotType] = useState<"" | RobotTypeOverride>("");
   const exportMutation = useExportDataset(ds);
   const { data: tasks } = useTasks(ds);
 
   const handleSubmit = () => {
     setNeedsForce(false);
+    if (destination === "zip") {
+      const params = new URLSearchParams({ format });
+      if (format === "vla_compat") {
+        params.set("instruction_template", template);
+        if (robotType) params.set("robot_type", robotType);
+      }
+      window.location.href = `/api/datasets/${encodeURIComponent(ds)}/archive?${params.toString()}`;
+      return;
+    }
     exportMutation.mutate(
       {
         format,
@@ -57,6 +67,20 @@ export function ExportDatasetModal({ ds, onClose }: Props) {
             <input type="radio" checked={format === "vla_compat"}
                    onChange={() => setFormat("vla_compat")} />
             VLA-compat (EE-delta + gripper, instruction-conditioned)
+          </label>
+        </fieldset>
+
+        <fieldset className="mb-4">
+          <legend className="mb-2 text-sm font-medium">Output destination</legend>
+          <label className="mb-1 flex items-center gap-2">
+            <input type="radio" checked={destination === "server"}
+                   onChange={() => setDestination("server")} />
+            Save to server (writes to <code className="text-xs">vla_dest_root</code>)
+          </label>
+          <label className="flex items-center gap-2">
+            <input type="radio" checked={destination === "zip"}
+                   onChange={() => setDestination("zip")} />
+            Download as zip (browser file download)
           </label>
         </fieldset>
 
@@ -99,18 +123,20 @@ export function ExportDatasetModal({ ds, onClose }: Props) {
           </>
         )}
 
-        {needsForce && (
+        {destination === "server" && needsForce && (
           <div className="mb-3 rounded bg-amber-50 p-2 text-sm text-amber-800">
             Destination already exists. Tick "Overwrite" and submit again to replace it.
           </div>
         )}
-        <label className="mb-4 flex items-center gap-2 text-sm">
-          <input type="checkbox" checked={force}
-                 onChange={(e) => setForce(e.target.checked)} />
-          Overwrite existing destination
-        </label>
+        {destination === "server" && (
+          <label className="mb-4 flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={force}
+                   onChange={(e) => setForce(e.target.checked)} />
+            Overwrite existing destination
+          </label>
+        )}
 
-        {exportMutation.isSuccess && (
+        {destination === "server" && exportMutation.isSuccess && (
           <div className="mb-3 rounded bg-green-50 p-2 text-sm text-green-800">
             Exported {exportMutation.data.num_episodes} episodes
             ({exportMutation.data.num_frames} frames) to{" "}
@@ -122,7 +148,7 @@ export function ExportDatasetModal({ ds, onClose }: Props) {
             )}
           </div>
         )}
-        {exportMutation.isError && !needsForce && (
+        {destination === "server" && exportMutation.isError && !needsForce && (
           <div className="mb-3 rounded bg-red-50 p-2 text-sm text-red-800">
             {exportMutation.error.message}
           </div>
@@ -133,8 +159,13 @@ export function ExportDatasetModal({ ds, onClose }: Props) {
             Close
           </button>
           <button className="rounded bg-blue-600 px-3 py-1 text-sm text-white disabled:opacity-50"
-                  disabled={exportMutation.isPending} onClick={handleSubmit}>
-            {exportMutation.isPending ? "Exporting…" : "Export"}
+                  disabled={destination === "server" && exportMutation.isPending}
+                  onClick={handleSubmit}>
+            {destination === "server" && exportMutation.isPending
+              ? "Exporting…"
+              : destination === "zip"
+                ? "Download zip"
+                : "Export"}
           </button>
         </div>
       </div>

@@ -5,7 +5,7 @@ import glob
 import json
 from pathlib import Path
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Response
 from pydantic import BaseModel
 from omegaconf import OmegaConf
 
@@ -17,8 +17,9 @@ router = APIRouter()
 # --- Device discovery ---
 
 @router.get("/settings/devices/serial")
-async def list_serial_ports():
+async def list_serial_ports(response: Response):
     """List available serial ports."""
+    response.headers["Cache-Control"] = "no-store"
     ports = sorted(glob.glob("/dev/ttyACM*") + glob.glob("/dev/ttyUSB*"))
     result = []
     for port in ports:
@@ -33,8 +34,9 @@ async def list_serial_ports():
 
 
 @router.get("/settings/devices/cameras")
-async def list_camera_devices():
+async def list_camera_devices(response: Response):
     """List available camera devices."""
+    response.headers["Cache-Control"] = "no-store"
     import cv2
     devices = sorted(glob.glob("/dev/video*"))
     result = []
@@ -58,8 +60,9 @@ class ConfigUpdate(BaseModel):
 
 
 @router.get("/settings/configs/{group}")
-async def list_group_configs(request: Request, group: str):
+async def list_group_configs(request: Request, group: str, response: Response):
     """List all configs in a group with their contents."""
+    response.headers["Cache-Control"] = "no-store"
     root = get_configs_root(request.app)
     group_dir = root / group
     if not group_dir.is_dir():
@@ -76,8 +79,9 @@ async def list_group_configs(request: Request, group: str):
 
 
 @router.get("/settings/configs/{group}/{name}")
-async def get_config(request: Request, group: str, name: str):
+async def get_config(request: Request, group: str, name: str, response: Response):
     """Get a single config file's contents."""
+    response.headers["Cache-Control"] = "no-store"
     root = get_configs_root(request.app)
     path = root / group / f"{name}.yaml"
     if not path.exists():
@@ -123,8 +127,9 @@ async def delete_config(request: Request, group: str, name: str):
 # --- Calibration ---
 
 @router.get("/settings/calibration")
-async def list_calibrations():
+async def list_calibrations(response: Response):
     """List available calibration files."""
+    response.headers["Cache-Control"] = "no-store"
     calib_root = Path.home() / ".cache/huggingface/lerobot/calibration"
     result = {"robots": {}, "teleoperators": {}}
     for category in ["robots", "teleoperators"]:
