@@ -9,3 +9,28 @@ replay:
   max_joint_position_jump: 0.5
   command_timeout_sec: 0.5
   watchdog_hz: 20
+kinematics:
+  urdf_path: configs/urdf/so101/so101.urdf
+  target_frame: gripper_frame_link
+  joint_names:
+  - shoulder_pan
+  - shoulder_lift
+  - elbow_flex
+  - wrist_flex
+  - wrist_roll
+inference_safety:
+  # NOTE: SimBridgeAdapter passes joint values through with no unit conversion.
+  # Limits and per-step deltas below are in DEGREES — the bridge MUST publish
+  # joint_pos in degrees too, otherwise these bounds are misapplied (e.g. an
+  # Isaac bridge in radians would make `2.0` deg/tick = 2 rad/tick = ~115 deg/tick).
+  # sim_bridge_dummy.py and the Isaac sim bridges in scripts/sim_bridge_*.py
+  # publish degrees; verify before pointing at any new bridge.
+  max_joint_delta_per_step_deg: 2.0
+  slow_stop_ticks: 5
+  joint_limits_deg:
+    shoulder_pan: [-180.0, 180.0]
+    shoulder_lift: [-110.0, 110.0]
+    elbow_flex: [-110.0, 110.0]
+    wrist_flex: [-110.0, 110.0]
+    wrist_roll: [-180.0, 180.0]
+    gripper: [-180.0, 180.0]

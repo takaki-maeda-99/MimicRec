@@ -1,0 +1,40 @@
+# configs/inference/x_vla_v36_mock_smoke.yaml
+#
+# End-to-end smoke variant of x_vla_v36_smoke.yaml that consumes synthetic
+# frames from MockCamera adapters (configs/cameras/mock_{front,wrist}.yaml)
+# instead of OpenCV / sim cameras. Use this for wire-level verification of
+# the X-VLA-Adapter HoldPosition predictor without any real cameras.
+name: x_vla_v36_mock_smoke
+description: "X-VLA-Adapter v36 wire smoke against the HoldPosition predictor (mock cameras)."
+endpoint:
+  url: "http://localhost:8001/predict"
+  method: POST
+  timeout_s: 5.0
+  retry: { max_attempts: 0 }
+request:
+  images:
+    mock_front: { field: image_primary, encoding: jpeg_base64, resize: [224, 224], jpeg_quality: 90 }
+    mock_wrist: { field: image_wrist,   encoding: jpeg_base64, resize: [224, 224], jpeg_quality: 90 }
+  state:
+    field: proprio
+    components: [joint_pos, gripper_pos]
+    normalization: { method: none }
+  instruction:
+    field: instruction
+  extra_fields:
+    model_version: x_vla_v36_libero_spatial
+response:
+  actions_path: actions
+  chunk:
+    expected_size: 8
+    on_size_mismatch: use_actual
+  action:
+    type: ee_delta
+    frame: ee_local
+    pose:
+      units: meter_axisangle_rad
+    gripper:
+      kind: absolute
+      units: normalized_0_1
+    components: [ee_delta, gripper]
+    normalization: { method: none }

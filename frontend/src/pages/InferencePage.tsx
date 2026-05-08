@@ -1,30 +1,28 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
+import { Link } from "react-router-dom";
 import { useInferenceStore } from "../state/inference-store";
+import { useSessionStore } from "../state/session-store";
 import { subscribeInferenceWS } from "../api/inference";
-import { apiFetch } from "../api/client";
 import { Button } from "../components/ui/button";
-import { Card } from "../components/ui/card";
-import { CodeInline } from "../components/ui/code-inline";
-import { Input } from "../components/ui/input";
-import { PillTab } from "../components/ui/pill-tab";
+import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Select } from "../components/ui/select";
-
-interface DatasetItem {
-  name: string;
-}
+import { Input } from "../components/ui/input";
+import { Badge } from "../components/ui/badge";
 
 export function InferencePage() {
   const s = useInferenceStore();
-  const [datasets, setDatasets] = useState<DatasetItem[]>([]);
+  const sessionState = useSessionStore((x) => x.state);
+  const sessionRobot = useSessionStore((x) => x.robot);
+  const sessionMode = useSessionStore((x) => x.mode);
+  const sessionDataset = useSessionStore((x) => x.dataset);
   const wsCleanupRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     s.loadConfigs();
-    apiFetch<{ items: DatasetItem[] }>("/api/datasets").then(r => setDatasets(r.items)).catch(() => setDatasets([]));
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    s.rehydrateFromBackend();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Subscribe to WS only after a session starts
   useEffect(() => {
     if (s.phase === "pre-start") {
       wsCleanupRef.current?.();
@@ -37,94 +35,157 @@ export function InferencePage() {
       wsCleanupRef.current?.();
       wsCleanupRef.current = null;
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [s.phase]);
 
   const isLive = s.phase === "ready" || s.phase === "recording";
+  // Backend requires session in READY (not recording/review) and not already
+  // mid-inference. Match that here so the form doesn't promise a Start that
+  // will 409.
+  const sessionReadyForInference =
+    sessionState === "ready" && sessionMode !== "inference";
+  const sessionBlocker: string | null = (() => {
+    if (sessionState === "idle") return "no-session";
+    if (sessionState === "recording") return "recording";
+    if (sessionState === "review") return "review";
+    if (sessionMode === "inference") return "already-inference";
+    return null;
+  })();
 
   return (
-    <div>
-      <header className="flex items-center justify-between pb-sm mb-lg border-b border-hairline">
-        <div className="flex items-center gap-md">
-          <h2 className="text-heading-3 text-ink">Inference</h2>
-          {isLive ? (
-            <PillTab active tone="state" disabled>Streaming</PillTab>
-          ) : (
-            <span className="text-body-sm text-stone">Stopped</span>
+    <div className="p-6 max-w-5xl mx-auto space-y-4">
+      <header className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <h1 className="text-2xl font-semibold">Inference</h1>
+          {isLive && <Badge variant="success">● live</Badge>}
+          {sessionRobot && (
+            <span className="text-xs text-gray-500">
+              robot: <code>{sessionRobot}</code>
+              {sessionMode && <> · mode: <code>{sessionMode}</code></>}
+            </span>
           )}
         </div>
-        <Button
-          className="!bg-brand-error !text-on-dark hover:!bg-brand-error/90"
-          onClick={() => s.emergencyStop()}
-        >
+        <Button variant="destructive" size="lg" onClick={() => s.emergencyStop()}>
           E-STOP
         </Button>
       </header>
 
-      {(s.phase === "ready" || s.phase === "recording") && (
-        <Card className="mb-md border border-brand-warn/30 bg-brand-warn/10">
-          <p className="text-body-sm-medium text-brand-warn">
-            ⚠ Robot under model control — use E-STOP to halt
-          </p>
-        </Card>
+      {s.error && (
+        <div className="rounded-md border border-red-300 bg-red-50 p-3 flex items-start justify-between gap-3">
+          <div className="text-sm text-red-800 break-words">{s.error}</div>
+          <button
+            onClick={() => s.setError(null)}
+            className="text-red-700 hover:text-red-900 text-lg leading-none"
+            aria-label="dismiss"
+          >
+            ×
+          </button>
+        </div>
+      )}
+
+      {sessionBlocker && s.phase === "pre-start" && (
+        <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
+          <div className="font-medium mb-1">
+            {sessionBlocker === "no-session" && "⚠ No active session"}
+            {sessionBlocker === "recording" && "⚠ Session is recording"}
+            {sessionBlocker === "review" && "⚠ Session is in review"}
+            {sessionBlocker === "already-inference" && "⚠ Already in inference mode"}
+          </div>
+          <div>
+            {sessionBlocker === "no-session" && (
+              <>
+                The inference pipeline runs on top of an active robot session. Open the{" "}
+                <Link to="/record" className="underline font-medium">Record page</Link> first
+                to load a robot adapter (e.g. <code>so101</code>, <code>sim_so101</code>),
+                then come back here.
+              </>
+            )}
+            {(sessionBlocker === "recording" || sessionBlocker === "review") && (
+              <>
+                Stop the current episode on the{" "}
+                <Link to="/record" className="underline font-medium">Record page</Link> before
+                starting an inference session.
+              </>
+            )}
+            {sessionBlocker === "already-inference" && (
+              <>The page is rehydrating from the backend — refresh if it stays stuck.</>
+            )}
+          </div>
+        </div>
+      )}
+
+      {isLive && (
+        <div className="rounded-md border border-amber-400 bg-amber-100 px-3 py-2 text-sm font-semibold text-amber-900">
+          ⚠ Robot under model control — use E-STOP to halt
+        </div>
       )}
 
       {s.phase === "pre-start" && (
-        <PreStartPanel datasets={datasets} />
+        <PreStartPanel
+          activeDataset={sessionDataset}
+          disabled={!sessionReadyForInference}
+        />
       )}
-      {s.phase === "ready" && (
-        <ReadyPanel />
-      )}
-      {s.phase === "recording" && (
-        <RecordingPanel />
-      )}
-      {s.phase === "review" && (
-        <ReviewPanel />
-      )}
+      {s.phase === "ready" && <ReadyPanel />}
+      {s.phase === "recording" && <RecordingPanel />}
+      {s.phase === "review" && <ReviewPanel />}
     </div>
   );
 }
 
 
-function PreStartPanel({ datasets }: { datasets: DatasetItem[] }) {
+function PreStartPanel({
+  activeDataset,
+  disabled,
+}: {
+  activeDataset: string | null;
+  disabled: boolean;
+}) {
   const s = useInferenceStore();
+  const selected = s.configs.find((c) => c.name === s.selectedConfig);
+  const selectedHasError = !!selected?.error;
+  const canStart = !disabled && !!s.selectedConfig && !selectedHasError && !!s.instruction;
   return (
-    <Card className="flex flex-col gap-md">
-      <Field label="Inference config">
-        <Select
-          value={s.selectedConfig}
-          onChange={e => s.selectConfig(e.target.value)}
-        >
-          <option value="">— select —</option>
-          {s.configs.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
-        </Select>
-      </Field>
-      <Field label="Dataset">
-        <Select
-          value={s.selectedDataset}
-          onChange={e => s.selectDataset(e.target.value)}
-        >
-          <option value="">— select —</option>
-          {datasets.map(d => <option key={d.name} value={d.name}>{d.name}</option>)}
-        </Select>
-      </Field>
-      <Field label="Instruction">
-        <div className="flex gap-xs">
+    <Card>
+      <CardHeader>
+        <CardTitle>Start an inference session</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <Field label="Inference config">
+          <Select value={s.selectedConfig} onChange={(e) => s.selectConfig(e.target.value)} disabled={disabled}>
+            <option value="">— select —</option>
+            {s.configs.map((c) => (
+              <option key={c.name} value={c.name} disabled={!!c.error}>
+                {c.title && c.title !== c.name ? `${c.name} — ${c.title}` : c.name}
+                {c.error ? " (load error)" : ""}
+              </option>
+            ))}
+          </Select>
+          {selected?.description && (
+            <div className={`text-xs mt-1 ${selectedHasError ? "text-red-700" : "text-gray-500"}`}>
+              {selected.description}
+            </div>
+          )}
+        </Field>
+        <div className="text-xs text-gray-600">
+          Successful episodes save to the active session's dataset:{" "}
+          <code className="text-gray-900">{activeDataset ?? "—"}</code>. Switch datasets on the Record page.
+        </div>
+        <Field label="Instruction">
           <Input
             type="text"
             value={s.instruction}
-            onChange={e => s.setInstruction(e.target.value)}
+            onChange={(e) => s.setInstruction(e.target.value)}
             placeholder="pick up the bottle"
+            disabled={disabled}
           />
-          <Button variant="ghost" disabled title="coming soon">🎤</Button>
+        </Field>
+        <div>
+          <Button disabled={!canStart} onClick={() => s.startSession()}>
+            Start session
+          </Button>
         </div>
-      </Field>
-      <Button
-        disabled={!s.selectedConfig || !s.selectedDataset || !s.instruction}
-        onClick={() => s.startSession()}
-      >
-        Start session
-      </Button>
+      </CardContent>
     </Card>
   );
 }
@@ -133,27 +194,31 @@ function PreStartPanel({ datasets }: { datasets: DatasetItem[] }) {
 function ReadyPanel() {
   const s = useInferenceStore();
   return (
-    <div className="flex flex-col gap-xl">
-      <Card>
-        <Field label="Instruction">
-          <div className="flex gap-xs">
+    <Card>
+      <CardHeader>
+        <CardTitle>Ready</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <Field label="Instruction (live — locks once you start an episode)">
+          <div className="flex gap-2">
             <Input
               type="text"
               value={s.instruction}
-              onChange={e => s.setInstruction(e.target.value)}
+              onChange={(e) => s.setInstruction(e.target.value)}
             />
-            <Button variant="secondary" onClick={() => s.updateInstruction()}>Update</Button>
-            <Button variant="ghost" disabled title="coming soon">🎤</Button>
+            <Button variant="outline" onClick={() => s.updateInstruction()}>
+              Update
+            </Button>
           </div>
         </Field>
-      </Card>
-      <TelemetryBlock />
-      <ActionPreview />
-      <div className="flex gap-xs">
-        <Button onClick={() => s.startEpisode()}>Start episode</Button>
-        <Button variant="secondary" onClick={() => s.stopSession()}>Stop session</Button>
-      </div>
-    </div>
+        <TelemetryBlock />
+        <ActionPreview />
+        <div className="flex gap-2">
+          <Button onClick={() => s.startEpisode()}>Start episode</Button>
+          <Button variant="outline" onClick={() => s.stopSession()}>Stop session</Button>
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -161,30 +226,31 @@ function ReadyPanel() {
 function RecordingPanel() {
   const s = useInferenceStore();
   return (
-    <div className="flex flex-col gap-xl">
-      <Card>
-        <p className="text-body-sm-medium text-ink">
-          <span className="text-stone">Instruction (locked):</span>{" "}
-          "{s.lockedInstruction ?? ""}"
-        </p>
-        <p className="mt-xs text-body-sm text-slate">
-          Episode: <CodeInline>{s.episodeElapsedSec.toFixed(1)}s</CodeInline> recording…
-        </p>
-      </Card>
-      <TelemetryBlock />
-      <div className="text-body-sm text-slate">
-        Model done signal:{" "}
-        {s.telemetry.modelDoneSignal === "waiting" ? (
-          <span className="text-stone">waiting…</span>
-        ) : s.telemetry.modelDoneSignal === "received" ? (
-          <span className="text-brand-green-deep">received ✓</span>
-        ) : (
-          <span className="text-stone">unsupported</span>
-        )}
-      </div>
-      <ActionPreview />
-      <Button variant="secondary" onClick={() => s.stopEpisode()}>Stop episode</Button>
-    </div>
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          Recording
+          <Badge variant="destructive">⏺ {s.episodeElapsedSec.toFixed(1)}s</Badge>
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="text-sm">
+          <span className="text-gray-500">Instruction (locked):</span>{" "}
+          <span className="font-medium">"{s.lockedInstruction ?? ""}"</span>
+        </div>
+        <div className="text-sm">
+          <span className="text-gray-500">Model done signal:</span>{" "}
+          {s.telemetry.modelDoneSignal === "waiting" && <span>waiting…</span>}
+          {s.telemetry.modelDoneSignal === "received" && <span className="text-green-700">received ✓</span>}
+          {s.telemetry.modelDoneSignal === "unsupported" && <span className="text-gray-400">unsupported</span>}
+        </div>
+        <TelemetryBlock />
+        <ActionPreview />
+        <div>
+          <Button variant="destructive" onClick={() => s.stopEpisode()}>Stop episode</Button>
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -192,71 +258,83 @@ function RecordingPanel() {
 function ReviewPanel() {
   const s = useInferenceStore();
   return (
-    <Card className="flex flex-col gap-md">
-      <p className="text-body-sm text-ink">
-        Episode summary{s.reviewEpisode
-          ? ` — #${s.reviewEpisode.index} (`
-          : ""}
-        {s.reviewEpisode && (
-          <CodeInline>{s.reviewEpisode.durationSec.toFixed(1)}s</CodeInline>
-        )}
-        {s.reviewEpisode ? ")" : ""}
-      </p>
-      <div className="flex gap-xs">
-        <Button onClick={() => s.commitEpisode(true)}>Save (✓ success)</Button>
-        <Button variant="secondary" className="!text-brand-error" onClick={() => s.commitEpisode(false)}>Save (✗ failure)</Button>
-        <Button variant="ghost" onClick={() => s.discardEpisode()}>Discard</Button>
-      </div>
+    <Card>
+      <CardHeader>
+        <CardTitle>Review</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="text-sm">
+          Episode summary
+          {s.reviewEpisode && (
+            <> — #{s.reviewEpisode.index} ({s.reviewEpisode.durationSec.toFixed(1)}s)</>
+          )}
+        </div>
+        <div className="flex gap-2">
+          <Button onClick={() => s.commitEpisode(true)}>Save as success</Button>
+          <Button variant="outline" onClick={() => s.commitEpisode(false)}>Save as failure</Button>
+          <Button variant="ghost" onClick={() => s.discardEpisode()}>Discard</Button>
+        </div>
+      </CardContent>
     </Card>
   );
 }
 
 
 function TelemetryBlock() {
-  const t = useInferenceStore(s => s.telemetry);
+  const t = useInferenceStore((x) => x.telemetry);
   return (
-    <Card>
-      <h3 className="text-heading-5 text-ink mb-md">Telemetry</h3>
-      <div className="grid grid-cols-2 gap-xs text-body-sm">
-        <span className="text-steel">buffer depth</span>
-        <span className="flex items-center gap-xs">
-          <CodeInline>{String(t.bufferDepth)}</CodeInline>
-          <span className="text-stone">/ {t.bufferOrigin}</span>
-        </span>
-        <span className="text-steel">last latency</span>
-        <CodeInline>{t.lastLatencyMs == null ? "—" : `${t.lastLatencyMs.toFixed(1)} ms`}</CodeInline>
-        <span className="text-steel">chunks consumed</span>
-        <CodeInline>{String(t.chunksConsumed)}</CodeInline>
-        <span className="text-steel">inference errors</span>
-        <CodeInline>{String(t.inferenceErrors)}</CodeInline>
-        <span className="text-steel">clamps/chunk</span>
-        <CodeInline>{t.clampsLastChunk != null ? String(t.clampsLastChunk) : "—"}</CodeInline>
-        <span className="text-steel">safety events</span>
-        <CodeInline>{String(t.safetyEvents.length)}</CodeInline>
+    <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-6 gap-y-2 text-sm">
+      <Stat label="buffer depth" value={`${t.bufferDepth} / ${t.bufferOrigin}`} />
+      <Stat
+        label="last latency"
+        value={t.lastLatencyMs == null ? "—" : `${t.lastLatencyMs.toFixed(1)} ms`}
+      />
+      <Stat label="chunks consumed" value={String(t.chunksConsumed)} />
+      <Stat
+        label="inference errors"
+        value={String(t.inferenceErrors)}
+        warn={t.inferenceErrors > 0}
+      />
+      <Stat label="clamps / chunk" value={t.clampsLastChunk == null ? "—" : String(t.clampsLastChunk)} />
+      <Stat
+        label="safety events"
+        value={String(t.safetyEvents.length)}
+        warn={t.safetyEvents.length > 0}
+      />
+    </div>
+  );
+}
+
+
+function Stat({ label, value, warn }: { label: string; value: string; warn?: boolean }) {
+  return (
+    <div>
+      <div className="text-[11px] uppercase tracking-wide text-gray-500">{label}</div>
+      <div className={`font-mono ${warn ? "text-red-700 font-semibold" : "text-gray-900"}`}>
+        {value}
       </div>
-    </Card>
+    </div>
   );
 }
 
 
 function ActionPreview() {
-  const a = useInferenceStore(s => s.telemetry.nextAction);
-  if (!a) return null;
+  const a = useInferenceStore((x) => x.telemetry.nextAction);
+  if (!a || !Array.isArray(a.ee_delta)) return null;
   return (
-    <Card>
-      <h3 className="text-heading-5 text-ink mb-xs">Next action</h3>
-      <code className="block text-code-sm font-mono text-charcoal">
-        ΔEE: [{a.ee_delta.map(v => v.toFixed(3)).join(", ")}], gripper: {a.gripper.toFixed(3)}
-      </code>
-    </Card>
+    <div className="rounded-md bg-gray-50 border border-gray-200 px-3 py-2 font-mono text-xs">
+      <span className="text-gray-500">next action:</span>{" "}
+      ΔEE [{a.ee_delta.map((v) => v.toFixed(3)).join(", ")}]{" "}
+      gripper {typeof a.gripper === "number" ? a.gripper.toFixed(3) : "—"}
+    </div>
   );
 }
 
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <label className="flex flex-col gap-xs">
-      <span className="text-body-sm-medium text-charcoal">{label}</span>
+    <label className="block">
+      <div className="text-xs text-gray-600 mb-1">{label}</div>
       <div>{children}</div>
     </label>
   );

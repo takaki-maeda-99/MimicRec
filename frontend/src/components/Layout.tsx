@@ -4,6 +4,7 @@ import { useSessionStore } from "../state/session-store";
 import { useSessionState } from "../api/queries";
 import { Badge } from "./ui/badge";
 import { SidebarNavItem } from "./ui/sidebar-nav-item";
+import { ErrorBoundary } from "./ErrorBoundary";
 
 const navItems = [
   { to: "/datasets", label: "Datasets" },
@@ -73,7 +74,9 @@ export default function Layout() {
       </aside>
       <main className="flex-1 overflow-auto">
         <div className="max-w-[1280px] mx-auto px-lg py-md">
-          <Outlet />
+          <ErrorBoundary>
+            <Outlet />
+          </ErrorBoundary>
         </div>
       </main>
     </div>

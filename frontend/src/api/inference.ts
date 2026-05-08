@@ -5,8 +5,10 @@ import { WsConnection } from "./ws";
 // ===== Types matching backend Pydantic models =====
 
 export interface ContractItem {
-  name: string;
+  name: string;            // file stem — the identifier load endpoints expect
+  title?: string;          // human-readable spec name from the YAML
   description: string;
+  error?: string;          // present when the YAML failed to parse
 }
 
 export interface ContractSpecDump {
