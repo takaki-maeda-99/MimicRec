@@ -126,7 +126,7 @@ async def inference_state(request: Request):
 async def list_inference(request: Request):
     """List all inference contract configs available on disk."""
     configs_root = get_configs_root(request.app)
-    return list_inference_configs(configs_root)
+    return {"items": list_inference_configs(configs_root)}
 
 
 @router.get("/configs/inference/{name}")
