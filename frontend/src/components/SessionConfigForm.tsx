@@ -44,14 +44,14 @@ export default function SessionConfigForm({ onStarted }: Props) {
   return (
     <div className="space-y-4 max-w-md">
       <div>
-        <label className="block text-sm font-medium text-gray-700 mb-1">Mode</label>
+        <label className="block text-sm font-medium text-charcoal mb-1">Mode</label>
         <Select value={mode} onChange={e => form.set({ mode: e.target.value as "teleop" | "hand_teach" })}>
           <option value="teleop">Teleop</option>
           <option value="hand_teach">Hand Teach</option>
         </Select>
       </div>
       <div>
-        <label className="block text-sm font-medium text-gray-700 mb-1">Dataset</label>
+        <label className="block text-sm font-medium text-charcoal mb-1">Dataset</label>
         <Input
           list="existing-datasets"
           value={dataset}
@@ -67,7 +67,7 @@ export default function SessionConfigForm({ onStarted }: Props) {
         </datalist>
       </div>
       <div>
-        <label className="block text-sm font-medium text-gray-700 mb-1">Task</label>
+        <label className="block text-sm font-medium text-charcoal mb-1">Task</label>
         <Input
           list="existing-tasks"
           value={task}
@@ -83,7 +83,7 @@ export default function SessionConfigForm({ onStarted }: Props) {
         </datalist>
       </div>
       <div>
-        <label className="block text-sm font-medium text-gray-700 mb-1">Robot</label>
+        <label className="block text-sm font-medium text-charcoal mb-1">Robot</label>
         <Select value={robot} onChange={e => form.set({ robot: e.target.value })}>
           <option value="">Select...</option>
           {robots?.map(r => <option key={r} value={r}>{r}</option>)}
@@ -92,14 +92,14 @@ export default function SessionConfigForm({ onStarted }: Props) {
       {mode === "teleop" && (
         <>
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Teleop</label>
+            <label className="block text-sm font-medium text-charcoal mb-1">Teleop</label>
             <Select value={teleop} onChange={e => form.set({ teleop: e.target.value })}>
               <option value="">Select...</option>
               {teleops?.map(t => <option key={t} value={t}>{t}</option>)}
             </Select>
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Mapper</label>
+            <label className="block text-sm font-medium text-charcoal mb-1">Mapper</label>
             <Select value={mapper} onChange={e => form.set({ mapper: e.target.value })}>
               <option value="">Select...</option>
               {mappers?.map(m => <option key={m} value={m}>{m}</option>)}
@@ -108,7 +108,7 @@ export default function SessionConfigForm({ onStarted }: Props) {
         </>
       )}
       <div>
-        <label className="block text-sm font-medium text-gray-700 mb-1">Cameras</label>
+        <label className="block text-sm font-medium text-charcoal mb-1">Cameras</label>
         <div className="space-y-1">
           {cameras?.map(c => (
             <label key={c} className="flex items-center gap-2 text-sm">
@@ -125,11 +125,11 @@ export default function SessionConfigForm({ onStarted }: Props) {
         </div>
       </div>
       <div>
-        <label className="block text-sm font-medium text-gray-700 mb-1">FPS</label>
+        <label className="block text-sm font-medium text-charcoal mb-1">FPS</label>
         <Input type="number" className="w-20" value={fps} onChange={e => form.set({ fps: Number(e.target.value) })} />
       </div>
-      <div className="border rounded-md p-3 space-y-2 bg-gray-50">
-        <label className="flex items-center gap-2 text-sm font-medium text-gray-700">
+      <div className="border border-hairline rounded-md p-3 space-y-2 bg-surface-soft">
+        <label className="flex items-center gap-2 text-sm font-medium text-charcoal">
           <input
             type="checkbox"
             checked={form.autoCycle}
@@ -147,7 +147,7 @@ export default function SessionConfigForm({ onStarted }: Props) {
                 value={form.autoDurationSec}
                 onChange={e => form.set({ autoDurationSec: Math.max(1, Number(e.target.value) || 0) })}
               />
-              <span className="text-gray-500">s</span>
+              <span className="text-steel">s</span>
             </label>
             <label className="flex items-center gap-1">
               Review window
@@ -157,12 +157,12 @@ export default function SessionConfigForm({ onStarted }: Props) {
                 value={form.autoReviewSec}
                 onChange={e => form.set({ autoReviewSec: Math.max(0, Number(e.target.value) || 0) })}
               />
-              <span className="text-gray-500">s</span>
+              <span className="text-steel">s</span>
             </label>
           </div>
         )}
         {form.autoCycle && (
-          <p className="text-xs text-gray-500 pl-6">
+          <p className="text-xs text-steel pl-6">
             During review window, press <kbd>F</kbd> to save as failure, <kbd>D</kbd> to discard, <kbd>Esc</kbd> to stop the cycle.
           </p>
         )}
@@ -174,7 +174,7 @@ export default function SessionConfigForm({ onStarted }: Props) {
         {startSession.isPending ? "Starting..." : "Start Session"}
       </Button>
       {startSession.isError && (
-        <pre className="text-red-600 text-sm whitespace-pre-wrap font-mono bg-red-50 border border-red-200 rounded-md p-3">
+        <pre className="text-brand-error text-sm whitespace-pre-wrap font-mono bg-brand-error/10 border border-brand-error/30 rounded-md p-3">
           {(startSession.error as Error).message}
         </pre>
       )}
@@ -183,11 +183,11 @@ export default function SessionConfigForm({ onStarted }: Props) {
           on its own. Without this, the session quietly returns to IDLE
           and the operator is dropped back on this form with no context. */}
       {!startSession.isError && lastError && (
-        <div className="bg-red-50 border border-red-200 rounded-md p-3 space-y-1">
-          <div className="text-red-800 text-sm font-semibold">
+        <div className="bg-brand-error/10 border border-brand-error/30 rounded-md p-3 space-y-1">
+          <div className="text-brand-error text-sm font-semibold">
             Previous session ended with an error: {lastError.error}
           </div>
-          <pre className="text-red-600 text-sm whitespace-pre-wrap font-mono">
+          <pre className="text-brand-error text-sm whitespace-pre-wrap font-mono">
             {lastError.message}
           </pre>
         </div>

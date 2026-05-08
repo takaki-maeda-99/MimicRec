@@ -51,20 +51,20 @@ export default function EEMonitor({ enabled }: Props) {
   if (!enabled) return null;
   if (pos === null && rot === null) {
     return (
-      <div className="text-xs text-gray-400">
+      <div className="text-xs text-stone">
         EE monitor: waiting for state… (configure <code>kinematics:</code> in robot YAML)
       </div>
     );
   }
 
   return (
-    <div className="border rounded-md p-3 bg-gray-50 font-mono text-xs">
-      <div className="font-medium text-gray-700 mb-2 font-sans">End-effector (live)</div>
+    <div className="border border-hairline rounded-md p-3 bg-surface-soft font-mono text-xs">
+      <div className="font-medium text-charcoal mb-2 font-sans">End-effector (live)</div>
       <table className="w-full">
         <tbody>
           {pos && (
             <tr>
-              <td className="text-gray-500 pr-3">pos [m]</td>
+              <td className="text-steel pr-3">pos [m]</td>
               <td>x={FMT(pos[0])}</td>
               <td>y={FMT(pos[1])}</td>
               <td>z={FMT(pos[2])}</td>
@@ -72,7 +72,7 @@ export default function EEMonitor({ enabled }: Props) {
           )}
           {delta && (
             <tr>
-              <td className="text-gray-500 pr-3">Δ pos</td>
+              <td className="text-steel pr-3">Δ pos</td>
               <td>{FMT(delta[0] * 1000, 7, 1)}mm</td>
               <td>{FMT(delta[1] * 1000, 7, 1)}mm</td>
               <td>{FMT(delta[2] * 1000, 7, 1)}mm</td>
@@ -80,7 +80,7 @@ export default function EEMonitor({ enabled }: Props) {
           )}
           {rot && (
             <tr>
-              <td className="text-gray-500 pr-3">rotvec</td>
+              <td className="text-steel pr-3">rotvec</td>
               <td>wx={FMT(rot[0])}</td>
               <td>wy={FMT(rot[1])}</td>
               <td>wz={FMT(rot[2])}</td>
@@ -88,7 +88,7 @@ export default function EEMonitor({ enabled }: Props) {
           )}
           {grip !== null && (
             <tr>
-              <td className="text-gray-500 pr-3">gripper</td>
+              <td className="text-steel pr-3">gripper</td>
               <td colSpan={3}>{FMT(grip, 7, 1)}%</td>
             </tr>
           )}
