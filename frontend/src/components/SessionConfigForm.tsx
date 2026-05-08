@@ -42,7 +42,7 @@ export default function SessionConfigForm({ onStarted }: Props) {
   };
 
   return (
-    <div className="space-y-4 max-w-md">
+    <div className="space-y-4 max-w-[28rem]">
       <div>
         <label className="block text-sm font-medium text-charcoal mb-1">Mode</label>
         <Select value={mode} onChange={e => form.set({ mode: e.target.value as "teleop" | "hand_teach" })}>

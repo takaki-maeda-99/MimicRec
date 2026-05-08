@@ -104,7 +104,10 @@
   --radius-xxl: 24px;
   --radius-full: 9999px;
 
-  /* Spacing (12) — coexists with default --spacing scalar */
+  /* Spacing — coexists with default --spacing scalar.
+     NOTE: Tailwind v4 resolves max-w-{sm,md,lg,xl,2xl} from --spacing-* in
+     this version, so `max-w-md` would be 16px (NOT 28rem). For sized
+     containers, use an arbitrary value like `max-w-[28rem]` instead. */
   --spacing-xxs: 4px;
   --spacing-xs: 8px;
   --spacing-sm: 12px;
