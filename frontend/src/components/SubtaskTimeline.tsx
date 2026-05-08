@@ -14,16 +14,18 @@ interface Segment {
   endTime: number;
 }
 
-const COLORS = [
-  "bg-blue-200 text-blue-800",
-  "bg-green-200 text-green-800",
-  "bg-purple-200 text-purple-800",
-  "bg-orange-200 text-orange-800",
-  "bg-pink-200 text-pink-800",
-  "bg-teal-200 text-teal-800",
-  "bg-yellow-200 text-yellow-800",
-  "bg-red-200 text-red-800",
-];
+// Functional category palette — these are NOT theme tokens; the
+// distinct hues identify subtask categories at a glance.
+const SUBTASK_CHIP_PALETTE = [
+  { bg: "#dbeafe", fg: "#1e40af" }, // blue
+  { bg: "#dcfce7", fg: "#166534" }, // green
+  { bg: "#ede9fe", fg: "#5b21b6" }, // purple
+  { bg: "#ffedd5", fg: "#9a3412" }, // orange
+  { bg: "#fce7f3", fg: "#9d174d" }, // pink
+  { bg: "#ccfbf1", fg: "#115e59" }, // teal
+  { bg: "#fef9c3", fg: "#854d0e" }, // yellow
+  { bg: "#fee2e2", fg: "#991b1b" }, // red
+] as const;
 
 export default function SubtaskTimeline({ ds, idx }: Props) {
   const [segments, setSegments] = useState<Segment[]>([]);
@@ -65,7 +67,7 @@ export default function SubtaskTimeline({ ds, idx }: Props) {
 
   return (
     <div>
-      <h3 className="text-sm font-medium text-gray-500 mb-3">Subtask Timeline</h3>
+      <h3 className="text-sm font-medium text-steel mb-3">Subtask Timeline</h3>
 
       {/* Visual timeline bar */}
       <div className="flex rounded-lg overflow-hidden h-8 mb-3">
@@ -73,9 +75,13 @@ export default function SubtaskTimeline({ ds, idx }: Props) {
           const width = ((seg.endFrame - seg.startFrame + 1) / totalFrames) * 100;
           return (
             <div
+              className="flex items-center justify-center text-caption-bold truncate px-1"
+              style={{
+                backgroundColor: SUBTASK_CHIP_PALETTE[i % SUBTASK_CHIP_PALETTE.length].bg,
+                color: SUBTASK_CHIP_PALETTE[i % SUBTASK_CHIP_PALETTE.length].fg,
+                width: `${Math.max(width, 2)}%`,
+              }}
               key={i}
-              className={`flex items-center justify-center text-xs font-medium truncate px-1 ${COLORS[i % COLORS.length]}`}
-              style={{ width: `${Math.max(width, 2)}%` }}
               title={`${seg.name} (frame ${seg.startFrame}–${seg.endFrame})`}
             >
               {width > 8 ? seg.name : ""}
@@ -88,9 +94,12 @@ export default function SubtaskTimeline({ ds, idx }: Props) {
       <div className="flex flex-wrap gap-2">
         {segments.map((seg, i) => (
           <div key={i} className="flex items-center gap-1.5 text-xs">
-            <span className={`w-3 h-3 rounded ${COLORS[i % COLORS.length].split(" ")[0]}`} />
+            <span
+              className="w-3 h-3 rounded"
+              style={{ backgroundColor: SUBTASK_CHIP_PALETTE[i % SUBTASK_CHIP_PALETTE.length].bg }}
+            />
             <span className="font-medium">{seg.name}</span>
-            <span className="text-gray-400">
+            <span className="text-stone">
               {seg.startTime.toFixed(1)}–{seg.endTime.toFixed(1)}s
             </span>
           </div>

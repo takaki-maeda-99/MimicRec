@@ -70,7 +70,7 @@ export default function SubtaskAnnotator({ ds, idx, cameras }: Props) {
   return (
     <div>
       <div className="flex items-center gap-3 mb-3">
-        <h3 className="text-sm font-medium text-gray-500">Subtask Annotation</h3>
+        <h3 className="text-sm font-medium text-steel">Subtask Annotation</h3>
         <select
           className="text-xs border rounded px-2 py-1"
           value={camera}
@@ -89,7 +89,7 @@ export default function SubtaskAnnotator({ ds, idx, cameras }: Props) {
           <option value="google/gemma-4-E2B-it">Gemma 4 E2B-it</option>
         </select>
         <button
-          className="text-xs text-blue-600 hover:text-blue-800"
+          className="text-xs text-brand-tag hover:underline"
           onClick={() => setShowPrompt(!showPrompt)}
         >
           {showPrompt ? "Hide Prompt" : "Edit Prompt"}
@@ -113,41 +113,41 @@ export default function SubtaskAnnotator({ ds, idx, cameras }: Props) {
           {loading ? "Analyzing..." : "Annotate Subtasks"}
         </Button>
         {loading && (
-          <span className="text-xs text-gray-400">
+          <span className="text-xs text-stone">
             Loading model & running inference (may take 30-60s first time)...
           </span>
         )}
       </div>
 
       {error && (
-        <p className="text-red-600 text-sm mb-3">{error}</p>
+        <p className="text-brand-error text-sm mb-3">{error}</p>
       )}
 
       {result && (
         <div className="space-y-2">
-          <p className="text-sm text-gray-600">
+          <p className="text-sm text-slate">
             Found <span className="font-medium">{result.num_subtasks}</span> subtasks:
           </p>
           <div className="space-y-1">
             {result.subtasks.map((st, i) => (
               <div
                 key={i}
-                className="flex items-start gap-3 bg-gray-50 rounded px-3 py-2 text-sm"
+                className="flex items-start gap-3 bg-surface-soft rounded px-3 py-2 text-sm"
               >
-                <span className="bg-blue-100 text-blue-700 px-2 py-0.5 rounded text-xs font-medium shrink-0">
+                <span className="bg-brand-tag/15 text-brand-tag px-2 py-0.5 rounded text-xs font-medium shrink-0">
                   {i + 1}
                 </span>
                 <div className="flex-1">
                   <div className="font-medium">{st.name}</div>
-                  <div className="text-gray-500 text-xs">{st.description}</div>
+                  <div className="text-steel text-xs">{st.description}</div>
                 </div>
-                <span className="text-xs text-gray-400 shrink-0">
+                <span className="text-xs text-stone shrink-0">
                   frame {st.start_frame}–{st.end_frame}
                 </span>
               </div>
             ))}
           </div>
-          <p className="text-xs text-gray-400 mt-2">
+          <p className="text-xs text-stone mt-2">
             Saved to episode parquet as subtask_index + subtask_name columns.
           </p>
         </div>
