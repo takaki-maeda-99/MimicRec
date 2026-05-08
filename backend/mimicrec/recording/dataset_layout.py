@@ -3,6 +3,8 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+from mimicrec.recording.atomic_io import _atomic_write_parquet, _atomic_write_text
+
 
 @dataclass(frozen=True)
 class DatasetPaths:
@@ -50,6 +52,7 @@ def init_dataset(
     proprio_layout: dict | None = None,
     camera_resolutions: dict[str, tuple[int, int]] | None = None,
 ) -> None:
+    ds_root.mkdir(parents=True, exist_ok=False)
     p = dataset_paths(ds_root)
     p.meta_dir.mkdir(parents=True, exist_ok=True)
     p.data_dir.mkdir(parents=True, exist_ok=True)
@@ -104,17 +107,16 @@ def init_dataset(
         info["gripper_convention"] = gripper_convention
     if proprio_layout is not None:
         info["proprio_layout"] = proprio_layout
-    (p.meta_dir / "info.json").write_text(json.dumps(info, indent=2))
+    _atomic_write_text(p.meta_dir / "info.json", json.dumps(info, indent=2))
 
     # Create empty tasks.parquet with proper schema
     import pyarrow as pa
-    import pyarrow.parquet as pq
     schema = pa.schema([
         ("task", pa.string()),
         ("task_index", pa.int64()),
         ("instruction", pa.string()),
     ])
-    pq.write_table(pa.table({"task": [], "task_index": [], "instruction": []}, schema=schema), p.tasks_parquet)
+    _atomic_write_parquet(pa.table({"task": [], "task_index": [], "instruction": []}, schema=schema), p.tasks_parquet)
 
 
 def resolve_chunk(episode_index: int, episodes_per_chunk: int = 1000) -> int:

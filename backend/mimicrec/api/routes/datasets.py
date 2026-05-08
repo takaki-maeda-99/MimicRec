@@ -68,7 +68,7 @@ async def create_dataset(request: Request, body: CreateDatasetRequest):
     root = get_datasets_root(request.app)
     ds_root = root / body.name
     if ds_root.exists():
-        raise ValueError(f"dataset '{body.name}' already exists")
+        raise HTTPException(status_code=409, detail=f"dataset '{body.name}' already exists")
     configs_root = get_configs_root(request.app)
     camera_resolutions: dict[str, tuple[int, int]] = {}
     for cam_name in body.camera_names:
@@ -88,13 +88,16 @@ async def create_dataset(request: Request, body: CreateDatasetRequest):
                 int(cam_cfg.get("width", 640)),
                 int(cam_cfg.get("height", 480)),
             )
-    init_dataset(
-        ds_root,
-        fps=body.fps,
-        joint_names=body.joint_names,
-        camera_names=body.camera_names,
-        camera_resolutions=camera_resolutions,
-    )
+    try:
+        init_dataset(
+            ds_root,
+            fps=body.fps,
+            joint_names=body.joint_names,
+            camera_names=body.camera_names,
+            camera_resolutions=camera_resolutions,
+        )
+    except FileExistsError:
+        raise HTTPException(status_code=409, detail=f"dataset '{body.name}' already exists")
     info = read_dataset_info(ds_root)
     return DatasetSummary(name=body.name, num_episodes=0, total_frames=0)
 
