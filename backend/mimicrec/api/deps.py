@@ -181,7 +181,10 @@ async def create_session_from_request(app, req) -> SessionManager:
 
     # Dataset
     ds_root = datasets_root / req.dataset
-    if not ds_root.exists():
+    # NOTE: pending_dir.mkdir (above) may have already created ds_root.
+    # Guard on info.json presence rather than directory existence so that
+    # init_dataset is called even when the pending dir was pre-created.
+    if not (ds_root / "meta" / "info.json").exists():
         # Capture per-adapter declarations if available (None for mock adapters).
         rt = type(robot).__name__
         gc = (
