@@ -65,8 +65,9 @@ MimicRec で録ったデータセットは現状 `datasets/<name>/` 以下にし
 | メタ保存先 | **`meta/hub.json` に分離** | `info.json` の lost update を避ける |
 | ローカル dirty 判定 | `path + size + mtime_ns` の sha256 | start_hash / end_hash を save_lock 内で取り、一致時のみ clean マーク |
 | Atomic write | `recording/atomic_io.py` 新設、tmp は `NamedTemporaryFile(dir=parent, delete=False)` | 全 dataset 配下メタ書き込みを `os.replace` で原子化 |
-| Snapshot 方式 | `shutil.copytree(copy_function=os.link)` で hardlink-copy | `.pending/`, `.cache/`, `.git/` を ignore、symlink 検出時は fail |
+| Snapshot 方式 | `shutil.copytree(copy_function=os.link)` で hardlink-copy → tombstoned episode 由来の data/video file を削除 → `episodes.parquet` と `info.json` を deleted 除外で再生成 | `.pending/`, `.cache/`, `.git/` を ignore、symlink 検出時は fail |
 | Push 時 lock | snapshot 作成時のみ短く `save_lock` を取る、upload 本体は no-lock | dataset-level 整合は snapshot 凍結で担保 |
+| Lock 種別 | `threading.RLock`（再入可） | `append_episode → update_info_totals` のような同 thread 内ネスト呼び出しを許す |
 | dataset 内書込み参加者 | save / tombstone / upsert_task / annotate / dataset 削除 | 全部 `save_lock` 経由 + atomic write |
 | Private デフォルト | UI / API / スキーマ層で **true 固定** | API は明示的 `false` 指定で初めて public |
 | 認証ステータスキャッシュ | 60 秒 TTL、`?refresh=1` で強制 | `whoami` が遅い+offline の救済 |
@@ -188,8 +189,9 @@ def detect_symlinks(ds_root: Path) -> list[Path]:
     """Recursively find symlinks under ds_root (excluding ignored dirs)."""
 
 def make_push_snapshot(ds_root: Path) -> Path:
-    """Hardlink-copy ds_root to a sibling dir for push isolation.
-    Caller must hold save_lock during this call."""
+    """Hardlink-copy ds_root to a sibling dir for push isolation, then strip
+    tombstoned episodes from the snapshot. Caller must hold the save_lock
+    during this call (this function does NOT acquire the lock itself)."""
     syms = detect_symlinks(ds_root)
     if syms:
         raise SnapshotError(f"dataset contains symlinks (forbidden in v1): {syms}")
@@ -198,7 +200,50 @@ def make_push_snapshot(ds_root: Path) -> Path:
         return [n for n in names if n in SNAPSHOT_IGNORE]
     shutil.copytree(ds_root, snapshot, copy_function=os.link, ignore=_ignore,
                     dirs_exist_ok=False, symlinks=False)
+    _strip_tombstoned(snapshot)   # see below
     return snapshot
+
+def _strip_tombstoned(snapshot: Path) -> None:
+    """Remove tombstoned episode data/video files and rewrite episodes.parquet
+    + info.json to exclude deleted rows. Breaks hardlinks for those files in
+    the snapshot only (original ds_root inodes remain intact)."""
+    meta_dir = snapshot / "meta"
+    rows = pq.read_table(meta_dir / "episodes" / "chunk-000" / "file-000.parquet").to_pylist()
+    deleted = [r for r in rows if r.get("deleted")]
+    if not deleted:
+        return
+    # 1) hardlink を解除する形で data/mp4 を unlink（refcount--、original ds_root は無傷）
+    for row in deleted:
+        ep_idx = row["episode_index"]
+        chunk = ep_idx // 1000
+        for p in (snapshot / "data" / f"chunk-{chunk:03d}" / f"episode_{ep_idx:06d}.parquet",):
+            p.unlink(missing_ok=True)
+        videos_dir = snapshot / "videos"
+        if videos_dir.exists():
+            for cam_dir in videos_dir.iterdir():
+                vp = cam_dir / f"chunk-{chunk:03d}" / f"episode_{ep_idx:06d}.mp4"
+                vp.unlink(missing_ok=True)
+    # 2) episodes.parquet を deleted 除外で再生成（dataset_from/to_index 再計算）
+    kept = [r for r in rows if not r.get("deleted")]
+    offset = 0
+    for r in sorted(kept, key=lambda x: x["episode_index"]):
+        r["dataset_from_index"] = offset
+        r["dataset_to_index"] = offset + r.get("length", 0)
+        offset = r["dataset_to_index"]
+    _atomic_write_parquet(pa.Table.from_pylist(kept),
+                          meta_dir / "episodes" / "chunk-000" / "file-000.parquet")
+    # 3) info.json の totals を再計算
+    info = json.loads((meta_dir / "info.json").read_text())
+    info["total_episodes"] = len(kept)
+    info["total_frames"] = sum(r.get("length", 0) for r in kept)
+    info["splits"] = {"train": f"0:{len(kept)}"}
+    _atomic_write_text(meta_dir / "info.json", json.dumps(info, indent=2))
+
+def collect_tombstoned_files(ds_root: Path) -> list[str]:
+    """List Hub-relative paths to delete via post-upload delete_files. Includes
+    files that were pushed in a previous revision but are now tombstoned (i.e.,
+    they need cleanup on the Hub side, since upload_large_folder does NOT delete
+    files missing from the source)."""
 
 def cleanup_snapshot(snapshot: Path) -> None:
     if snapshot.exists() and snapshot.name.startswith(".push-snapshot-"):
@@ -222,12 +267,14 @@ class PushCoordinator:
     def __init__(self):
         self._mu = threading.Lock()       # in_flight / save_locks の dict 操作を守る
         self.in_flight: set[str] = set()
-        self.save_locks: dict[str, threading.Lock] = {}
+        self.save_locks: dict[str, threading.RLock] = {}
         self.progress: dict[str, PushProgress] = {}
 
-    def get_save_lock(self, ds_name: str) -> threading.Lock:
+    def get_save_lock(self, ds_name: str) -> threading.RLock:
+        """Returns a re-entrant lock so that nested writer calls
+        (e.g. append_episode → update_info_totals) on the same thread don't deadlock."""
         with self._mu:
-            return self.save_locks.setdefault(ds_name, threading.Lock())
+            return self.save_locks.setdefault(ds_name, threading.RLock())
 
     def try_reserve(self, ds_name: str) -> bool:
         """Atomically check & reserve. Returns True if reserved, False if already in-flight."""
@@ -286,20 +333,24 @@ def _atomic_write_text(path: Path, content: str) -> None:
 ```
 GET /api/cloud/auth-status?refresh=0
   ├─ app.state.auth_cache が 60s 以内 → そのまま返す
-  └─ 古い or refresh=1 → HfFolder.get_token() で token 有無確認
-                          token あり → HfApi().whoami() で username 取得（失敗は飲む）
+  └─ 古い or refresh=1 → HfApi().get_token() で token 有無確認
+                          token あり → HfApi(token=...).whoami() で username 取得（失敗は飲む）
                           結果を auth_cache に保存
 ```
 
+`HfFolder.get_token()` は `huggingface_hub` の旧 API で、`>=0.34` では `HfApi().get_token()` が推奨されている（旧 API はまだ動くがスタブ化）。本 spec では `HfApi().get_token()` を **正規** とする。
+
 ### 手動 push
+
+ステータスコードの優先順は **path → 存在 → 認証 → 設定 → 重複** の順:
 
 ```
 POST /api/datasets/{ds}/hub/push
   ↓ route handler:
-    1. safe_dataset_path(root, ds) で path traversal 防止
-    2. ds_root 存在チェック（無ければ 404）
-    3. read_hub_meta(ds_root) で repo_id 取得（無ければ 400 "configure hub first"）
-    4. HfFolder.get_token() で token 確認（None なら 401）
+    1. safe_dataset_path(root, ds) で path traversal 防止 (400 if invalid)
+    2. ds_root 存在チェック (404 if absent)
+    3. HfApi().get_token() で token 確認 (401 if None)
+    4. read_hub_meta(ds_root) で repo_id 取得 (400 "configure hub first" if None)
     5. coordinator.try_reserve(ds) → False なら 409 "push already in flight"
     6. progress[ds] = PushProgress(status="queued", repo_id, started_at=iso_now())
     7. asyncio.create_task(_run_push_with_release(ds))
@@ -314,17 +365,29 @@ asyncio task _run_push_with_release(ds):
 _push_task(ds_root, ds_name):
     save_lock = coordinator.get_save_lock(ds_name)
     progress[ds_name].status = "uploading"
+    snap: Path | None = None
+    meta: HubMeta | None = None
+    tombstoned: list[str] = []
+    start_hash: str | None = None
+    setup_error: Exception | None = None
 
-    # (a) snapshot 作成（save_lock 内で短時間）
+    # (a) snapshot 作成（save_lock 内で短時間）。失敗も全部 finalize で永続化する。
     def _take_snapshot():
         with save_lock:
-            meta = read_hub_meta(ds_root)
-            tombstoned = collect_tombstoned_files(ds_root)
-            start_hash = compute_manifest_hash(ds_root)
-            snap = make_push_snapshot(ds_root)
-            return meta, tombstoned, start_hash, snap
+            m = read_hub_meta(ds_root)
+            t = collect_tombstoned_files(ds_root)
+            sh = compute_manifest_hash(ds_root)
+            s = make_push_snapshot(ds_root)
+            return m, t, sh, s
 
-    meta, tombstoned, start_hash, snap = await asyncio.to_thread(_take_snapshot)
+    try:
+        meta, tombstoned, start_hash, snap = await asyncio.to_thread(_take_snapshot)
+    except Exception as e:
+        # symlink 検出失敗 / hub.json 不在 / hash 計算失敗 など: snapshot 取れずに終わる。
+        # finalize に委譲して last_push_error を必ず書く。
+        setup_error = e
+        await asyncio.to_thread(_finalize_with_error, ds_root, ds_name, e)
+        return
 
     # (b) snapshot から push（lock 無し、long-running）
     inner = asyncio.create_task(asyncio.to_thread(
@@ -363,9 +426,23 @@ _push_task(ds_root, ds_name):
                 progress[ds_name].ended_at = iso_now()
                 write_hub_meta(ds_root, current)
         finally:
-            cleanup_snapshot(snap)
+            if snap is not None:
+                cleanup_snapshot(snap)
 
     await asyncio.to_thread(_finalize)
+
+
+def _finalize_with_error(ds_root, ds_name, error: Exception) -> None:
+    """Snapshot 段階で失敗したケース用の最低限 finalize（save_lock 内で実行）。"""
+    save_lock = coordinator.get_save_lock(ds_name)
+    with save_lock:
+        existing = read_hub_meta(ds_root)
+        if existing is not None:
+            existing.last_push_error = str(error)
+            write_hub_meta(ds_root, existing)
+        progress[ds_name].status = "error"
+        progress[ds_name].error = str(error)
+        progress[ds_name].ended_at = iso_now()
 ```
 
 ### Auto-push
@@ -374,16 +451,25 @@ _push_task(ds_root, ds_name):
 
 ```python
 def _maybe_trigger_auto_push(ds_root, ds_name, app_loop):
-    meta = read_hub_meta(ds_root)   # save_lock 不要、read のみ
+    meta = read_hub_meta(ds_root)   # read のみで save_lock 不要
     if meta is None or not meta.auto_push:
         return
     if not coordinator.try_reserve(ds_name):
-        return  # 既に in-flight
+        return  # 既に in-flight、または 連続 save の 2 回目以降
     # save() は thread executor で動いている可能性があるので、
-    # event loop に schedule する
-    app_loop.call_soon_threadsafe(
-        lambda: asyncio.create_task(_run_push_with_release(ds_name))
+    # event loop に schedule する。失敗時は in_flight を必ず戻す。
+    coordinator.progress[ds_name] = PushProgress(
+        status="queued", repo_id=meta.repo_id, started_at=iso_now()
     )
+    try:
+        app_loop.call_soon_threadsafe(
+            lambda: asyncio.create_task(_run_push_with_release(ds_name))
+        )
+    except RuntimeError:
+        # event loop が closed 等。reserve を戻す。
+        coordinator.release(ds_name)
+        coordinator.progress[ds_name].status = "error"
+        coordinator.progress[ds_name].error = "event loop unavailable"
 ```
 
 `SessionManager` 起動時に `app_loop = asyncio.get_running_loop()` を保持して `PendingEpisode` に注入する。
@@ -409,7 +495,7 @@ DELETE /api/datasets/{ds}
 | `recording/metadata.py:160` | `update_info_totals()` の info.json | `_atomic_write_text` |
 | `recording/dataset_layout.py:107` | `init_dataset()` の info.json 初期化 | 同 |
 | `recording/dataset_layout.py:117` | `init_dataset()` の tasks.parquet 初期化 | `_atomic_write_parquet` |
-| `annotator/subtask.py:254` | `save_annotations()` の subtasks parquet | 同 |
+| `annotator/subtask.py:254` | `save_annotations()` が **episode data parquet を annotation 列付きで上書き**（subtasks 専用 parquet ではない） | `_atomic_write_parquet` |
 
 加えて `init_dataset()` 自体の TOCTOU 修正:
 - 現状: 呼び出し元で `if ds_root.exists()` チェック後 `mkdir(exist_ok=True)`
@@ -417,16 +503,33 @@ DELETE /api/datasets/{ds}
 
 ## Lock 参加者と境界
 
-`save_lock` は dataset 名でキー、`threading.Lock`。以下の **書き込み関数の中** で取得する（呼び出し元任せにしない）:
+`save_lock` は dataset 名でキー、**`threading.RLock`**（再入可）。以下の **書き込み関数の中** で取得する（呼び出し元任せにしない）:
 
 - `PendingEpisode.save()` の rename + `append_episode` 連続部分
 - `tombstone_episode()`
 - `upsert_task()`
-- `update_info_totals()`（`append_episode` / `tombstone_episode` から呼ばれるが、独立呼び出しもあり得る → 関数自身で取得）
+- `update_info_totals()`（`append_episode` / `tombstone_episode` から呼ばれる場合は同一 thread でのネスト取得 = RLock で許容）
 - `save_annotations()`（annotator）
-- `make_push_snapshot()`（snapshot 取得時の同時 save 阻止）
 
-非同期側からは `await asyncio.to_thread(do_locked_work)` の形で「取得から解放まで同一 sync 関数内」に閉じる（lock 取得だけを別関数化しない）。
+`make_push_snapshot()` 自身は **lock を取得しない**（caller の `_take_snapshot()` が `with save_lock:` で囲む）。
+
+非同期側からは `await asyncio.to_thread(do_locked_work)` の形で「取得から解放まで同一 sync 関数内」に閉じる。
+
+### Coordinator の注入
+
+書き込み関数は dataset name と coordinator を知らないと lock を引けないため、**新規 kwargs を追加** する:
+
+```python
+def append_episode(meta_dir, row, *, coordinator: PushCoordinator, ds_name: str) -> None: ...
+def tombstone_episode(meta_dir, idx, deleted_at_unix, *, coordinator, ds_name) -> None: ...
+def upsert_task(meta_dir, task_name, instruction, *, coordinator, ds_name) -> None: ...
+def update_info_totals(meta_dir, *, coordinator, ds_name) -> None: ...
+def save_annotations(ds_root, idx, segments, *, coordinator, ds_name) -> None: ...
+```
+
+呼び出し元（route handler / `PendingEpisode.save()` / SessionManager / annotator）は `app.state.push_coordinator` を渡す。`ds_name` は呼び出し元の path から既知（`ds_root.name`）。
+
+`PendingEpisode` は `__init__` で `coordinator` と `ds_name` を受け、`save()` 内部で lock を取得する。
 
 ## API endpoints
 
@@ -493,7 +596,27 @@ Request:
 
 ### `DELETE /api/datasets/{ds}` の挙動変更
 
-push in-flight なら 409、そうでなければ `save_lock` を取って削除。
+```
+1. coordinator._mu の下で:
+   - if ds in coordinator.in_flight: 409 を返す（push 中の削除を阻止）
+   - 同時に「予約中の削除」を表すフラグを立てる（または in_flight に削除タスクを足す）
+2. save_lock を取って shutil.rmtree(ds_root)
+3. coordinator.save_locks / progress / in_flight から ds を pop（cleanup）
+```
+
+`push in-flight` の判定と「削除予約」を **同じ critical section** で行うことで、push 開始の競合と矛盾しない（push 側も `try_reserve` で同じ mutex を取る）。
+
+### Dirty 判定の規約
+
+`last_pushed_commit_sha` と `last_pushed_manifest_hash` の組で 3 状態を表現する:
+
+| `last_pushed_commit_sha` | `last_pushed_manifest_hash` | 状態 | UI 表示 |
+|---|---|---|---|
+| `None` | `None` | **未 push** | "Not pushed yet" |
+| `<sha>` | `<hash>` | **clean**（push 中に dataset 変化なし） | "✓ Synced (commit abc123)" |
+| `<sha>` | `None` | **dirty during push**（push 中に save が走った） | "⚠ Pushed but stale (commit abc123)" |
+
+frontend は **追加で `compute_manifest_hash(ds_root)` を呼ぶ必要なく**、保存済みの 2 フィールドだけで判定できる。「現在も clean か」を確認したい場合は backend に `GET /api/datasets/{ds}/hub` を投げ直せば最新 hub.json が返る（push 後に save が走ったかは `last_pushed_manifest_hash == None` で示される）。
 
 ## Frontend changes
 
@@ -533,7 +656,14 @@ export async function postPush(ds: string): Promise<{ status: "queued" }>;
 ### Integration
 - `tests/integration/test_atomic_save.py`: save() 中に並行 reader が partial を読まない（atomic 化検証）
 - `tests/integration/test_auto_push_flow.py`: mock `HfApi`、auto_push=true で 1 episode save → push が enqueue される
-- `tests/integration/test_snapshot_consistency.py`: snapshot 後に save() が走っても snapshot の内容は変わらない
+- `tests/integration/test_snapshot_consistency.py`:
+  - snapshot 直後の hardlink 検証（`os.stat().st_ino` と `st_nlink` で同 inode・refcount=2）
+  - snapshot 後に `os.replace` で原本 `info.json` を書き換え → snapshot 側 `info.json` の inode/content が変わらない
+  - `start_hash != end_hash` のとき `last_pushed_manifest_hash = None`（dirty）
+  - tombstoned episode を含む snapshot で、deleted file が unlink され、`episodes.parquet` から row が除外され、`info.json` の totals が再計算される
+  - dataset 内 symlink を仕込むと `make_push_snapshot()` が `SnapshotError` を投げる
+  - snapshot に `meta/hub.json` が含まれず、ignore patterns（`.pending/`, `.cache/`, `.git/`）も含まれない
+- `tests/integration/test_tombstone_hub_cleanup.py`: 一度 push → episode 削除 → 再 push → snapshot に該当 file 不在、`delete_files(parent_commit=...)` が呼ばれる
 
 ### Live (opt-in)
 - `tests/live/test_hf_live_push.py`: `HF_TOKEN` 環境変数があるときのみ実行、`mimicrec_test_<random>` repo を作って push → `from_pretrained` で読めるか確認 → 削除
@@ -542,7 +672,15 @@ export async function postPush(ds: string): Promise<{ status: "queued" }>;
 
 - 既存 dataset には `meta/hub.json` が無い。これは「未設定」状態として UI に「Configure Hub」と出す。`PUT /hub` で初めて作成。
 - 既存の non-atomic な `info.json` / parquet は影響なし（atomic 化は **書き込みパス**だけ変更、ファイル形式は同じ）。
-- `init_dataset` の `mkdir(exist_ok=False)` 化: 既存 ds との衝突は呼び出し元の事前チェックがすでにあるので実害なし。
+- `init_dataset` の `mkdir(exist_ok=False)` 化: 既存 ds との衝突は呼び出し元の事前チェックがすでにあるので実害なし。`FileExistsError` は呼び出し元 (`POST /datasets`) で 409 にマップする。
+
+## 既存ルートの path traversal — 本 PR のスコープ
+
+**Hub 関連の新規ルート (`/api/datasets/{ds}/hub*`, `POST /api/datasets/{ds}/hub/push`) のみ `safe_dataset_path()` を使う。**
+
+既存 `datasets.py` の `root / ds` 直結ルート（`DELETE /datasets/{ds}` 等）は同じ穴を持つが、**本 PR では新規ルートにだけ穴を増やさない** ことを最低限の仕様とする。既存ルート全体への適用は別 PR で別タスク化（CLAUDE.md / future work）。
+
+ただし `DELETE /datasets/{ds}` は本 PR で push 調停のために手を入れるので、ついでに `safe_dataset_path()` を入れる（境界条件の最小スコープ）。
 
 ## Open questions / future work
 
