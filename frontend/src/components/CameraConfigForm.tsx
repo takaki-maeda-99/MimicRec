@@ -76,6 +76,8 @@ export function CameraConfigForm({ name, currentContent, onSave, onCancel }: Pro
       })
       .catch((e) => setCapsError(String(e)))
       .finally(() => setLoadingCaps(false));
+    // Intentional: re-fetch only on deviceId change. The other state vars
+    // are read as "last saved values" for mismatch detection, not as triggers.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [deviceId]);
 
@@ -222,7 +224,7 @@ export function CameraConfigForm({ name, currentContent, onSave, onCancel }: Pro
         <Button variant="outline" onClick={onCancel} disabled={saving}>
           Cancel
         </Button>
-        <Button onClick={handleSave} disabled={saving || loadingCaps}>
+        <Button onClick={handleSave} disabled={saving || loadingCaps || !!capsError}>
           {saving ? "Saving..." : "Save"}
         </Button>
       </div>
