@@ -151,6 +151,13 @@ async def create_session_from_request(app, req) -> SessionManager:
             robot.proprio_layout()
             if hasattr(robot, "proprio_layout") else None
         )
+        camera_resolutions = {
+            cam_name: (
+                int(cam_cfgs[cam_name].get("width", 640)),
+                int(cam_cfgs[cam_name].get("height", 480)),
+            )
+            for cam_name in req.cameras
+        }
         init_dataset(
             ds_root, fps=req.fps,
             joint_names=robot.joint_names,
@@ -167,6 +174,7 @@ async def create_session_from_request(app, req) -> SessionManager:
                     "gripper_index_in_column": pl.gripper_index_in_column,
                 } if pl else None
             ),
+            camera_resolutions=camera_resolutions,
         )
 
     # Resolved config snapshot

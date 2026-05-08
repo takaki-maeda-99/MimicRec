@@ -2,14 +2,18 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import logging
 import tempfile
 import time
 import zipfile
 from pathlib import Path
 from typing import Literal
 
+logger = logging.getLogger(__name__)
+
 import pyarrow.parquet as pq
 from fastapi import APIRouter, Request, Query, HTTPException
+from omegaconf import OmegaConf
 from fastapi.responses import StreamingResponse, FileResponse
 from pydantic import BaseModel as _BaseModel
 
@@ -65,7 +69,32 @@ async def create_dataset(request: Request, body: CreateDatasetRequest):
     ds_root = root / body.name
     if ds_root.exists():
         raise ValueError(f"dataset '{body.name}' already exists")
-    init_dataset(ds_root, fps=body.fps, joint_names=body.joint_names, camera_names=body.camera_names)
+    configs_root = get_configs_root(request.app)
+    camera_resolutions: dict[str, tuple[int, int]] = {}
+    for cam_name in body.camera_names:
+        cam_path = configs_root / "cameras" / f"{cam_name}.yaml"
+        if not cam_path.exists():
+            continue
+        try:
+            cam_cfg = OmegaConf.to_container(OmegaConf.load(cam_path))
+        except Exception as e:
+            logger.warning(
+                "camera config %s failed to parse: %s; skipping resolution override",
+                cam_path, e,
+            )
+            continue
+        if isinstance(cam_cfg, dict):
+            camera_resolutions[cam_name] = (
+                int(cam_cfg.get("width", 640)),
+                int(cam_cfg.get("height", 480)),
+            )
+    init_dataset(
+        ds_root,
+        fps=body.fps,
+        joint_names=body.joint_names,
+        camera_names=body.camera_names,
+        camera_resolutions=camera_resolutions,
+    )
     info = read_dataset_info(ds_root)
     return DatasetSummary(name=body.name, num_episodes=0, total_frames=0)
 

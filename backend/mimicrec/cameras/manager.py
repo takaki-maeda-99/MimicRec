@@ -28,6 +28,24 @@ class CameraManager:
         return q
 
     async def start(self) -> None:
+        # Connect every camera up-front so any failure aborts session_start
+        # rather than silently dropping the camera mid-session.
+        connected: list[str] = []
+        try:
+            for name, cam in self._cameras.items():
+                if hasattr(cam, "connect"):
+                    await asyncio.wait_for(cam.connect(), timeout=10.0)
+                connected.append(name)
+        except Exception as e:
+            for prev in connected:
+                prev_cam = self._cameras[prev]
+                if hasattr(prev_cam, "disconnect"):
+                    try:
+                        await prev_cam.disconnect()
+                    except Exception:
+                        pass
+            raise RuntimeError(f"camera startup failed: {e}") from e
+
         for name, cam in self._cameras.items():
             self._tasks.append(asyncio.create_task(self._run_camera(name, cam)))
 
@@ -55,14 +73,8 @@ class CameraManager:
                     )
 
     async def _run_camera(self, name: str, cam) -> None:
-        # Connect camera if it has a connect method (OpenCVCamera needs it, MockCamera doesn't)
-        if hasattr(cam, "connect"):
-            try:
-                await cam.connect()
-            except Exception as e:
-                import logging
-                logging.getLogger(__name__).warning(f"camera {name} connect failed: {e}")
-                return  # Don't publish to ErrorBus — failed camera shouldn't kill the session
+        # Cameras are connected up-front in start() so any connect failure
+        # aborts session_start. Here we just run the read loop.
         while not self._stopped.is_set():
             try:
                 frame = await cam.read()

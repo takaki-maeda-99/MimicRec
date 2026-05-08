@@ -48,6 +48,7 @@ def init_dataset(
     robot_type: str | None = None,
     gripper_convention: dict | None = None,
     proprio_layout: dict | None = None,
+    camera_resolutions: dict[str, tuple[int, int]] | None = None,
 ) -> None:
     p = dataset_paths(ds_root)
     p.meta_dir.mkdir(parents=True, exist_ok=True)
@@ -68,12 +69,16 @@ def init_dataset(
     features["task_index"] = {"dtype": "int64", "shape": [1], "names": None}
 
     for cam in camera_names:
+        if camera_resolutions and cam in camera_resolutions:
+            w, h = camera_resolutions[cam]
+        else:
+            w, h = 640, 480
         features[f"observation.images.{cam}"] = {
             "dtype": "video",
-            "shape": [480, 640, 3],
+            "shape": [h, w, 3],
             "names": ["height", "width", "channels"],
             "info": {
-                "video.height": 480, "video.width": 640,
+                "video.height": h, "video.width": w,
                 "video.codec": "libx264", "video.pix_fmt": "yuv420p",
                 "video.is_depth_map": False, "video.fps": fps,
                 "video.channels": 3, "has_audio": False,
