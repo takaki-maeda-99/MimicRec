@@ -26,6 +26,7 @@ def _clear_session_state(app) -> None:
     app.state.resolved_config = None
     app.state.error_bus = None
     app.state.camera_manager = None
+    app.state.gopro_registry = None
 
 router = APIRouter()
 

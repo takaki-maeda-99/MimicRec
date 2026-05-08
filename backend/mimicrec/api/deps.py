@@ -260,5 +260,6 @@ async def create_session_from_request(app, req) -> SessionManager:
         fk=fk,
         task=req.task or "default",
         instruction=getattr(req, "instruction", "") or "",
+        gopro_registry=gopro_registry,
     )
     return sm
