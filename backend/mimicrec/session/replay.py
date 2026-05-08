@@ -41,6 +41,7 @@ async def run_replay(
     measured_state_slot: "LatestValue | None" = None,
     safety: "ReplaySafetyConfig | None" = None,
     error_bus: "object | None" = None,
+    interp_steps: int = 5,
 ) -> None:
     if session.state != SessionState.READY:
         from mimicrec.errors import InvalidTransitionError
@@ -60,9 +61,9 @@ async def run_replay(
     next_tick_ns = clock.monotonic_ns() + tick_interval_ns
 
     logger.warning(
-        "[replay] START: traj_fps=%s session_fps=%s effective_fps=%s n_frames=%d safety=%s",
+        "[replay] START: traj_fps=%s session_fps=%s effective_fps=%s n_frames=%d safety=%s interp_steps=%d",
         trajectory.fps, fps, effective_fps, len(trajectory.joint_targets),
-        "yes" if safety is not None else "no",
+        "yes" if safety is not None else "no", max(1, int(interp_steps)),
     )
 
     # Sync the watchdog's dt_sec with the trajectory's native fps so vel/accel
@@ -121,6 +122,15 @@ async def run_replay(
         "yes" if grip_targets is not None else "no",
     )
 
+    # Substep count for linear interpolation. target_i is sent at the
+    # start of its tick (matching legacy timing, so playback tempo is
+    # unchanged when interp_steps varies); within the tick, n_sub-1
+    # interpolated setpoints ramp toward target_{i+1}. The final substep
+    # (= target_{i+1}) is delivered as the next iteration's primary send,
+    # so we don't emit it here. interp_steps=1 reproduces legacy behavior.
+    n_sub = max(1, int(interp_steps))
+    substep_interval_ns = tick_interval_ns // n_sub
+
     sent_count = 0
     try:
         for tick_i, q in enumerate(targets):
@@ -162,19 +172,58 @@ async def run_replay(
                         await error_bus.publish(e)
                     raise
 
-            now3 = clock.monotonic_ns()
             grip = (
                 float(grip_targets[tick_i])
                 if grip_targets is not None and tick_i < len(grip_targets)
                 else None
             )
+
+            # Send target_i at the start of its tick — same time the
+            # legacy single-send code fired, so playback tempo is preserved.
+            now3 = clock.monotonic_ns()
             command_goal_slot.set(
                 RobotCommand(q=target, gripper=grip, t_mono_ns=now3),
                 t_mono_ns=now3,
             )
-            sent_count += 1
             if wd is not None:
                 wd.note_command_sent(now3)
+            sent_count += 1
+
+            # Within this tick, ramp linearly from target_i toward
+            # target_{i+1} so the controller sees evenly spaced setpoints
+            # rather than a step. Substeps s=1..n_sub-1 fire at
+            # base_ns + s*dt/n_sub; s=n_sub is intentionally skipped — the
+            # next iteration's primary send delivers target_{i+1} exactly
+            # at t_{i+1}. No substeps after the final recorded frame.
+            # Note: substeps reach (n_sub-1)/n_sub of the way to target_{i+1}
+            # before that target is safety-checked at the next iteration.
+            if n_sub > 1 and tick_i + 1 < len(targets):
+                next_target = targets[tick_i + 1].astype(np.float32)
+                next_grip = (
+                    float(grip_targets[tick_i + 1])
+                    if grip_targets is not None
+                    and tick_i + 1 < len(grip_targets)
+                    else None
+                )
+                base_ns = next_tick_ns - tick_interval_ns
+                for s in range(1, n_sub):
+                    alpha = s / n_sub
+                    sub_q = (
+                        target + (next_target - target) * alpha
+                    ).astype(np.float32)
+                    if grip is None or next_grip is None:
+                        sub_grip = grip if grip is not None else next_grip
+                    else:
+                        sub_grip = float(grip + (next_grip - grip) * alpha)
+                    await clock.sleep_until(base_ns + s * substep_interval_ns)
+                    now_sub = clock.monotonic_ns()
+                    command_goal_slot.set(
+                        RobotCommand(q=sub_q, gripper=sub_grip, t_mono_ns=now_sub),
+                        t_mono_ns=now_sub,
+                    )
+                    if wd is not None:
+                        wd.note_command_sent(now_sub)
+
             prev_prev_q, prev_q = prev_q, target
             await clock.sleep_until(next_tick_ns)
             next_tick_ns += tick_interval_ns
