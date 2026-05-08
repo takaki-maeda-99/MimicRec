@@ -81,7 +81,8 @@ GoPro は通常の UVC カメラと違い、
 | IMU/GPMF | MP4 内に温存（downscale 後も） | `info.json` に `has_gpmf: true` |
 | クライアント所有権 | 1 デバイス = 1 SDK client | `GoProDevice` が所有、preview/recorder はその view |
 | キュー永続化 | `.pending/gopro_dl/<uuid>.json` | enqueue 時 fsync + dir fsync を **executor 経由** |
-| ジョブのデータセットパス | sidecar には `(cam_name, episode_index, chunk_index)` のみ保存 | DLWorker 実行時に `paths.episode_video()` で recompute |
+| ジョブのデータセットパス | sidecar には `(cam_name, episode_index, chunk_index)` のみ保存 | commit 時に `paths.episode_video()` で recompute |
+| **DL の commit/discard 整合** | **DLWorker は staging 配下に置くだけ**。SessionManager.episode_save → `registry.commit_episode(idx)` で move + info.json 更新、episode_discard → `registry.discard_episode(idx)` で staging 削除 | save/discard と GoPro DL の整合を取る |
 | **gather エラー伝搬** | `return_exceptions=True` の結果を **必ず inspect** | 失敗を握り潰さず ErrorBus に publish + device.disable |
 | エラー伝搬 | DL worker → ErrorBus | 既存 `HardwareError` 経路に乗せる |
 | Mock | `MockGoProDevice` / `MockGoProPreviewSource` | CI で GoPro 物理接続なしでも全 flow が回る |
@@ -462,7 +463,15 @@ class GoProRecorder:
 ```python
 @dataclass
 class GoProDLJob:
-    """sidecar JSON に直結する schema。dest path は持たない。"""
+    """sidecar JSON に直結する schema。dest path は持たない。
+    state machine:
+      pending_dl  -> staged (DLWorker が download + ffmpeg 完了)
+      pending_dl  -> commit_pending (registry.commit_episode が pending_dl 中に呼ばれた)
+      pending_dl  -> discard_pending (registry.discard_episode 同上)
+      staged      -> (terminal: commit / discard により sidecar 削除)
+      commit_pending  -> (DLWorker が ffmpeg 完了後に commit を実行 → 削除)
+      discard_pending -> (DLWorker が staging を作成済みなら削除、未生成ならそのまま削除)
+    """
     job_id: str                      # uuid4
     gopro_serial: str
     sd_filename: str
@@ -471,6 +480,8 @@ class GoProDLJob:
     cam_name: str
     episode_start_mono_ns: int
     episode_stop_mono_ns: int
+    state: str = "pending_dl"        # "pending_dl" | "staged" | "commit_pending" | "discard_pending"
+    staged_path: str | None = None   # state="staged" / "commit_pending" のときセット
 
     def to_json(self) -> dict: ...
     @classmethod
@@ -492,14 +503,29 @@ class DLQueue:
 
     async def dequeue(self) -> GoProDLJob: ...
 
+    async def update_sidecar(self, job: GoProDLJob) -> None:
+        """sidecar の上書き（state や staged_path 変更時）。enqueue と同じ
+        atomic write + fsync。in-memory queue は触らない（既に積んである or 処理済）。"""
+
     async def mark_done(self, job_id: str) -> None:
         """to_thread で sidecar JSON を削除 + dir fsync（既に無くてもエラーにしない）。"""
+
+    async def find_jobs_for_episode(self, episode_index: int) -> list[GoProDLJob]:
+        """sidecar dir 全部を読み、episode_index と一致する job を返す。
+        commit_episode / discard_episode が使う。"""
 
     @classmethod
     def restore(cls, pending_dir: Path) -> "DLQueue":
         """1. pending_dir.mkdir
            2. pending_dir/*.json を読み GoProDLJob に戻す（ロード順 = ファイル名 sort 順）
-           3. in-memory queue にすべて積む"""
+           3. **state="staged" の job は in-memory queue に積まない**（DL は完了済）
+              代わりに registry が次回 commit / discard を待つ
+           4. **state="pending_dl" / "commit_pending" / "discard_pending" は積む**"""
+
+    @property
+    def pending_count(self) -> int:
+        """sidecar 総数（staged も含む）。フロント badge 用なので
+        「ユーザーから見て pending な GoPro 関連 work」を表す。"""
 ```
 
 ### `backend/mimicrec/gopro/dl_worker.py`（新規）
@@ -518,17 +544,25 @@ class GoProDLWorker:
     ): ...
 
     async def run(self) -> None:
-        """ループ:
+        """ループ。DLWorker は **staging まで担当**、最終 dataset path への
+        move は registry.commit_episode に委任する（save/discard 整合のため）。
+
           job = await queue.dequeue()
+
+          # state="discard_pending" — registry が DL 開始前に discard を指示
+          if job.state == "discard_pending":
+              await queue.mark_done(job.job_id)
+              continue
+
           device = devices.get(job.gopro_serial)
           if device is None or device.is_disabled:
               errors.publish(HardwareError(...))
               continue   # sidecar 残置 → 次セッション再試行
 
           tmp_raw = paths.pending_dir / f'gopro_dl_{job.job_id}_raw.mp4'
-          tmp_out = paths.pending_dir / f'gopro_dl_{job.job_id}_out.mp4'
+          staged = paths.pending_dir / 'gopro_staged' / f'{job.job_id}.mp4'
 
-          # Resume-from-tmp: 前回の DL 完了後の move で失敗したケース
+          # Resume-from-tmp（前回の ffmpeg / staging 失敗ケース）
           skip_dl = (
             tmp_raw.exists()
             and tmp_raw.stat().st_size > 0
@@ -537,42 +571,69 @@ class GoProDLWorker:
           if not skip_dl:
               await device.download_file(job.sd_filename, tmp_raw)
 
-          # Duration check（"録画ロス" の片側だけ警告する）
-          # episode_start_mono_ns は host 時計で実際の record start より 100-300ms
-          # 遅い、shutter_off も同じく tail を持つ → 健全な MP4 は expected より
-          # やや短い。**2.0 秒以上短い** を threshold に。
+          # Duration check（"短い" 方向のみ、threshold 2.0s）
           duration = await asyncio.to_thread(probe_mp4_duration, tmp_raw)
           expected = (job.episode_stop_mono_ns - job.episode_start_mono_ns) / 1e9
           if duration < expected - 2.0:
               await errors.publish(HardwareError(
-                  f'GoPro recording shorter than episode: ep {job.episode_index} '
-                  f'duration={duration:.3f}s expected≈{expected:.3f}s'))
+                  f'GoPro recording shorter than episode: ep {job.episode_index}'))
 
-          # ffmpeg pass: downscale or stream copy
+          # ffmpeg pass: downscale or stream copy → staging dir に置く（最終 dataset path ではない）
+          staged.parent.mkdir(parents=True, exist_ok=True)
           spec = device.get_spec()
           native = device.selected_preset
-          aspect_match = abs((native.width / native.height) - (spec.width / spec.height)) < 0.01
+          aspect_match = abs(
+              (native.width / native.height) - (spec.width / spec.height)
+          ) < 0.01
           if native.width == spec.width and native.height == spec.height:
-              await ffmpeg_copy(tmp_raw, tmp_out)
+              await ffmpeg_copy(tmp_raw, staged)
           else:
               await ffmpeg_downscale(
-                  tmp_raw, tmp_out,
+                  tmp_raw, staged,
                   target_w=spec.width, target_h=spec.height,
                   aspect_mode=device.aspect_mode,
                   aspect_match=aspect_match,
               )
           tmp_raw.unlink(missing_ok=True)
 
-          dest = paths.episode_video(job.chunk_index, job.cam_name, job.episode_index)
-          dest.parent.mkdir(parents=True, exist_ok=True)
-          shutil.move(str(tmp_out), str(dest))
-          await queue.mark_done(job.job_id)
+          # 重要: ffmpeg 完了後に sidecar を再読み込みして
+          # 「DL/ffmpeg の最中に commit_pending / discard_pending に変わった」
+          # ケースを検出する。
+          fresh = await queue.read_sidecar(job.job_id)
 
-          # 初回 DL 後に info.json codec の placeholder を実 codec で更新（idempotent）
-          await update_info_json_codec(paths, job.cam_name)
+          if fresh.state == "commit_pending":
+              await _commit_to_dataset(paths, job, staged)
+              await queue.mark_done(job.job_id)
+          elif fresh.state == "discard_pending":
+              staged.unlink(missing_ok=True)
+              await queue.mark_done(job.job_id)
+          else:
+              # 通常: state="staged" に更新して registry の commit/discard 待ち
+              fresh.state = "staged"
+              fresh.staged_path = str(staged)
+              await queue.update_sidecar(fresh)
+              # update_sidecar 直前に registry が
+              # commit_pending/discard_pending を書いた可能性がある → 再読
+              after = await queue.read_sidecar(job.job_id)
+              if after.state == "commit_pending":
+                  await _commit_to_dataset(paths, after, staged)
+                  await queue.mark_done(job.job_id)
+              elif after.state == "discard_pending":
+                  staged.unlink(missing_ok=True)
+                  await queue.mark_done(job.job_id)
+              # else: state="staged" のまま留まる、registry が後で commit/discard する
 
-        例外発生時: sidecar / tmp_raw 残置 → ErrorBus publish → continue（worker 自体は死なない）
+        例外発生時: sidecar / tmp_raw / staged 残置 → ErrorBus publish → continue
+        （worker 自体は死なない）
         """
+
+    @staticmethod
+    async def _commit_to_dataset(paths, job, staged: Path) -> None:
+        """staged ファイルを最終 dataset path に move + info.json codec 更新。"""
+        dest = paths.episode_video(job.chunk_index, job.cam_name, job.episode_index)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(staged), str(dest))
+        await update_info_json_codec(paths, job.cam_name)
 
     async def stop(self) -> None:
         """1. 受信停止フラグを立てる（dequeue は cancel）
@@ -719,12 +780,32 @@ class GoProDeviceRegistry:
         例外が出た recorder の device を disable し、ErrorBus に publish。"""
 
     async def episode_stop(self, episode_index: int) -> None:
-        """同上。"""
+        """同上。enqueue は recorder 側が DLQueue.enqueue で実行する。
+        DLWorker は staging まで進めるが、dataset path への move はしない。"""
+
+    async def commit_episode(self, episode_index: int) -> None:
+        """SessionManager.episode_save から呼ばれる。
+        `DLQueue.find_jobs_for_episode(idx)` で全 sidecar を走査し、各 job について:
+          - state == "staged":
+              staged file を `paths.episode_video(...)` に move + update_info_json_codec
+              + `queue.mark_done(job_id)`
+          - state == "pending_dl":
+              sidecar の state を "commit_pending" に書き換える（DLWorker が ffmpeg 完了直後に
+              再読み込みしてコミット側へ分岐する。レースは update_sidecar の atomic rename
+              + DLWorker 側の "再読み込み" でカバー）
+          - 既に commit_pending / discard_pending: ログ出して skip"""
+
+    async def discard_episode(self, episode_index: int) -> None:
+        """SessionManager.episode_discard から呼ばれる。
+          - state == "staged": staged file を削除 + queue.mark_done
+          - state == "pending_dl": sidecar state を "discard_pending" に変更
+          - その他: skip"""
 
     def preview_sources(self) -> dict[str, "GoProPreviewSource"]: ...
     def gopro_specs(self) -> dict[str, GoProSpec]: ...
     @property
-    def pending_count(self) -> int: ...
+    def pending_count(self) -> int:
+        """ユーザー視点の pending 件数 = `DLQueue.pending_count`（sidecar 数）。"""
 ```
 
 ### `backend/mimicrec/gopro/mock.py`（新規）
@@ -773,7 +854,8 @@ aspect_mode: crop
 | `backend/mimicrec/recording/pending.py` | `open_video_writers` の引数 `cameras` から GoPro 由来カメラを除外する（呼び出し側責任、registry が gopro 名一覧を提供）。 |
 | `backend/mimicrec/recording/dataset_layout.py` | `init_dataset` に `gopro_specs: dict[str, GoProSpec] \| None = None` を追加。`GoProSpec` は `mimicrec.gopro.types` から import。features dict に GoPro 専用エントリを書く（codec="libx264" 仮置き）。 |
 | `backend/mimicrec/api/schemas.py` | `_BaseSessionRequest.gopros: list[str] = []`（後方互換 default）、`SessionStatePayload.gopros` も同。 |
-| `backend/mimicrec/api/deps.py` | (1) `req.gopros` を読む、(2) `configs/gopros/<n>.yaml` から `GoProDevice` を instantiate、(3) `GoProDeviceRegistry` を構築・start、(4) preview_sources を `cams` dict に merge してから `CameraManager` を構築、(5) `init_dataset` に `gopro_specs=registry.gopro_specs()` を渡す、(6) `app.state.gopro_registry` に保存、(7) `req.cameras` から GoPro 名は除外、(8) `req.cameras` と `req.gopros` の名前空間 disjoint を assert、(9) **GoPro instantiation の `try/except (ConfigError, HardwareError)` を入れて `HTTPException(status_code=400, detail=...)` に変換**（route 層で Hydra `instantiate_adapter` が raise する uncaught exception を 500 stack trace にしないため）。同 instantiate 失敗で stale `gopro_registry` が残らないよう、registry.start 失敗時は `app.state.gopro_registry = None` に戻す。 |
+| `backend/mimicrec/api/deps.py` | (1) `req.gopros` を読む、(2) `configs/gopros/<n>.yaml` から `GoProDevice` を instantiate、(3) `GoProDeviceRegistry` を構築・start、(4) preview_sources を `cams` dict に merge してから `CameraManager` を構築、(5) `init_dataset` に `gopro_specs=registry.gopro_specs()` を渡す、(6) `app.state.gopro_registry` に保存、(7) `req.cameras` から GoPro 名は除外、(8) `req.cameras` と `req.gopros` の名前空間 disjoint を assert、(9) **GoPro instantiation の `try/except (ConfigError, HardwareError)` を入れて `HTTPException(status_code=400, detail=...)` に変換**、(10) registry.start 失敗時は `app.state.gopro_registry = None` に戻して stale 参照を残さない。|
+| `backend/mimicrec/session/lifecycle.py` (`SessionManager`) | **(a) `episode_start` で `gopro_registry.episode_start(idx, t_host)` を呼ぶ**、**(b) `episode_stop` で `gopro_registry.episode_stop(idx)` を呼ぶ**、**(c) `episode_save` で `gopro_registry.commit_episode(idx)` を呼ぶ**、**(d) `episode_discard` で `gopro_registry.discard_episode(idx)` を呼ぶ**、**(e) session 終了時 (`SessionManager.end` 相当) に `gopro_registry.stop()` を呼ぶ**。`gopro_registry` は SessionManager の constructor に optional で渡す（`None` 許容で既存テストに影響を出さない）。SessionManager 上のメソッド名は既存パスに合わせる。|
 | `backend/mimicrec/api/routes/...` | session_meta / SessionStatePayload に `"gopros": list[str]` 追加。`GET /api/session/gopro_pending` を1個追加。 |
 | `backend/mimicrec/cameras/manager.py` | **変更なし**。`Frame.preview_only` は `_run_camera` で素通り。チェックは `PendingEpisode` 側でのみ行う。 |
 | `frontend/src/...` | pending DL 件数バッジ。session 終了時に「N pending」が残っていたら警告ダイアログ。**GoPro 用 構造化フォームは作らない**（Settings の JSON textarea fallback で編集）。 |
@@ -813,30 +895,39 @@ aspect_mode: crop
 ```
 episode_start(idx, t_host):
   await camera_manager.episode_start(idx, t_host)
-  await registry.episode_start(idx, t_host)
-    asyncio.gather([r.start_episode(idx, t_host) for r in recorders], return_exceptions=True)
-    結果 inspect → 例外 device disable + publish
-
-  各 recorder.start_episode の中身:
-    1. before_files = media_list snapshot（known_files に追加）
+  await registry.episode_start(idx, t_host)         # SessionManager から呼ばれる
+    asyncio.gather + inspect → 例外時 device.disable + publish
+  各 recorder.start_episode:
+    1. before_files = media_list snapshot
     2. shutter_on()
     3. _EpisodeState(episode_start_mono_ns=time.monotonic_ns())
 
 episode_stop(idx):
-  await registry.episode_stop(idx)
-    asyncio.gather + inspect
+  await registry.episode_stop(idx)                   # SessionManager から
+  各 recorder.stop_episode:
+    1. shutter_off()
+    2. new_files diff → chapter detection
+    3. 最初の chapter を select、残りは orphan + warning
+    4. GoProDLJob(state="pending_dl") を組んで dl_queue.enqueue
+  return immediately（SessionManager は REVIEW state に）
+  ※ DLWorker は裏で download + ffmpeg → staging まで進める
 
-  各 recorder.stop_episode の中身:
-    1. shutter_off()（最大3 retry）
-    2. after_files = media_list
-    3. new_files = after_files - known_files
-    4. chapter detection:
-       - len(new_files) >= 2 で同 group → chapter split
-       - 最初の chapter を select
-       - 残りは known に追加 + warning publish
-    5. new file が 0 → HardwareError publish して enqueue skip
-    6. GoProDLJob を組んで dl_queue.enqueue
-  return immediately
+episode_save(idx):                                   # REVIEW → READY
+  await registry.commit_episode(idx)                 # SessionManager から
+    全 sidecar を走査:
+      - state == "staged": staged → dataset path move + info.json codec + mark_done
+      - state == "pending_dl": sidecar.state = "commit_pending"
+        → DLWorker が ffmpeg 完了直後に再読み込みしてコミット
+      - その他: skip
+  既存の SessionManager.episode_save 処理（pending parquet 保存）も走る
+
+episode_discard(idx):                                # REVIEW → READY
+  await registry.discard_episode(idx)                # SessionManager から
+    全 sidecar を走査:
+      - state == "staged": staging file 削除 + mark_done
+      - state == "pending_dl": sidecar.state = "discard_pending"
+        → DLWorker が ffmpeg 完了直後に staging を作ったとしても削除
+      - その他: skip
 ```
 
 ### DLWorker ループ
@@ -909,6 +1000,10 @@ episode_stop(idx):
 | **`asyncio.gather(return_exceptions=True)` 結果 inspect 漏れ** | （実装規約）`registry.start/episode_*` のテストで強制例外を入れ、ErrorBus publish が来ることを検証 | — | テストで規約担保 |
 | **`GoProDevice.__init__` の ConfigError**（fps=25 等の非対応指定 / preset 表に無い解像度）| `deps.py` で `try/except (ConfigError, ValueError)` → `HTTPException(400)`、フロントに「YAML が無効: <理由>」を表示 | — | 500 stack trace を出さない |
 | **`ffmpeg` バイナリ未インストール** | session start 時に `which ffmpeg` 相当のチェック → `FatalHardwareError("ffmpeg not found")` で session 起動失敗 | — | 起動時に検出（DLWorker 実行前に） |
+| **REVIEW で `episode_discard` が呼ばれた** | `registry.discard_episode(idx)` が staging 上の MP4 を削除 + sidecar mark_done。次 episode で index 衝突しない | — | save/discard 整合 |
+| **REVIEW で `episode_save` が呼ばれた** | `registry.commit_episode(idx)` が staging → 最終 dataset path に move + info.json codec 更新 + sidecar mark_done | — | DLWorker は move しない、commit が move を担当 |
+| **DL がまだ完了していない状態で save/discard** | sidecar の `state` を `"commit_pending"` または `"discard_pending"` に更新。DLWorker が ffmpeg 完了直後に sidecar を再読み込みして commit / discard を実行 | sidecar 残置（state 上書き） | レース安全 |
+| **session 終了 (`SessionManager.end`) 時の registry cleanup 漏れ** | session_manager.end → `app.state.gopro_registry.stop()` を必ず呼ぶ。worker / preview / SDK client がリーク しない | — | 実装規約・テストで担保 |
 
 ## Multi-GoPro USB realities
 
