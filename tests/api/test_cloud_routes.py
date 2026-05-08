@@ -1,4 +1,5 @@
 from __future__ import annotations
+import asyncio
 import json
 from pathlib import Path
 from unittest.mock import patch
@@ -96,3 +97,90 @@ async def test_put_hub_path_traversal_rejected(client_and_root):
         r = await ac.put("/api/datasets/..%2Fetc/hub", json={"repo_id": "u/d"})
     # ..%2F は dataset name として不正 → 400 / 404 のいずれか
     assert r.status_code in (400, 404)
+
+
+@pytest.mark.asyncio
+async def test_post_push_401_when_no_token(client_and_root):
+    client, root, app = client_and_root
+    init_dataset(root / "ds", fps=30, joint_names=["j0"], camera_names=[])
+    write_hub_meta(root / "ds", HubMeta(repo_id="u/d"))
+    with patch("mimicrec.api.routes.cloud.get_token", return_value=None):
+        async with client as ac:
+            r = await ac.post("/api/datasets/ds/hub/push")
+    assert r.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_post_push_400_when_hub_unconfigured(client_and_root):
+    client, root, app = client_and_root
+    init_dataset(root / "ds", fps=30, joint_names=["j0"], camera_names=[])
+    with patch("mimicrec.api.routes.cloud.get_token", return_value="hf_xxx"):
+        async with client as ac:
+            r = await ac.post("/api/datasets/ds/hub/push")
+    assert r.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_post_push_404_when_dataset_absent(client_and_root):
+    client, _, _ = client_and_root
+    with patch("mimicrec.api.routes.cloud.get_token", return_value="hf_xxx"):
+        async with client as ac:
+            r = await ac.post("/api/datasets/nope/hub/push")
+    assert r.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_post_push_202_then_409_for_duplicate(client_and_root, monkeypatch):
+    client, root, app = client_and_root
+    init_dataset(root / "ds", fps=30, joint_names=["j0"], camera_names=[])
+    write_hub_meta(root / "ds", HubMeta(repo_id="u/d"))
+
+    import asyncio as _a
+    started = _a.Event()
+    release = _a.Event()
+
+    async def hanging_task(*a, **kw):
+        started.set()
+        await release.wait()
+
+    monkeypatch.setattr("mimicrec.api.routes.cloud._run_push_with_release", hanging_task)
+
+    with patch("mimicrec.api.routes.cloud.get_token", return_value="hf_xxx"):
+        async with client as ac:
+            r1 = await ac.post("/api/datasets/ds/hub/push")
+            assert r1.status_code == 202
+            await _a.wait_for(started.wait(), timeout=2.0)
+            r2 = await ac.post("/api/datasets/ds/hub/push")
+            assert r2.status_code == 409
+            release.set()
+
+
+@pytest.mark.asyncio
+async def test_post_push_5_concurrent_only_one_runs(client_and_root, monkeypatch):
+    """spec DoD: '同 ds の POST /hub/push を連続 5 回叩いても 1 本だけ走る'"""
+    client, root, app = client_and_root
+    init_dataset(root / "ds", fps=30, joint_names=["j0"], camera_names=[])
+    write_hub_meta(root / "ds", HubMeta(repo_id="u/d"))
+
+    import asyncio as _a
+    started_count = 0
+    release = _a.Event()
+
+    async def hanging_task(*a, **kw):
+        nonlocal started_count
+        started_count += 1
+        await release.wait()
+
+    monkeypatch.setattr("mimicrec.api.routes.cloud._run_push_with_release", hanging_task)
+
+    with patch("mimicrec.api.routes.cloud.get_token", return_value="hf_xxx"):
+        async with client as ac:
+            results = await _a.gather(*[
+                ac.post("/api/datasets/ds/hub/push") for _ in range(5)
+            ])
+            statuses = sorted(r.status_code for r in results)
+            assert statuses.count(202) == 1
+            assert statuses.count(409) == 4
+            await _a.sleep(0.05)
+            assert started_count == 1
+            release.set()
