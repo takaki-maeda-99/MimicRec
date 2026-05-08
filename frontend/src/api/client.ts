@@ -15,6 +15,7 @@ export async function apiFetch<T>(
   opts?: RequestInit,
 ): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
+    cache: "no-store",
     headers: { "Content-Type": "application/json", ...opts?.headers },
     ...opts,
   });
