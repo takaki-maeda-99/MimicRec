@@ -9,7 +9,7 @@ from httpx import AsyncClient, ASGITransport
 
 from mimicrec.api.app import create_app
 from mimicrec.cloud.hub_meta import HubMeta, write_hub_meta, hub_meta_path
-from mimicrec.cloud.push_state import PushCoordinator
+from mimicrec.cloud.push_state import PushCoordinator, PushProgress
 from mimicrec.recording.dataset_layout import init_dataset
 
 
@@ -184,3 +184,31 @@ async def test_post_push_5_concurrent_only_one_runs(client_and_root, monkeypatch
             await _a.sleep(0.05)
             assert started_count == 1
             release.set()
+
+
+@pytest.mark.asyncio
+async def test_delete_dataset_409_when_push_in_flight(client_and_root, monkeypatch):
+    client, root, app = client_and_root
+    init_dataset(root / "ds", fps=30, joint_names=["j0"], camera_names=[])
+    coord = app.state.push_coordinator
+    coord.try_reserve("ds")
+    try:
+        async with client as ac:
+            r = await ac.delete("/api/datasets/ds")
+        assert r.status_code == 409
+    finally:
+        coord.release("ds")
+
+
+@pytest.mark.asyncio
+async def test_delete_dataset_drops_coordinator_state(client_and_root):
+    client, root, app = client_and_root
+    init_dataset(root / "ds", fps=30, joint_names=["j0"], camera_names=[])
+    coord = app.state.push_coordinator
+    coord.get_save_lock("ds")
+    coord.progress["ds"] = PushProgress(status="done")
+    async with client as ac:
+        r = await ac.delete("/api/datasets/ds")
+    assert r.status_code == 204
+    assert "ds" not in coord.save_locks
+    assert "ds" not in coord.progress

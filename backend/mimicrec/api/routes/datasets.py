@@ -56,11 +56,21 @@ async def list_datasets(request: Request):
 @router.delete("/datasets/{ds}", status_code=204)
 async def delete_dataset(request: Request, ds: str):
     import shutil
+    from mimicrec.api.util import safe_dataset_path, UnsafePathError
     root = get_datasets_root(request.app)
-    ds_root = root / ds
+    try:
+        ds_root = safe_dataset_path(root, ds)
+    except UnsafePathError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     if not ds_root.exists():
-        raise FileNotFoundError(f"dataset '{ds}' not found")
-    shutil.rmtree(ds_root)
+        raise HTTPException(status_code=404, detail=f"dataset '{ds}' not found")
+    coord = request.app.state.push_coordinator
+    if ds in coord.in_flight:
+        raise HTTPException(status_code=409, detail="cannot delete: push in flight")
+    save_lock = coord.get_save_lock(ds)
+    with save_lock:
+        shutil.rmtree(ds_root)
+        coord.drop_dataset(ds)
 
 
 @router.post("/datasets")
