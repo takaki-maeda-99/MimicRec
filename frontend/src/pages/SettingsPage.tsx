@@ -30,10 +30,22 @@ export default function SettingsPage() {
   const [editingConfig, setEditingConfig] = useState<ConfigEntry | null>(null);
   const [editJson, setEditJson] = useState("");
   const [calibrations, setCalibrations] = useState<Record<string, Record<string, string[]>>>({});
+  const [refreshingDevices, setRefreshingDevices] = useState(false);
 
-  const loadDevices = () => {
-    apiFetch<SerialDevice[]>("/api/settings/devices/serial").then(setSerialPorts).catch(() => {});
-    apiFetch<CameraDevice[]>("/api/settings/devices/cameras").then(setCameras).catch(() => {});
+  const loadDevices = async () => {
+    setRefreshingDevices(true);
+    try {
+      const [serial, cams] = await Promise.all([
+        apiFetch<SerialDevice[]>("/api/settings/devices/serial"),
+        apiFetch<CameraDevice[]>("/api/settings/devices/cameras"),
+      ]);
+      setSerialPorts(serial);
+      setCameras(cams);
+    } catch (e) {
+      alert(`Failed to refresh devices: ${e}`);
+    } finally {
+      setRefreshingDevices(false);
+    }
   };
 
   const loadConfigs = () => {
@@ -79,8 +91,8 @@ export default function SettingsPage() {
       <section className="mb-8">
         <div className="flex items-center justify-between mb-3">
           <h3 className="text-lg font-semibold">Devices</h3>
-          <Button variant="outline" size="sm" onClick={loadDevices}>
-            Refresh
+          <Button variant="outline" size="sm" onClick={loadDevices} disabled={refreshingDevices}>
+            {refreshingDevices ? "Refreshing..." : "Refresh"}
           </Button>
         </div>
         <div className="grid grid-cols-2 gap-4">
