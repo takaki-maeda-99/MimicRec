@@ -5,7 +5,9 @@ import { apiFetch } from "../api/client";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { CodeInline } from "../components/ui/code-inline";
+import { Input } from "../components/ui/input";
 import { PillTab } from "../components/ui/pill-tab";
+import { Select } from "../components/ui/select";
 
 interface DatasetItem {
   name: string;
@@ -89,33 +91,30 @@ function PreStartPanel({ datasets }: { datasets: DatasetItem[] }) {
   return (
     <Card className="flex flex-col gap-md">
       <Field label="Inference config">
-        <select
-          className="flex h-10 w-full rounded-md border border-hairline bg-canvas px-md text-body-md text-ink focus-visible:outline-none focus-visible:border-2 focus-visible:border-ink"
+        <Select
           value={s.selectedConfig}
           onChange={e => s.selectConfig(e.target.value)}
         >
           <option value="">— select —</option>
           {s.configs.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
-        </select>
+        </Select>
       </Field>
       <Field label="Dataset">
-        <select
-          className="flex h-10 w-full rounded-md border border-hairline bg-canvas px-md text-body-md text-ink focus-visible:outline-none focus-visible:border-2 focus-visible:border-ink"
+        <Select
           value={s.selectedDataset}
           onChange={e => s.selectDataset(e.target.value)}
         >
           <option value="">— select —</option>
           {datasets.map(d => <option key={d.name} value={d.name}>{d.name}</option>)}
-        </select>
+        </Select>
       </Field>
       <Field label="Instruction">
         <div className="flex gap-xs">
-          <input
+          <Input
             type="text"
             value={s.instruction}
             onChange={e => s.setInstruction(e.target.value)}
             placeholder="pick up the bottle"
-            className="flex h-10 w-full rounded-md border border-hairline bg-canvas px-md text-body-md text-ink placeholder:text-stone focus-visible:outline-none focus-visible:border-2 focus-visible:border-ink"
           />
           <Button variant="ghost" disabled title="coming soon">🎤</Button>
         </div>
@@ -138,11 +137,10 @@ function ReadyPanel() {
       <Card>
         <Field label="Instruction">
           <div className="flex gap-xs">
-            <input
+            <Input
               type="text"
               value={s.instruction}
               onChange={e => s.setInstruction(e.target.value)}
-              className="flex h-10 w-full rounded-md border border-hairline bg-canvas px-md text-body-md text-ink focus-visible:outline-none focus-visible:border-2 focus-visible:border-ink"
             />
             <Button variant="secondary" onClick={() => s.updateInstruction()}>Update</Button>
             <Button variant="ghost" disabled title="coming soon">🎤</Button>
