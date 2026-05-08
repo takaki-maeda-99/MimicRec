@@ -107,6 +107,12 @@ async def session_end(request: Request):
     return build_state_payload(request.app)
 
 
+@router.get("/session/gopro_pending")
+async def gopro_pending(request: Request) -> dict[str, int]:
+    reg = getattr(request.app.state, "gopro_registry", None)
+    return {"pending": int(reg.pending_count) if reg is not None else 0}
+
+
 @router.get("/session/state")
 async def session_state(request: Request):
     return build_state_payload(request.app)
