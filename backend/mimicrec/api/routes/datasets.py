@@ -2,11 +2,14 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import logging
 import tempfile
 import time
 import zipfile
 from pathlib import Path
 from typing import Literal
+
+logger = logging.getLogger(__name__)
 
 import pyarrow.parquet as pq
 from fastapi import APIRouter, Request, Query, HTTPException
@@ -70,13 +73,21 @@ async def create_dataset(request: Request, body: CreateDatasetRequest):
     camera_resolutions: dict[str, tuple[int, int]] = {}
     for cam_name in body.camera_names:
         cam_path = configs_root / "cameras" / f"{cam_name}.yaml"
-        if cam_path.exists():
+        if not cam_path.exists():
+            continue
+        try:
             cam_cfg = OmegaConf.to_container(OmegaConf.load(cam_path))
-            if isinstance(cam_cfg, dict):
-                camera_resolutions[cam_name] = (
-                    int(cam_cfg.get("width", 640)),
-                    int(cam_cfg.get("height", 480)),
-                )
+        except Exception as e:
+            logger.warning(
+                "camera config %s failed to parse: %s; skipping resolution override",
+                cam_path, e,
+            )
+            continue
+        if isinstance(cam_cfg, dict):
+            camera_resolutions[cam_name] = (
+                int(cam_cfg.get("width", 640)),
+                int(cam_cfg.get("height", 480)),
+            )
     init_dataset(
         ds_root,
         fps=body.fps,
