@@ -9,14 +9,35 @@ from mimicrec.recording.metadata import append_episode, read_episodes
 
 
 def _maybe_trigger_auto_push(ds_root, ds_name, app_loop, *, app=None):
-    """Check hub.json and fire auto-push if enabled. Task 18 will fill body."""
+    """save() 完了後に呼ばれる。hub.json read → auto_push==true なら enqueue。"""
     from mimicrec.cloud.hub_meta import read_hub_meta
     meta = read_hub_meta(ds_root)
     if meta is None or not meta.auto_push:
         return
     if app is None:
         return
-    return  # placeholder; full enqueue wired in Task 18
+    coord = app.state.push_coordinator
+    if not coord.try_reserve(ds_name):
+        return
+    from mimicrec.cloud.push_state import PushProgress
+    coord.progress[ds_name] = PushProgress(
+        status="queued", repo_id=meta.repo_id, started_at=_iso_now()
+    )
+    from mimicrec.api.routes.cloud import _run_push_with_release
+    try:
+        import asyncio
+        app_loop.call_soon_threadsafe(
+            lambda: asyncio.create_task(_run_push_with_release(app, ds_name, ds_root))
+        )
+    except RuntimeError:
+        coord.release(ds_name)
+        coord.progress[ds_name].status = "error"
+        coord.progress[ds_name].error = "event loop unavailable"
+
+
+def _iso_now():
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).isoformat()
 
 
 class PendingEpisode:
