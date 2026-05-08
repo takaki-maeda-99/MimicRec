@@ -12,7 +12,7 @@ export default function EpisodesPage() {
 
   return (
     <div>
-      <header className="flex items-center justify-between pb-md mb-xl border-b border-hairline-soft">
+      <header className="flex items-center justify-between pb-sm mb-lg border-b border-hairline">
         <div>
           <Link to="/datasets" className="text-caption text-stone hover:text-ink">&larr; Datasets</Link>
           <h2 className="mt-1 text-heading-3 text-ink">Episodes — <CodeInline>{ds}</CodeInline></h2>

@@ -6,8 +6,8 @@ interface CardProps extends React.HTMLAttributes<HTMLDivElement> {
 
 export function Card({ className, variant = "base", ...props }: CardProps) {
   const variants = {
-    base: "rounded-lg border border-hairline bg-canvas p-xl",
-    feature: "rounded-lg bg-surface p-xxl",
+    base: "rounded-lg border border-hairline bg-canvas p-lg",
+    feature: "rounded-lg bg-surface p-xl",
   } as const;
   return <div className={cn(variants[variant], className)} {...props} />;
 }

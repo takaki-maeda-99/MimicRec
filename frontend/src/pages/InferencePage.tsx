@@ -44,7 +44,7 @@ export function InferencePage() {
 
   return (
     <div>
-      <header className="flex items-center justify-between pb-md mb-xl border-b border-hairline-soft">
+      <header className="flex items-center justify-between pb-sm mb-lg border-b border-hairline">
         <div className="flex items-center gap-md">
           <h2 className="text-heading-3 text-ink">Inference</h2>
           {isLive ? (
@@ -62,7 +62,7 @@ export function InferencePage() {
       </header>
 
       {(s.phase === "ready" || s.phase === "recording") && (
-        <Card className="mb-xl border border-brand-warn/30 bg-brand-warn/10">
+        <Card className="mb-md border border-brand-warn/30 bg-brand-warn/10">
           <p className="text-body-sm-medium text-brand-warn">
             ⚠ Robot under model control — use E-STOP to halt
           </p>

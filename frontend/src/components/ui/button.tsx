@@ -28,9 +28,9 @@ export function Button({
 
   const base = "inline-flex items-center justify-center font-medium transition-colors disabled:cursor-not-allowed";
   const pillPad =
-    size === "sm" ? "px-md py-1.5 text-button-md" :
-    size === "lg" ? "px-xl py-3 text-body-md-medium" :
-    "px-lg py-2.5 text-button-md";
+    size === "sm" ? "px-sm py-1 text-caption" :
+    size === "lg" ? "px-lg py-2 text-button-md" :
+    "px-md py-1.5 text-button-md";
 
   const variants: Record<VariantNew | "destructive", string> = {
     primary:

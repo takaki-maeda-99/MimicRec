@@ -47,7 +47,7 @@ export default function DatasetsPage() {
 
   return (
     <div>
-      <header className="flex items-center justify-between pb-md mb-xl border-b border-hairline-soft">
+      <header className="flex items-center justify-between pb-sm mb-lg border-b border-hairline">
         <h2 className="text-heading-3 text-ink">Datasets</h2>
         <Button onClick={() => setCreating(true)}>New Dataset</Button>
       </header>

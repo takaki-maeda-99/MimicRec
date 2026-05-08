@@ -107,12 +107,12 @@ export default function SettingsPage() {
 
   return (
     <div>
-      <header className="flex items-center justify-between pb-md mb-xl border-b border-hairline-soft">
+      <header className="flex items-center justify-between pb-sm mb-lg border-b border-hairline">
         <h2 className="text-heading-3 text-ink">Settings</h2>
       </header>
 
       {/* Devices */}
-      <section className="mb-xxl">
+      <section className="mb-xl">
         <div className="flex items-center justify-between mb-md">
           <h3 className="text-micro-uppercase uppercase tracking-[0.5px] text-steel">Devices</h3>
           <Button variant="secondary" size="sm" onClick={loadDevices} disabled={refreshingDevices}>
@@ -165,7 +165,7 @@ export default function SettingsPage() {
       </section>
 
       {/* Configurations */}
-      <section className="mb-xxl">
+      <section className="mb-xl">
         <div className="flex items-center justify-between mb-md">
           <h3 className="text-micro-uppercase uppercase tracking-[0.5px] text-steel">Configurations</h3>
           <Button variant="secondary" size="sm" onClick={loadConfigs} disabled={refreshingConfigs}>

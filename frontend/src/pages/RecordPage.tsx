@@ -59,7 +59,7 @@ export default function RecordPage() {
   if (sessionState === "idle") {
     return (
       <div>
-        <header className="flex items-center justify-between pb-md mb-xl border-b border-hairline-soft">
+        <header className="flex items-center justify-between pb-sm mb-lg border-b border-hairline">
           <h2 className="text-heading-3 text-ink">Record</h2>
         </header>
         <Card variant="feature">
@@ -71,7 +71,7 @@ export default function RecordPage() {
 
   return (
     <div>
-      <header className="flex items-center justify-between pb-md mb-xl border-b border-hairline-soft">
+      <header className="flex items-center justify-between pb-sm mb-lg border-b border-hairline">
         <h2 className="text-heading-3 text-ink">Record</h2>
         <div className="flex items-center gap-md">
           {subState === "replaying" && (
@@ -83,7 +83,7 @@ export default function RecordPage() {
         </div>
       </header>
 
-      <Card className="mb-xl flex gap-xl flex-wrap text-body-sm">
+      <Card className="mb-md flex gap-lg flex-wrap text-body-sm">
         <span className="flex items-center gap-xs">
           <span className="text-caption text-stone">Robot</span>
           <CodeInline>{robot}</CodeInline>
@@ -113,7 +113,7 @@ export default function RecordPage() {
       </Card>
 
       {cameras.length > 0 && sessionState !== "review" && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-md mb-xl">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-md mb-md">
           {cameras.map((cam) => (
             <CameraPreview key={cam} camName={cam} />
           ))}
@@ -121,17 +121,17 @@ export default function RecordPage() {
       )}
 
       {teleop === "web_keyboard" && (
-        <div className="mb-xl">
+        <div className="mb-md">
           <KeyboardTeleop enabled={sessionState !== "review"} />
         </div>
       )}
 
-      <div className="mb-xl">
+      <div className="mb-md">
         <EEMonitor enabled />
       </div>
 
       {robot === "rebotarm" && (
-        <div className="mb-xl">
+        <div className="mb-md">
           <EStopButton />
         </div>
       )}

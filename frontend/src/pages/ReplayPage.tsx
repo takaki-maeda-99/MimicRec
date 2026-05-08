@@ -24,7 +24,7 @@ export default function ReplayPage() {
 
   return (
     <div>
-      <header className="flex items-center justify-between pb-md mb-xl border-b border-hairline-soft">
+      <header className="flex items-center justify-between pb-sm mb-lg border-b border-hairline">
         <div>
           <Link to={`/datasets/${ds}/episodes`} className="text-caption text-stone hover:text-ink">
             &larr; Episodes — {ds}
@@ -33,7 +33,7 @@ export default function ReplayPage() {
         </div>
       </header>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-xl mb-xl">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-lg mb-md">
         {/* Metadata panel */}
         <Card>
           <h3 className="text-heading-5 text-ink mb-md">Metadata</h3>
@@ -119,19 +119,19 @@ export default function ReplayPage() {
       </div>
 
       {/* Subtask timeline */}
-      <Card className="mb-xl">
+      <Card className="mb-md">
         <h3 className="text-heading-5 text-ink mb-md">Subtask Timeline</h3>
         <SubtaskTimeline ds={ds} idx={episodeIdx} />
       </Card>
 
       {/* Joint angle plot */}
-      <Card className="mb-xl">
+      <Card className="mb-md">
         <h3 className="text-heading-5 text-ink mb-md">Joint trajectory</h3>
         <JointPlot ds={ds} idx={episodeIdx} />
       </Card>
 
       {/* End-effector plot */}
-      <Card className="mb-xl">
+      <Card className="mb-md">
         <h3 className="text-heading-5 text-ink mb-md">End-Effector</h3>
         <EndEffectorPlot ds={ds} idx={episodeIdx} />
       </Card>
