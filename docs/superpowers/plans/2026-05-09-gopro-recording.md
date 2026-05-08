@@ -61,7 +61,8 @@
 | `backend/mimicrec/recording/pending.py` | `append_row` skips video write when `frame.preview_only=True`. |
 | `backend/mimicrec/recording/dataset_layout.py` | `init_dataset` gains `gopro_specs` param; writes `has_gpmf=true` features with `video.codec="libx264"` placeholder. |
 | `backend/mimicrec/api/schemas.py` | `_BaseSessionRequest.gopros: list[str] = []`; `SessionStatePayload.gopros`. |
-| `backend/mimicrec/api/deps.py` | Load `configs/gopros/`, build registry inside try/except (`ConfigError`→`HTTPException(400)`), merge preview sources into cams, pass `gopro_specs` to `init_dataset`. |
+| `backend/mimicrec/api/deps.py` | Load `configs/gopros/`, build registry inside try/except (`ConfigError`→`HTTPException(400)`), merge preview sources into cams, pass `gopro_specs` to `init_dataset`. Pass `gopro_registry` to SessionManager. Clear `app.state.gopro_registry` on session end. |
+| `backend/mimicrec/session/lifecycle.py` (`SessionManager`) | Optional `gopro_registry` constructor kwarg + hooks at `episode_start` / `episode_stop` / `episode_save` (commit) / `episode_discard` / shutdown (`stop()`). |
 | `backend/mimicrec/api/routes/session.py` | `GET /api/session/gopro_pending` endpoint. |
 | `pytest.ini` | Add `gopro_hardware` marker, set default `addopts = -m 'not gopro_hardware'`. |
 | `pyproject.toml` | Add `open_gopro` dependency (version pinned after Phase 0). |
@@ -256,21 +257,19 @@ If GPMF preservation fails on Method 3 (downscale + GPMF): **the spec's "always 
 
 Otherwise: continue.
 
-- [ ] **Step 8: Pin versions and update spec**
+- [ ] **Step 8: Pin versions and write verification doc**
 
 Edit `backend/pyproject.toml`, add `"open_gopro==<exact version>"`.
 
-Update `backend/mimicrec/gopro/types.py` (will be created in Task 1) with the **actual** preset table + sdk_ids from Step 5.
+Write `docs/superpowers/notes/2026-05-09-gopro-sdk-verification.md` covering all probe results, with an explicit table of `(preset_name, sdk_id, width, height, fps, codec, file_size_per_5s, chapter_seconds_estimate)`. **Task 1 will read this doc to populate `gopro/types.py:NATIVE_PRESETS`.**
 
-Update `docs/superpowers/specs/2026-05-09-gopro-recording-design.md` "Native preset 表" if real values differ from the spec's starting set.
-
-Write `docs/superpowers/notes/2026-05-09-gopro-sdk-verification.md` covering all probe results.
+If real values differ materially from the spec's starting set, also update `docs/superpowers/specs/2026-05-09-gopro-recording-design.md` "Native preset 表" so it stays a reliable reference.
 
 - [ ] **Step 9: Commit**
 
 ```bash
 git add backend/pyproject.toml docs/superpowers/notes/2026-05-09-gopro-sdk-verification.md docs/superpowers/specs/2026-05-09-gopro-recording-design.md
-git commit -m "chore(gopro): SDK + environment verification, pin open_gopro, update preset table"
+git commit -m "chore(gopro): SDK + environment verification, pin open_gopro"
 ```
 
 ---
@@ -757,6 +756,65 @@ async def test_restore_creates_missing_dir(tmp_path):
 def test_to_json_roundtrip():
     j = _job()
     assert GoProDLJob.from_json(j.to_json()) == j
+
+
+def test_default_state_is_pending_dl():
+    j = _job()
+    assert j.state == "pending_dl"
+    assert j.staged_path is None
+
+
+def test_from_json_backward_compat_without_state():
+    """Old sidecars (pre-state field) default to pending_dl."""
+    j = _job()
+    raw = j.to_json()
+    raw.pop("state")
+    raw.pop("staged_path")
+    j2 = GoProDLJob.from_json(raw)
+    assert j2.state == "pending_dl"
+    assert j2.staged_path is None
+
+
+@pytest.mark.asyncio
+async def test_update_sidecar_changes_state(tmp_path):
+    q = DLQueue(tmp_path / "pending" / "gopro_dl")
+    j = _job(job_id="u")
+    await q.enqueue(j)
+    j.state = "staged"
+    j.staged_path = "/tmp/abc.mp4"
+    await q.update_sidecar(j)
+    j2 = await q.read_sidecar("u")
+    assert j2.state == "staged"
+    assert j2.staged_path == "/tmp/abc.mp4"
+
+
+@pytest.mark.asyncio
+async def test_find_jobs_for_episode(tmp_path):
+    q = DLQueue(tmp_path / "pending" / "gopro_dl")
+    await q.enqueue(_job(job_id="a", episode_index=0))
+    await q.enqueue(_job(job_id="b", episode_index=1))
+    await q.enqueue(_job(job_id="c", episode_index=0))
+    found = await q.find_jobs_for_episode(0)
+    assert sorted(j.job_id for j in found) == ["a", "c"]
+
+
+@pytest.mark.asyncio
+async def test_restore_skips_staged_jobs(tmp_path):
+    pdir = tmp_path / "pending" / "gopro_dl"
+    pdir.mkdir(parents=True)
+    pending = _job(job_id="p", episode_index=0)
+    staged = _job(job_id="s", episode_index=1)
+    staged.state = "staged"
+    staged.staged_path = "/tmp/staged.mp4"
+    (pdir / "p.json").write_text(json.dumps(pending.to_json()))
+    (pdir / "s.json").write_text(json.dumps(staged.to_json()))
+    q = DLQueue.restore(pdir)
+    # Only "p" is in the in-memory queue.
+    j = await asyncio.wait_for(q.dequeue(), timeout=1.0)
+    assert j.job_id == "p"
+    assert q._q.qsize() == 0
+    # But pending_count counts both sidecars.
+    assert q.pending_count == 2
 ```
 
 - [ ] **Step 2: Run — verify fail**
@@ -777,6 +835,7 @@ from pathlib import Path
 
 @dataclass
 class GoProDLJob:
+    """state machine: pending_dl → staged → (commit/discard pending) → terminal."""
     job_id: str
     gopro_serial: str
     sd_filename: str
@@ -785,12 +844,18 @@ class GoProDLJob:
     cam_name: str
     episode_start_mono_ns: int
     episode_stop_mono_ns: int
+    state: str = "pending_dl"            # "pending_dl" | "staged" | "commit_pending" | "discard_pending"
+    staged_path: str | None = None       # set when state in {staged, commit_pending}
 
     def to_json(self) -> dict:
         return asdict(self)
 
     @classmethod
     def from_json(cls, d: dict) -> "GoProDLJob":
+        # Backward compat: old sidecars without state default to pending_dl.
+        d = dict(d)
+        d.setdefault("state", "pending_dl")
+        d.setdefault("staged_path", None)
         return cls(**d)
 
 
@@ -844,20 +909,55 @@ class DLQueue:
         path = self._dir / f"{job_id}.json"
         await asyncio.to_thread(_delete_with_dir_fsync, path)
 
+    async def update_sidecar(self, job: GoProDLJob) -> None:
+        """Atomic rewrite of sidecar (state / staged_path 変更時)."""
+        path = self._dir / f"{job.job_id}.json"
+        payload = json.dumps(job.to_json(), indent=2)
+        await asyncio.to_thread(_atomic_write_with_dir_fsync, path, payload)
+
+    async def read_sidecar(self, job_id: str) -> GoProDLJob | None:
+        """Read a single sidecar (returns None if missing/corrupt)."""
+        path = self._dir / f"{job_id}.json"
+        if not path.exists():
+            return None
+        try:
+            return GoProDLJob.from_json(json.loads(path.read_text()))
+        except Exception:
+            return None
+
+    async def find_jobs_for_episode(self, episode_index: int) -> list[GoProDLJob]:
+        """Scan all sidecars; return jobs matching episode_index (any state)."""
+        out: list[GoProDLJob] = []
+        for sidecar in sorted(self._dir.glob("*.json")):
+            try:
+                data = json.loads(sidecar.read_text())
+                job = GoProDLJob.from_json(data)
+            except Exception:
+                continue
+            if job.episode_index == episode_index:
+                out.append(job)
+        return out
+
     @classmethod
     def restore(cls, pending_dir: Path) -> "DLQueue":
         q = cls(pending_dir)
         for sidecar in sorted(pending_dir.glob("*.json")):
             try:
                 data = json.loads(sidecar.read_text())
-                q._q.put_nowait(GoProDLJob.from_json(data))
+                job = GoProDLJob.from_json(data)
             except Exception:
                 continue
+            # Skip already-staged jobs — DLWorker shouldn't re-process them.
+            # registry.commit_episode/discard_episode will handle them.
+            if job.state == "staged":
+                continue
+            q._q.put_nowait(job)
         return q
 
     @property
     def pending_count(self) -> int:
-        return self._q.qsize()
+        """User-visible pending = sidecar count (includes staged awaiting commit)."""
+        return sum(1 for _ in self._dir.glob("*.json"))
 ```
 
 - [ ] **Step 4: Run — verify pass**
@@ -1130,7 +1230,7 @@ from mimicrec.gopro.ffmpeg_pass import (
 from mimicrec.recording.dataset_layout import dataset_paths
 
 
-FIXTURE = Path("tests/fixtures/gopro/sample_episode.mp4")
+FIXTURE = Path(__file__).resolve().parents[3] / "tests" / "fixtures" / "gopro" / "sample_episode.mp4"
 
 
 def _has_gpmf(p: Path) -> bool:
@@ -1625,7 +1725,7 @@ from mimicrec.recording.dataset_layout import dataset_paths
 from mimicrec.util.error_bus import ErrorBus
 
 
-FIXTURE = Path("tests/fixtures/gopro/sample_episode.mp4")
+FIXTURE = Path(__file__).resolve().parents[3] / "tests" / "fixtures" / "gopro" / "sample_episode.mp4"
 
 
 @pytest.fixture
@@ -1652,7 +1752,9 @@ def _job(job_id="j", episode_index=0):
 
 
 @pytest.mark.asyncio
-async def test_normal_dl_moves_to_dataset_and_patches_codec(paths):
+async def test_normal_dl_stages_for_commit(paths):
+    """DLWorker stages the file but does NOT move to dataset path. The move
+    happens later via registry.commit_episode (covered in test_registry.py)."""
     d = MockGoProDevice(name="g1", usb_serial="S1", fixture_mp4=FIXTURE)
     await d.connect()
     queue = DLQueue(paths.pending_dir / "gopro_dl")
@@ -1671,13 +1773,77 @@ async def test_normal_dl_moves_to_dataset_and_patches_codec(paths):
     try: await asyncio.wait_for(task, timeout=2.0)
     except asyncio.CancelledError: pass
 
-    dest = paths.episode_video(0, "g1", 0)
-    assert dest.exists()
-    assert not (paths.pending_dir / "gopro_dl" / "j1.json").exists()
+    # Sidecar still exists (state="staged"), staged file in place.
+    sidecar = paths.pending_dir / "gopro_dl" / "j1.json"
+    assert sidecar.exists()
+    s = await queue.read_sidecar("j1")
+    assert s.state == "staged"
+    assert Path(s.staged_path).exists()
+    # Dataset path NOT yet populated.
+    assert not paths.episode_video(0, "g1", 0).exists()
 
+
+@pytest.mark.asyncio
+async def test_dl_with_commit_pending_set_during_processing(paths):
+    """If sidecar.state becomes commit_pending while DL is happening, DLWorker
+    must commit-then-finish instead of staging."""
+    d = MockGoProDevice(name="g1", usb_serial="S1", fixture_mp4=FIXTURE)
+    await d.connect()
+    queue = DLQueue(paths.pending_dir / "gopro_dl")
+    errors = ErrorBus()
+    worker = GoProDLWorker(queue, devices={"S1": d}, paths=paths, errors=errors)
+
+    await d.shutter_on(); await d.shutter_off()
+    files = await d.media_list()
+    job = _job(job_id="j_cp")
+    job.sd_filename = files[0].filename
+    await queue.enqueue(job)
+
+    # Pre-flip sidecar state to commit_pending BEFORE worker dequeues.
+    pre = await queue.read_sidecar("j_cp")
+    pre.state = "commit_pending"
+    await queue.update_sidecar(pre)
+
+    task = asyncio.create_task(worker.run())
+    await asyncio.sleep(0.5)
+    await worker.stop()
+    try: await asyncio.wait_for(task, timeout=2.0)
+    except asyncio.CancelledError: pass
+
+    # Worker should have committed: dataset path exists, sidecar gone.
+    assert paths.episode_video(0, "g1", 0).exists()
+    assert not (paths.pending_dir / "gopro_dl" / "j_cp.json").exists()
     info = json.loads((paths.meta_dir / "info.json").read_text())
-    new_codec = info["features"]["observation.images.g1"]["info"]["video.codec"]
-    assert new_codec in {"h264", "hevc"}
+    assert info["features"]["observation.images.g1"]["info"]["video.codec"] in {"h264", "hevc"}
+
+
+@pytest.mark.asyncio
+async def test_dl_with_discard_pending_skips_dl(paths):
+    """If state is discard_pending when dequeued, no download happens."""
+    d = MockGoProDevice(name="g1", usb_serial="S1", fixture_mp4=FIXTURE)
+    await d.connect()
+    download_called = False
+    async def boom(*a, **kw):
+        nonlocal download_called
+        download_called = True
+    d.download_file = boom  # type: ignore[assignment]
+
+    queue = DLQueue(paths.pending_dir / "gopro_dl")
+    errors = ErrorBus()
+    worker = GoProDLWorker(queue, devices={"S1": d}, paths=paths, errors=errors)
+
+    job = _job(job_id="j_dp")
+    job.state = "discard_pending"
+    await queue.enqueue(job)
+
+    task = asyncio.create_task(worker.run())
+    await asyncio.sleep(0.3)
+    await worker.stop()
+    try: await asyncio.wait_for(task, timeout=2.0)
+    except asyncio.CancelledError: pass
+
+    assert not download_called
+    assert not (paths.pending_dir / "gopro_dl" / "j_dp.json").exists()
 
 
 @pytest.mark.asyncio
@@ -1705,10 +1871,25 @@ async def test_unknown_device_keeps_sidecar(paths):
 
 @pytest.mark.asyncio
 async def test_resume_from_tmp_skips_redownload(paths):
+    """When tmp_raw already matches SD-side size (i.e. previous DL completed
+    but ffmpeg/staging failed), DLWorker should skip download and re-run ffmpeg.
+
+    Note: MockGoProDevice reports a fixed MediaItem.size (12345). For this test
+    to be correct, we override the mock's media_list to report the actual
+    fixture size, and pre-place tmp_raw as a copy of the fixture so the size
+    check passes AND ffmpeg can read it as a valid MP4."""
+    import shutil as _sh
     d = MockGoProDevice(name="g1", usb_serial="S1", fixture_mp4=FIXTURE)
     await d.connect()
     await d.shutter_on(); await d.shutter_off()
     files = await d.media_list()
+
+    # Override media_list so reported size matches the actual fixture.
+    real_size = FIXTURE.stat().st_size
+    from mimicrec.gopro.types import MediaItem
+    async def real_size_list():
+        return [MediaItem(filename=files[0].filename, size=real_size, mtime_ns=0)]
+    d.media_list = real_size_list  # type: ignore[assignment]
 
     queue = DLQueue(paths.pending_dir / "gopro_dl")
     errors = ErrorBus()
@@ -1716,11 +1897,11 @@ async def test_resume_from_tmp_skips_redownload(paths):
 
     job = _job(job_id="j_resume")
     job.sd_filename = files[0].filename
+    job.state = "commit_pending"   # so worker commits to dataset on completion
 
-    # Pre-place tmp_raw with same size as SD-side file.
     tmp_raw = paths.pending_dir / f"gopro_dl_{job.job_id}_raw.mp4"
     tmp_raw.parent.mkdir(parents=True, exist_ok=True)
-    tmp_raw.write_bytes(b"\x42" * files[0].size)
+    _sh.copy(str(FIXTURE), str(tmp_raw))   # valid MP4, real size
 
     download_called = False
     async def boom(*a, **kw):
@@ -1735,8 +1916,8 @@ async def test_resume_from_tmp_skips_redownload(paths):
     try: await asyncio.wait_for(task, timeout=2.0)
     except asyncio.CancelledError: pass
 
-    assert paths.episode_video(0, "g1", 0).exists()
     assert not download_called
+    assert paths.episode_video(0, "g1", 0).exists()
 ```
 
 - [ ] **Step 2: Run — verify fail** (ModuleNotFoundError)
@@ -1813,6 +1994,12 @@ class GoProDLWorker:
             self._inflight = None
 
     async def _process_one(self, job) -> None:
+        # If the registry already requested discard before DLWorker dequeued
+        # the job, terminate immediately without downloading.
+        if job.state == "discard_pending":
+            await self._queue.mark_done(job.job_id)
+            return
+
         device = self._devices.get(job.gopro_serial)
         if device is None or getattr(device, "is_disabled", False):
             await self._errors.publish(HardwareError(
@@ -1821,7 +2008,7 @@ class GoProDLWorker:
             return
 
         tmp_raw = self._paths.pending_dir / f"gopro_dl_{job.job_id}_raw.mp4"
-        tmp_out = self._paths.pending_dir / f"gopro_dl_{job.job_id}_out.mp4"
+        staged = self._paths.pending_dir / "gopro_staged" / f"{job.job_id}.mp4"
 
         # Resume from tmp_raw if it matches SD-side size.
         skip_dl = False
@@ -1853,18 +2040,19 @@ class GoProDLWorker:
         except Exception as e:
             log.warning("duration probe failed for %s: %s", tmp_raw, e)
 
-        # ffmpeg pass: copy or downscale.
+        # ffmpeg pass: stage the output (no move to dataset path here).
         try:
+            staged.parent.mkdir(parents=True, exist_ok=True)
             spec = device.get_spec()
             native = device.selected_preset
             aspect_match = abs(
                 (native.width / native.height) - (spec.width / spec.height)
             ) < 0.01
             if native.width == spec.width and native.height == spec.height:
-                await ffmpeg_copy(tmp_raw, tmp_out)
+                await ffmpeg_copy(tmp_raw, staged)
             else:
                 await ffmpeg_downscale(
-                    tmp_raw, tmp_out,
+                    tmp_raw, staged,
                     target_w=spec.width, target_h=spec.height,
                     aspect_mode=device.aspect_mode,
                     aspect_match=aspect_match,
@@ -1879,18 +2067,51 @@ class GoProDLWorker:
         except Exception:
             pass
 
+        # Re-read sidecar: registry may have requested commit/discard during DL.
+        fresh = await self._queue.read_sidecar(job.job_id)
+        if fresh is None:
+            # Sidecar disappeared (registry already committed/discarded?).
+            staged.unlink(missing_ok=True)
+            return
+
+        if fresh.state == "commit_pending":
+            await self._commit_to_dataset(job, staged)
+            await self._queue.mark_done(job.job_id)
+            return
+        if fresh.state == "discard_pending":
+            staged.unlink(missing_ok=True)
+            await self._queue.mark_done(job.job_id)
+            return
+
+        # Normal path: mark as staged, await registry's commit/discard.
+        fresh.state = "staged"
+        fresh.staged_path = str(staged)
+        await self._queue.update_sidecar(fresh)
+
+        # Race: registry may have written commit_pending/discard_pending between
+        # our read and update. Re-read once more.
+        after = await self._queue.read_sidecar(job.job_id)
+        if after is None:
+            staged.unlink(missing_ok=True)
+            return
+        if after.state == "commit_pending":
+            await self._commit_to_dataset(after, staged)
+            await self._queue.mark_done(job.job_id)
+        elif after.state == "discard_pending":
+            staged.unlink(missing_ok=True)
+            await self._queue.mark_done(job.job_id)
+        # else: state="staged" persisted — registry will commit/discard later.
+
+    async def _commit_to_dataset(self, job, staged: Path) -> None:
+        """Move staged MP4 into the dataset, patch info.json codec."""
         dest = self._paths.episode_video(job.chunk_index, job.cam_name, job.episode_index)
         try:
             dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(tmp_out), str(dest))
+            shutil.move(str(staged), str(dest))
         except Exception as e:
             await self._errors.publish(HardwareError(
                 f"GoPro move failed for ep {job.episode_index}: {e}"))
             return
-
-        await self._queue.mark_done(job.job_id)
-
-        # Patch info.json codec from the actual file (idempotent).
         try:
             await update_info_json_codec(self._paths, job.cam_name)
         except Exception as e:
@@ -2175,6 +2396,93 @@ async def test_episode_lifecycle_propagates_errors(paths):
             found = True
     assert found
     await reg.stop()
+
+
+@pytest.mark.asyncio
+async def test_commit_episode_moves_staged_to_dataset(paths, tmp_path):
+    """When a job is in state=staged, commit_episode moves the file to
+    paths.episode_video(...) and removes the sidecar."""
+    a = MockGoProDevice(name="g1", usb_serial="S1")
+    reg = GoProDeviceRegistry(devices=[a], paths=paths, errors=ErrorBus())
+    await reg.start()
+
+    # Manually craft a staged job sidecar + staged file.
+    from mimicrec.gopro.dl_queue import GoProDLJob
+    staged_dir = paths.pending_dir / "gopro_staged"
+    staged_dir.mkdir(parents=True, exist_ok=True)
+    staged_file = staged_dir / "abc.mp4"
+    staged_file.write_bytes(b"\x00" * 64)
+    job = GoProDLJob(
+        job_id="abc", gopro_serial="S1", sd_filename="GX010001.MP4",
+        episode_index=0, chunk_index=0, cam_name="g1",
+        episode_start_mono_ns=0, episode_stop_mono_ns=0,
+        state="staged", staged_path=str(staged_file),
+    )
+    # Pre-seed info.json so codec patch path doesn't blow up.
+    import json as _json
+    (paths.meta_dir / "info.json").write_text(_json.dumps({
+        "features": {"observation.images.g1": {"info": {"video.codec": "libx264"}}},
+    }))
+    await reg._queue.enqueue(job)  # type: ignore[union-attr]
+    await reg._queue.update_sidecar(job)  # ensure state="staged" in sidecar
+
+    await reg.commit_episode(0)
+
+    assert paths.episode_video(0, "g1", 0).exists()
+    assert not (paths.pending_dir / "gopro_dl" / "abc.json").exists()
+    assert not staged_file.exists()
+    await reg.stop()
+
+
+@pytest.mark.asyncio
+async def test_discard_episode_removes_staged(paths):
+    a = MockGoProDevice(name="g1", usb_serial="S1")
+    reg = GoProDeviceRegistry(devices=[a], paths=paths, errors=ErrorBus())
+    await reg.start()
+
+    from mimicrec.gopro.dl_queue import GoProDLJob
+    staged_dir = paths.pending_dir / "gopro_staged"
+    staged_dir.mkdir(parents=True, exist_ok=True)
+    staged_file = staged_dir / "xyz.mp4"
+    staged_file.write_bytes(b"\x00" * 64)
+    job = GoProDLJob(
+        job_id="xyz", gopro_serial="S1", sd_filename="GX010001.MP4",
+        episode_index=1, chunk_index=0, cam_name="g1",
+        episode_start_mono_ns=0, episode_stop_mono_ns=0,
+        state="staged", staged_path=str(staged_file),
+    )
+    await reg._queue.enqueue(job)  # type: ignore[union-attr]
+    await reg._queue.update_sidecar(job)
+
+    await reg.discard_episode(1)
+
+    assert not staged_file.exists()
+    assert not (paths.pending_dir / "gopro_dl" / "xyz.json").exists()
+    assert not paths.episode_video(0, "g1", 1).exists()
+    await reg.stop()
+
+
+@pytest.mark.asyncio
+async def test_commit_episode_on_pending_dl_flips_state(paths):
+    """If the job is still pending_dl when commit fires, sidecar state flips
+    to commit_pending (DLWorker will commit after ffmpeg)."""
+    a = MockGoProDevice(name="g1", usb_serial="S1")
+    reg = GoProDeviceRegistry(devices=[a], paths=paths, errors=ErrorBus())
+    await reg.start()
+
+    from mimicrec.gopro.dl_queue import GoProDLJob
+    job = GoProDLJob(
+        job_id="ppp", gopro_serial="S1", sd_filename="GX010001.MP4",
+        episode_index=2, chunk_index=0, cam_name="g1",
+        episode_start_mono_ns=0, episode_stop_mono_ns=0,
+        state="pending_dl",
+    )
+    await reg._queue.enqueue(job)  # type: ignore[union-attr]
+    await reg.commit_episode(2)
+
+    s = await reg._queue.read_sidecar("ppp")  # type: ignore[union-attr]
+    assert s.state == "commit_pending"
+    await reg.stop()
 ```
 
 - [ ] **Step 2: Run — verify fail**
@@ -2286,6 +2594,46 @@ class GoProDeviceRegistry:
             "episode_stop",
             lambda r: r.stop_episode(episode_index),
         )
+
+    async def commit_episode(self, episode_index: int) -> None:
+        """Called from SessionManager.episode_save. For each sidecar matching
+        episode_index: if staged, move to dataset; if pending_dl, flip to
+        commit_pending so DLWorker handles it after staging completes."""
+        if self._queue is None:
+            return
+        from mimicrec.gopro.ffmpeg_pass import update_info_json_codec
+        import shutil as _sh
+        jobs = await self._queue.find_jobs_for_episode(episode_index)
+        for job in jobs:
+            if job.state == "staged" and job.staged_path:
+                src = Path(job.staged_path)
+                dest = self._paths.episode_video(job.chunk_index, job.cam_name, job.episode_index)
+                try:
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    _sh.move(str(src), str(dest))
+                    await update_info_json_codec(self._paths, job.cam_name)
+                    await self._queue.mark_done(job.job_id)
+                except Exception as e:
+                    await self._errors.publish(HardwareError(
+                        f"commit_episode {job.episode_index} ({job.cam_name}) failed: {e}"))
+            elif job.state == "pending_dl":
+                job.state = "commit_pending"
+                await self._queue.update_sidecar(job)
+            # else (commit_pending / discard_pending / staged-but-no-path): skip
+
+    async def discard_episode(self, episode_index: int) -> None:
+        """Called from SessionManager.episode_discard. Symmetric to commit:
+        delete staged files / flip pending_dl → discard_pending."""
+        if self._queue is None:
+            return
+        jobs = await self._queue.find_jobs_for_episode(episode_index)
+        for job in jobs:
+            if job.state == "staged" and job.staged_path:
+                Path(job.staged_path).unlink(missing_ok=True)
+                await self._queue.mark_done(job.job_id)
+            elif job.state == "pending_dl":
+                job.state = "discard_pending"
+                await self._queue.update_sidecar(job)
 
     def preview_sources(self) -> dict[str, GoProPreviewSource]:
         return dict(self._previews)
@@ -2667,10 +3015,16 @@ git commit -m "feat(dataset): init_dataset accepts gopro_specs (has_gpmf marker)
 from mimicrec.api.schemas import StartSessionRequest, SessionStatePayload
 
 
+# NOTE: mapper / dataset / task / etc. fields below are placeholders.
+# Inspect the actual schemas.py and use whatever values existing tests use.
+# If `StartSessionRequest` is the wrong class name in this codebase, replace
+# with the real one (TeleopSessionRequest, etc.).
+
+
 def test_start_session_request_gopros_default_empty():
     r = StartSessionRequest(
         dataset="ds", task="t", robot="so101",
-        teleop="so_leader", mapper=None, cameras=["wrist"], fps=30, mode="teleop",
+        teleop="so_leader", mapper="identity", cameras=["wrist"], fps=30, mode="teleop",
     )
     assert r.gopros == []
 
@@ -2678,7 +3032,7 @@ def test_start_session_request_gopros_default_empty():
 def test_start_session_request_gopros_explicit():
     r = StartSessionRequest(
         dataset="ds", task="t", robot="so101",
-        teleop="so_leader", mapper=None, cameras=["wrist"], fps=30, mode="teleop",
+        teleop="so_leader", mapper="identity", cameras=["wrist"], fps=30, mode="teleop",
         gopros=["g1"],
     )
     assert r.gopros == ["g1"]
@@ -2781,6 +3135,15 @@ Find the existing camera bootstrap block (around line 105). After it, add:
 
 Replace `CameraManager(cameras=cams, error_bus=error_bus)` to use the new merged `cams`. Inject `gopro_specs=gopro_registry.gopro_specs() if gopro_registry else None` into the existing `init_dataset(...)` call. Save `app.state.gopro_registry = gopro_registry`. Update `app.state.session_meta["gopros"] = list(getattr(req, "gopros", []))`.
 
+Pass the registry to SessionManager (a new optional kwarg added in the next task):
+
+```python
+sm = SessionManager(
+    ...,                                # existing kwargs
+    gopro_registry=gopro_registry,      # NEW (default None)
+)
+```
+
 Also locate where SessionManager / PendingEpisode opens video writers (likely in SessionManager) and exclude GoPro names from the `cameras: dict[str, tuple[int,int]]` passed to `open_video_writers`. The session_meta already has `"gopros"`; use it.
 
 - [ ] **Step 3: Smoke run**
@@ -2796,6 +3159,123 @@ Existing tests should still pass.
 ```bash
 git add backend/mimicrec/api/deps.py tests/integration/test_gopro_session_bootstrap.py
 git commit -m "feat(api): bootstrap GoProDeviceRegistry with ConfigError -> HTTPException(400)"
+```
+
+---
+
+### Task 15.5: SessionManager hooks for GoPro registry
+
+**Files:**
+- Modify: `backend/mimicrec/session/lifecycle.py` (SessionManager: constructor, `episode_start`, `episode_stop`, `episode_save`, `episode_discard`, `end` if it exists)
+- Test: `tests/unit/gopro/test_session_manager_gopro.py`
+
+This task wires the registry into SessionManager so that:
+- `episode_start` → `gopro_registry.episode_start(idx, t)`
+- `episode_stop` → `gopro_registry.episode_stop(idx)`
+- `episode_save` → `gopro_registry.commit_episode(idx)` (move staged → dataset)
+- `episode_discard` → `gopro_registry.discard_episode(idx)` (delete staged)
+- session shutdown path → `gopro_registry.stop()` (no leak of worker / preview / SDK client)
+
+The `gopro_registry` parameter must be **optional** (default `None`) so existing tests / code paths that don't use GoPro keep working.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `tests/unit/gopro/test_session_manager_gopro.py`:
+
+```python
+"""SessionManager calls registry hooks at the right lifecycle moments."""
+from unittest.mock import AsyncMock
+
+import pytest
+
+
+class _FakeRegistry:
+    """Minimal stand-in for GoProDeviceRegistry used to verify SessionManager
+    delegation. We don't construct a real registry because lifecycle.py is
+    deeply tied to the rest of the recording stack; the test focuses on
+    delegation only."""
+    def __init__(self):
+        self.episode_start = AsyncMock()
+        self.episode_stop = AsyncMock()
+        self.commit_episode = AsyncMock()
+        self.discard_episode = AsyncMock()
+        self.stop = AsyncMock()
+
+
+@pytest.mark.asyncio
+async def test_session_manager_passes_registry_through_to_hooks():
+    """SessionManager constructor accepts gopro_registry and forwards
+    episode_start / episode_stop / episode_save / episode_discard /
+    end (or equivalent shutdown path) to it.
+
+    NOTE: this is a wiring test — the implementing subagent should locate
+    the actual SessionManager initializer in
+    backend/mimicrec/session/lifecycle.py and the relevant lifecycle
+    methods. Replace this stub with the right call sequence for the
+    repo's existing test harness."""
+    pytest.skip(
+        "Implement against the actual SessionManager test harness "
+        "after wiring gopro_registry through. This stub documents intent."
+    )
+```
+
+- [ ] **Step 2: Wire the registry through SessionManager**
+
+Edit `backend/mimicrec/session/lifecycle.py`:
+
+1. Add `gopro_registry: object | None = None` to `SessionManager.__init__` and store on `self._gopro_registry`.
+
+2. In `episode_start` (find the existing method, likely around line 320-400; search for `def episode_start`):
+   ```python
+   if self._gopro_registry is not None:
+       await self._gopro_registry.episode_start(self._episode_index, time.monotonic_ns())
+   ```
+   Place this AFTER the existing camera / pending / writer setup so a registry failure doesn't prevent the rest of the episode from starting.
+
+3. In `episode_stop` (around line 399):
+   ```python
+   if self._gopro_registry is not None:
+       await self._gopro_registry.episode_stop(self._episode_index)
+   ```
+   Place this before / after the existing `await self._recorder_queue.join()` block — order doesn't matter for correctness because the recorder is independent of MimicRec's writer queue.
+
+4. In `episode_save` (around line 444), call commit BEFORE incrementing episode index:
+   ```python
+   if self._gopro_registry is not None:
+       await self._gopro_registry.commit_episode(self._episode_index)
+   ```
+   Place at the start of the method body so a registry failure is reported but doesn't roll back the parquet save (we want both halves to commit).
+
+5. In `episode_discard` (around line 509):
+   ```python
+   if self._gopro_registry is not None:
+       await self._gopro_registry.discard_episode(self._episode_index)
+   ```
+
+6. Find SessionManager's shutdown path (`end()` or equivalent — search for `async def end` or for `self._cameras.stop()`). Add:
+   ```python
+   if self._gopro_registry is not None:
+       try:
+           await self._gopro_registry.stop()
+       finally:
+           self._gopro_registry = None
+   ```
+
+7. Update `app.state` cleanup wherever the existing code clears `app.state.camera_manager` (`backend/mimicrec/api/deps.py` clears it on session end). Add `app.state.gopro_registry = None` next to it.
+
+- [ ] **Step 3: Run — verify pass + smoke**
+
+```bash
+env -u PYTHONPATH .venv/bin/python -m pytest ../tests -v -m 'not gopro_hardware'
+```
+
+Existing tests pass; the SessionManager test from Step 1 is `skip`ped (intentional — full coverage is in Task 18).
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add backend/mimicrec/session/lifecycle.py backend/mimicrec/api/deps.py tests/unit/gopro/test_session_manager_gopro.py
+git commit -m "feat(session): wire GoProDeviceRegistry into SessionManager lifecycle hooks"
 ```
 
 ---
@@ -2825,14 +3305,16 @@ async def test_pending_returns_zero_when_no_session(app_no_session):
 
 - [ ] **Step 2: Add the endpoint**
 
-In the appropriate routes file:
+In `backend/mimicrec/api/routes/session.py` (the existing router is mounted with prefix `/api`, so the decorator path **must NOT** include `/api`):
 
 ```python
-@router.get("/api/session/gopro_pending")
+@router.get("/session/gopro_pending")
 async def gopro_pending(request: Request) -> dict[str, int]:
     reg = getattr(request.app.state, "gopro_registry", None)
     return {"pending": int(reg.pending_count) if reg is not None else 0}
 ```
+
+Verify the prefix by checking how other routes in this file are decorated (e.g. existing `@router.get("/session/state")` etc.) — match that pattern.
 
 - [ ] **Step 3: Run — verify pass**
 
