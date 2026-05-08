@@ -1,7 +1,6 @@
 from __future__ import annotations
 import asyncio
 import cv2
-import numpy as np
 
 from mimicrec.types import Frame
 
@@ -57,6 +56,8 @@ class OpenCVCamera:
         actual_w = int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         actual_h = int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         actual_fourcc = _decode_fourcc(int(self._cap.get(cv2.CAP_PROP_FOURCC)))
+        # Round nominal frame rates: drivers report 29.97 when sensors run at
+        # NTSC rates; rounding to 30 matches what users typically request.
         actual_fps = int(round(self._cap.get(cv2.CAP_PROP_FPS)))
 
         mismatches: list[str] = []
@@ -66,7 +67,7 @@ class OpenCVCamera:
             )
         if self._pixel_format is not None and actual_fourcc != self._pixel_format:
             mismatches.append(
-                f"fourcc: requested {self._pixel_format}, got {actual_fourcc}"
+                f"fourcc: requested {self._pixel_format}, got {actual_fourcc!r}"
             )
         if self._capture_fps is not None and actual_fps != self._capture_fps:
             mismatches.append(
