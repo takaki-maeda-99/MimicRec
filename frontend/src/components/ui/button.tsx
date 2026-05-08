@@ -26,11 +26,13 @@ export function Button({
     variant === "destructive" ? "destructive" :
     variant;
 
-  const base = "inline-flex items-center justify-center font-medium transition-colors disabled:cursor-not-allowed";
+  const base = "inline-flex items-center justify-center font-medium transition-colors disabled:cursor-not-allowed text-button-md";
+  // Explicit heights keep buttons from collapsing when wrapped in
+  // tight flex layouts; padding is horizontal only.
   const pillPad =
-    size === "sm" ? "px-sm py-1 text-caption" :
-    size === "lg" ? "px-lg py-2 text-button-md" :
-    "px-md py-1.5 text-button-md";
+    size === "sm" ? "h-8 px-sm" :
+    size === "lg" ? "h-10 px-lg" :
+    "h-9 px-md";
 
   const variants: Record<VariantNew | "destructive", string> = {
     primary:
@@ -47,7 +49,7 @@ export function Button({
       " hover:bg-charcoal disabled:bg-hairline disabled:text-muted",
     // Note: ghost and iconCircular have fixed dimensions; the size prop is intentionally ignored.
     ghost:
-      "rounded-md bg-transparent text-ink text-button-md px-3 py-2 hover:bg-surface disabled:text-muted",
+      "rounded-md bg-transparent text-ink h-9 px-3 hover:bg-surface disabled:text-muted",
     link:
       "bg-transparent text-ink text-body-sm-medium underline-offset-2 hover:underline p-0",
     iconCircular:
