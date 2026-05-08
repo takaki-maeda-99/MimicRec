@@ -83,10 +83,13 @@
 
 **Files:**
 - Modify: `backend/pyproject.toml`
+- Possibly modify: `uv.lock` (root lockfile if regen される)
+
+**Note**: 現 `.venv` は既に `huggingface_hub 1.12.0` がインストール済みのため `uv pip install` は no-op になる可能性がある。それでも宣言を `pyproject.toml` に入れる必要がある。
 
 - [ ] **Step 1: dependencies に追加**
 
-`backend/pyproject.toml` の `dependencies = [...]` 末尾に `"huggingface_hub>=0.34"` を 1 行追加:
+`backend/pyproject.toml` の `dependencies = [...]` 末尾に `"huggingface_hub>=0.34"` を 1 行追加（後方互換のため下限のみ。1.x で動くことは Task 11 のテストで担保）:
 
 ```toml
 dependencies = [
@@ -104,26 +107,31 @@ dependencies = [
 ]
 ```
 
-- [ ] **Step 2: 依存を再インストール**
+- [ ] **Step 2: 依存を再インストール（lock 更新含む）**
 
 ```bash
 uv pip install --python .venv/bin/python -e "./backend[dev]"
+# uv.lock を再生成（リポジトリで lock 運用してる場合のみ。lock がなければ skip）
+[ -f uv.lock ] && uv lock || echo "no uv.lock at repo root; skip"
 ```
 
-期待: `huggingface_hub-0.x.y` が `Successfully installed` の中に出る。
-
-- [ ] **Step 3: import 動作確認**
+- [ ] **Step 3: import + 想定 API の動作確認**
 
 ```bash
-.venv/bin/python -c "from huggingface_hub import HfApi; print(HfApi().__class__.__name__)"
+.venv/bin/python -c "
+from huggingface_hub import HfApi, get_token, whoami
+print('hf version:', __import__('huggingface_hub').__version__)
+print('module get_token:', get_token)
+print('HfApi.whoami:', HfApi().whoami)
+"
 ```
 
-期待: `HfApi` と表示される。
+期待: バージョン表示と `get_token` (module-level) / `HfApi().whoami` が解決される。`HfApi().get_token` は **無い** ので使わない（ < 1.0 / >= 1.0 で違うため module-level で統一）。
 
 - [ ] **Step 4: コミット**
 
 ```bash
-git add backend/pyproject.toml
+git add backend/pyproject.toml uv.lock 2>/dev/null || git add backend/pyproject.toml
 git commit -m "chore(deps): add huggingface_hub>=0.34 for HF Hub push"
 ```
 
@@ -2056,15 +2064,16 @@ def client_and_root(tmp_path):
     app.state.datasets_root = tmp_path
     app.state.push_coordinator = PushCoordinator()
     transport = ASGITransport(app=app)
-    return AsyncClient(transport=transport, base_url="http://test"), tmp_path
+    client = AsyncClient(transport=transport, base_url="http://test")
+    # 3-tuple: (client, datasets_root, app) — テストから coordinator を直に触る用
+    return client, tmp_path, app
 
 
 @pytest.mark.asyncio
 async def test_auth_status_no_token(client_and_root):
-    client, _ = client_and_root
-    with patch("mimicrec.api.routes.cloud.HfApi") as MockApi:
-        instance = MockApi.return_value
-        instance.get_token.return_value = None
+    client, _, _ = client_and_root
+    with patch("mimicrec.api.routes.cloud.get_token", return_value=None), \
+         patch("mimicrec.api.routes.cloud.HfApi") as MockApi:
         async with client as ac:
             r = await ac.get("/api/cloud/auth-status")
     assert r.status_code == 200
@@ -2074,11 +2083,10 @@ async def test_auth_status_no_token(client_and_root):
 
 @pytest.mark.asyncio
 async def test_auth_status_with_token(client_and_root):
-    client, _ = client_and_root
-    with patch("mimicrec.api.routes.cloud.HfApi") as MockApi:
-        instance = MockApi.return_value
-        instance.get_token.return_value = "hf_xxx"
-        instance.whoami.return_value = {"name": "TakakiMaeda"}
+    client, _, _ = client_and_root
+    with patch("mimicrec.api.routes.cloud.get_token", return_value="hf_xxx"), \
+         patch("mimicrec.api.routes.cloud.HfApi") as MockApi:
+        MockApi.return_value.whoami.return_value = {"name": "TakakiMaeda"}
         async with client as ac:
             r = await ac.get("/api/cloud/auth-status")
     assert r.status_code == 200
@@ -2088,7 +2096,7 @@ async def test_auth_status_with_token(client_and_root):
 
 @pytest.mark.asyncio
 async def test_get_hub_returns_null_when_unconfigured(client_and_root):
-    client, root = client_and_root
+    client, root, app = client_and_root
     init_dataset(root / "ds", fps=30, joint_names=["j0"], camera_names=[])
     async with client as ac:
         r = await ac.get("/api/datasets/ds/hub")
@@ -2101,7 +2109,7 @@ async def test_get_hub_returns_null_when_unconfigured(client_and_root):
 
 @pytest.mark.asyncio
 async def test_put_hub_creates_meta(client_and_root):
-    client, root = client_and_root
+    client, root, app = client_and_root
     init_dataset(root / "ds", fps=30, joint_names=["j0"], camera_names=[])
     async with client as ac:
         r = await ac.put("/api/datasets/ds/hub", json={
@@ -2120,7 +2128,7 @@ async def test_put_hub_creates_meta(client_and_root):
 
 @pytest.mark.asyncio
 async def test_put_hub_rejects_invalid_repo_id(client_and_root):
-    client, root = client_and_root
+    client, root, app = client_and_root
     init_dataset(root / "ds", fps=30, joint_names=["j0"], camera_names=[])
     async with client as ac:
         r = await ac.put("/api/datasets/ds/hub", json={"repo_id": "no-slash"})
@@ -2129,7 +2137,7 @@ async def test_put_hub_rejects_invalid_repo_id(client_and_root):
 
 @pytest.mark.asyncio
 async def test_put_hub_path_traversal_rejected(client_and_root):
-    client, root = client_and_root
+    client, root, app = client_and_root
     async with client as ac:
         r = await ac.put("/api/datasets/..%2Fetc/hub", json={"repo_id": "u/d"})
     # ..%2F は dataset name として不正 → 400 / 404 のいずれか
@@ -2156,7 +2164,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
-from huggingface_hub import HfApi
+from huggingface_hub import HfApi, get_token
 from pydantic import BaseModel, Field
 
 from mimicrec.api.deps import get_datasets_root
@@ -2204,12 +2212,11 @@ async def auth_status(request: Request, refresh: int = 0) -> AuthStatus:
     if not refresh and cache is not None and now - cache["t"] < _AUTH_TTL_SEC:
         return AuthStatus(**cache["value"])
 
-    api = HfApi()
-    token = api.get_token()
+    token = get_token()
     username: str | None = None
     if token:
         try:
-            who = api.whoami()
+            who = HfApi().whoami(token=token)
             username = who.get("name") if isinstance(who, dict) else getattr(who, "name", None)
         except Exception:
             username = None
@@ -2320,11 +2327,10 @@ git commit -m "feat(api): /cloud/auth-status and /datasets/{ds}/hub GET/PUT"
 ```python
 @pytest.mark.asyncio
 async def test_post_push_401_when_no_token(client_and_root):
-    client, root = client_and_root
+    client, root, app = client_and_root
     init_dataset(root / "ds", fps=30, joint_names=["j0"], camera_names=[])
     write_hub_meta(root / "ds", HubMeta(repo_id="u/d"))
-    with patch("mimicrec.api.routes.cloud.HfApi") as MockApi:
-        MockApi.return_value.get_token.return_value = None
+    with patch("mimicrec.api.routes.cloud.get_token", return_value=None):
         async with client as ac:
             r = await ac.post("/api/datasets/ds/hub/push")
     assert r.status_code == 401
@@ -2332,10 +2338,9 @@ async def test_post_push_401_when_no_token(client_and_root):
 
 @pytest.mark.asyncio
 async def test_post_push_400_when_hub_unconfigured(client_and_root):
-    client, root = client_and_root
+    client, root, app = client_and_root
     init_dataset(root / "ds", fps=30, joint_names=["j0"], camera_names=[])
-    with patch("mimicrec.api.routes.cloud.HfApi") as MockApi:
-        MockApi.return_value.get_token.return_value = "hf_xxx"
+    with patch("mimicrec.api.routes.cloud.get_token", return_value="hf_xxx"):
         async with client as ac:
             r = await ac.post("/api/datasets/ds/hub/push")
     assert r.status_code == 400
@@ -2343,9 +2348,8 @@ async def test_post_push_400_when_hub_unconfigured(client_and_root):
 
 @pytest.mark.asyncio
 async def test_post_push_404_when_dataset_absent(client_and_root):
-    client, _ = client_and_root
-    with patch("mimicrec.api.routes.cloud.HfApi") as MockApi:
-        MockApi.return_value.get_token.return_value = "hf_xxx"
+    client, _, _ = client_and_root
+    with patch("mimicrec.api.routes.cloud.get_token", return_value="hf_xxx"):
         async with client as ac:
             r = await ac.post("/api/datasets/nope/hub/push")
     assert r.status_code == 404
@@ -2353,7 +2357,7 @@ async def test_post_push_404_when_dataset_absent(client_and_root):
 
 @pytest.mark.asyncio
 async def test_post_push_202_then_409_for_duplicate(client_and_root, monkeypatch):
-    client, root = client_and_root
+    client, root, app = client_and_root
     init_dataset(root / "ds", fps=30, joint_names=["j0"], camera_names=[])
     write_hub_meta(root / "ds", HubMeta(repo_id="u/d"))
 
@@ -2368,14 +2372,45 @@ async def test_post_push_202_then_409_for_duplicate(client_and_root, monkeypatch
 
     monkeypatch.setattr("mimicrec.api.routes.cloud._run_push_with_release", hanging_task)
 
-    with patch("mimicrec.api.routes.cloud.HfApi") as MockApi:
-        MockApi.return_value.get_token.return_value = "hf_xxx"
+    with patch("mimicrec.api.routes.cloud.get_token", return_value="hf_xxx"):
         async with client as ac:
             r1 = await ac.post("/api/datasets/ds/hub/push")
             assert r1.status_code == 202
-            await started.wait()
+            await asyncio.wait_for(started.wait(), timeout=2.0)
             r2 = await ac.post("/api/datasets/ds/hub/push")
             assert r2.status_code == 409
+            release.set()
+
+
+@pytest.mark.asyncio
+async def test_post_push_5_concurrent_only_one_runs(client_and_root, monkeypatch):
+    """spec DoD: '同 ds の POST /hub/push を連続 5 回叩いても 1 本だけ走る'"""
+    client, root, app = client_and_root
+    init_dataset(root / "ds", fps=30, joint_names=["j0"], camera_names=[])
+    write_hub_meta(root / "ds", HubMeta(repo_id="u/d"))
+
+    import asyncio as _a
+    started_count = 0
+    release = _a.Event()
+
+    async def hanging_task(*a, **kw):
+        nonlocal started_count
+        started_count += 1
+        await release.wait()
+
+    monkeypatch.setattr("mimicrec.api.routes.cloud._run_push_with_release", hanging_task)
+
+    with patch("mimicrec.api.routes.cloud.get_token", return_value="hf_xxx"):
+        async with client as ac:
+            results = await _a.gather(*[
+                ac.post("/api/datasets/ds/hub/push") for _ in range(5)
+            ])
+            statuses = sorted(r.status_code for r in results)
+            assert statuses.count(202) == 1
+            assert statuses.count(409) == 4
+            # 1 本だけ走った
+            await _a.sleep(0.05)
+            assert started_count == 1
             release.set()
 ```
 
@@ -2403,8 +2438,7 @@ from mimicrec.cloud.snapshot import (
 @router.post("/datasets/{ds}/hub/push", status_code=202)
 async def post_push(request: Request, ds: str):
     ds_root = _resolve_ds(request, ds)   # path 400 / 存在 404
-    api = HfApi()
-    if not api.get_token():
+    if not get_token():
         raise HTTPException(status_code=401, detail="not authenticated; run `huggingface-cli login`")
     meta = read_hub_meta(ds_root)
     if meta is None:
@@ -2538,9 +2572,9 @@ git commit -m "feat(api): POST /datasets/{ds}/hub/push with snapshot + backgroun
 ```python
 @pytest.mark.asyncio
 async def test_delete_dataset_409_when_push_in_flight(client_and_root, monkeypatch):
-    client, root = client_and_root
+    client, root, app = client_and_root
     init_dataset(root / "ds", fps=30, joint_names=["j0"], camera_names=[])
-    coord = client._transport.app.state.push_coordinator
+    coord = app.state.push_coordinator
     coord.try_reserve("ds")
     try:
         async with client as ac:
@@ -2552,9 +2586,9 @@ async def test_delete_dataset_409_when_push_in_flight(client_and_root, monkeypat
 
 @pytest.mark.asyncio
 async def test_delete_dataset_drops_coordinator_state(client_and_root):
-    client, root = client_and_root
+    client, root, app = client_and_root
     init_dataset(root / "ds", fps=30, joint_names=["j0"], camera_names=[])
-    coord = client._transport.app.state.push_coordinator
+    coord = app.state.push_coordinator
     coord.get_save_lock("ds")   # state を作る
     coord.progress["ds"] = PushProgress(status="done")
     async with client as ac:
@@ -2652,12 +2686,12 @@ def client_and_root(tmp_path):
     app.state.datasets_root = tmp_path
     app.state.push_coordinator = PushCoordinator()
     transport = ASGITransport(app=app)
-    return AsyncClient(transport=transport, base_url="http://test"), tmp_path
+    return AsyncClient(transport=transport, base_url="http://test"), tmp_path, app
 
 
 @pytest.mark.asyncio
 async def test_post_tasks_acquires_lock(client_and_root, monkeypatch):
-    client, root = client_and_root
+    client, root, app = client_and_root
     init_dataset(root / "ds", fps=30, joint_names=["j0"], camera_names=[])
 
     captured = {}
@@ -2681,7 +2715,7 @@ async def test_post_tasks_acquires_lock(client_and_root, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_delete_episode_acquires_lock(client_and_root, monkeypatch):
-    client, root = client_and_root
+    client, root, app = client_and_root
     init_dataset(root / "ds", fps=30, joint_names=["j0"], camera_names=[])
     # tombstone 用の episode を 1 件 仕込む
     from mimicrec.recording.metadata import append_episode
@@ -2809,7 +2843,7 @@ async def test_auto_push_skips_when_disabled(tmp_path: Path):
 
     triggered = []
 
-    def fake_trigger(ds_root, ds_name, app_loop):
+    def fake_trigger(ds_root, ds_name, app_loop, **kwargs):
         triggered.append(ds_name)
 
     loop = asyncio.get_running_loop()
@@ -2835,7 +2869,7 @@ async def test_auto_push_fires_when_enabled(tmp_path: Path):
 
     triggered = []
 
-    def fake_trigger(ds_root, ds_name, app_loop):
+    def fake_trigger(ds_root, ds_name, app_loop, **kwargs):
         triggered.append(ds_name)
 
     loop = asyncio.get_running_loop()
@@ -2868,7 +2902,7 @@ bash scripts/test.sh tests/integration/test_auto_push_flow.py -v
 ```python
 class PendingEpisode:
     def __init__(self, paths, episode_index, *,
-                 coordinator=None, ds_name=None, app_loop=None):
+                 coordinator=None, ds_name=None, app_loop=None, app=None):
         self._paths = paths
         self._episode_index = episode_index
         self._stage = paths.pending_dir / f"ep_{episode_index:06d}"
@@ -2877,14 +2911,15 @@ class PendingEpisode:
         self._coordinator = coordinator
         self._ds_name = ds_name
         self._app_loop = app_loop
+        self._app = app
 
     @classmethod
     def open(cls, ds_root, episode_index, *,
-             coordinator=None, ds_name=None, app_loop=None):
+             coordinator=None, ds_name=None, app_loop=None, app=None):
         p = dataset_paths(ds_root)
         p.pending_dir.mkdir(parents=True, exist_ok=True)
         inst = cls(p, episode_index,
-                   coordinator=coordinator, ds_name=ds_name, app_loop=app_loop)
+                   coordinator=coordinator, ds_name=ds_name, app_loop=app_loop, app=app)
         if inst._stage.exists():
             shutil.rmtree(inst._stage)
         inst._stage.mkdir(parents=True)
@@ -2926,17 +2961,18 @@ class PendingEpisode:
         if coord is not None and ds_name is not None and self._app_loop is not None:
             ds_root = self._paths.root
             trigger = _auto_push_trigger or _maybe_trigger_auto_push
-            trigger(ds_root, ds_name, self._app_loop)
+            trigger(ds_root, ds_name, self._app_loop, app=self._app)
 
 
-def _maybe_trigger_auto_push(ds_root, ds_name, app_loop):
-    """save() 完了後に呼ばれる。hub.json 読み込み→ auto_push==true なら enqueue。"""
+def _maybe_trigger_auto_push(ds_root, ds_name, app_loop, *, app=None):
+    """save() 完了後に呼ばれる。hub.json 読み込み→ auto_push==true なら enqueue。
+    Task 17 ではフラグ確認だけ。実 enqueue 配線は Task 18 で行う（早期 return）。"""
     from mimicrec.cloud.hub_meta import read_hub_meta
     meta = read_hub_meta(ds_root)
     if meta is None or not meta.auto_push:
         return
-    # event loop 上で push を起動（実装は次タスクで）
-    # ここでは存在の確認まで（実 enqueue は Task 18 で）
+    if app is None:
+        return
     return  # placeholder; full enqueue wired in Task 18
 ```
 
@@ -3018,13 +3054,12 @@ async def test_auto_push_calls_run_push_with_release(tmp_path, monkeypatch):
         state = type("S", (), {"push_coordinator": coord, "datasets_root": tmp_path})()
 
     loop = asyncio.get_running_loop()
+    fake_app = FakeApp()
     # PendingEpisode 経由で auto-push を発火
     ep = PendingEpisode.open(
         tmp_path / "ds", episode_index=0,
-        coordinator=coord, ds_name="ds", app_loop=loop,
+        coordinator=coord, ds_name="ds", app_loop=loop, app=fake_app,
     )
-    # app への参照を pending に渡す（実装次第。lifecycle 経由で渡しても可）
-    ep._app = FakeApp()   # 暫定: 実装に合わせる
     ep.append_row({"action": [0.1], "observation.state": [0.0],
                    "timestamp": 0.0, "frame_index": 0,
                    "episode_index": 0, "index": 0, "task_index": 0})
@@ -3079,15 +3114,7 @@ def _iso_now():
     return datetime.now(timezone.utc).isoformat()
 ```
 
-`PendingEpisode` に `_app` 属性を追加（SessionManager から渡す）:
-
-```python
-class PendingEpisode:
-    def __init__(self, paths, episode_index, *,
-                 coordinator=None, ds_name=None, app_loop=None, app=None):
-        ...
-        self._app = app
-```
+`PendingEpisode` の `_app` 属性は **既に Task 17 で追加済み**（kwargs を最初から `app=None` まで揃えた）。Task 18 では `_maybe_trigger_auto_push` の本体を完成させるだけ。
 
 `save()` の最後の auto-push 呼び出し:
 ```python
@@ -3138,10 +3165,15 @@ git commit -m "feat(recording): wire auto-push enqueue via call_soon_threadsafe"
 
 ---
 
-## Task 19: 起動時の orphan snapshot cleanup
+## Task 19: 起動時の orphan snapshot cleanup + 中断 push の永続化
 
 **Files:**
 - Modify: `backend/mimicrec/api/app.py`
+- Modify: `backend/mimicrec/cloud/snapshot.py`（`recover_interrupted_push`）
+
+spec DoD「push 中に SIGKILL → 再起動 → 最後の `last_push_error` が UI に復元される」を満たすため、起動時に orphan snapshot を消すと同時に、対応する dataset の `meta/hub.json` に `last_push_error="interrupted"` を書き込む。
+
+`httpx.ASGITransport` は lifespan を自動で動かさないので、テストは **`asgi-lifespan` ライブラリ**を使うか、cleanup 関数を **直接呼べる形** で公開してそれをテストする。**後者の方が依存追加なし**で済むのでこちらを採用。
 
 - [ ] **Step 1: failing test**
 
@@ -3149,31 +3181,51 @@ git commit -m "feat(recording): wire auto-push enqueue via call_soon_threadsafe"
 
 ```python
 from __future__ import annotations
+import json
 from pathlib import Path
 import pytest
-from httpx import AsyncClient, ASGITransport
 
-from mimicrec.api.app import create_app
+from mimicrec.cloud.snapshot import (
+    cleanup_orphan_snapshots, recover_interrupted_push,
+)
+from mimicrec.cloud.hub_meta import HubMeta, read_hub_meta, write_hub_meta
+from mimicrec.recording.dataset_layout import init_dataset
 
 
-@pytest.mark.asyncio
-async def test_orphan_snapshots_removed_on_startup(tmp_path: Path):
+def test_orphan_snapshots_removed(tmp_path: Path):
     orphan = tmp_path / ".push-snapshot-stale-deadbeef"
     orphan.mkdir()
     (orphan / "junk").write_text("x")
     legit = tmp_path / "legit_dataset"
     legit.mkdir()
 
-    app = create_app()
-    app.state.datasets_root = tmp_path
-
-    # startup イベントを実行
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        await ac.get("/api/cloud/auth-status")  # 起動を発火
-
+    n = cleanup_orphan_snapshots(tmp_path)
+    assert n == 1
     assert not orphan.exists()
     assert legit.exists()
+
+
+def test_recover_interrupted_marks_hub_error(tmp_path: Path):
+    init_dataset(tmp_path / "ds", fps=30, joint_names=["j0"], camera_names=[])
+    write_hub_meta(tmp_path / "ds", HubMeta(repo_id="u/d"))
+    # snapshot 残骸 = 中断扱い
+    snap = tmp_path / ".push-snapshot-ds-deadbeef"
+    snap.mkdir()
+
+    interrupted = recover_interrupted_push(tmp_path)
+    assert interrupted == ["ds"]
+
+    meta = read_hub_meta(tmp_path / "ds")
+    assert meta.last_push_error == "interrupted (process restarted during push)"
+
+
+def test_recover_skips_when_no_orphan(tmp_path: Path):
+    init_dataset(tmp_path / "ds", fps=30, joint_names=["j0"], camera_names=[])
+    write_hub_meta(tmp_path / "ds", HubMeta(repo_id="u/d"))
+    interrupted = recover_interrupted_push(tmp_path)
+    assert interrupted == []
+    meta = read_hub_meta(tmp_path / "ds")
+    assert meta.last_push_error is None
 ```
 
 - [ ] **Step 2: fail 確認**
@@ -3182,19 +3234,61 @@ async def test_orphan_snapshots_removed_on_startup(tmp_path: Path):
 bash scripts/test.sh tests/api/test_startup_cleanup.py -v
 ```
 
-- [ ] **Step 3: app.py に startup hook**
+- [ ] **Step 3: snapshot.py に `recover_interrupted_push` を追加**
+
+`backend/mimicrec/cloud/snapshot.py` 末尾:
+
+```python
+def recover_interrupted_push(datasets_root: Path) -> list[str]:
+    """Called at startup BEFORE cleanup_orphan_snapshots.
+
+    For each `.push-snapshot-<ds>-<hex>` dir found, mark the corresponding
+    dataset's hub.json with last_push_error="interrupted ..." so the UI shows
+    the prior failure after a SIGKILL/restart.
+
+    Returns list of dataset names that were marked interrupted.
+    """
+    from mimicrec.cloud.hub_meta import read_hub_meta, write_hub_meta
+    if not datasets_root.exists():
+        return []
+    interrupted: list[str] = []
+    for p in datasets_root.iterdir():
+        if not p.is_dir() or not p.name.startswith(".push-snapshot-"):
+            continue
+        # name: .push-snapshot-<ds>-<hex>
+        rest = p.name[len(".push-snapshot-"):]
+        ds_name = rest.rsplit("-", 1)[0]   # last "-<hex>" を剥がす
+        ds_root = datasets_root / ds_name
+        if not ds_root.exists():
+            continue
+        meta = read_hub_meta(ds_root)
+        if meta is None:
+            continue
+        meta.last_push_error = "interrupted (process restarted during push)"
+        write_hub_meta(ds_root, meta)
+        interrupted.append(ds_name)
+    return interrupted
+```
+
+- [ ] **Step 4: app.py に lifespan を組む**
 
 `backend/mimicrec/api/app.py`:
 
 ```python
 from contextlib import asynccontextmanager
-from mimicrec.cloud.snapshot import cleanup_orphan_snapshots
+from pathlib import Path
+
+from mimicrec.cloud.snapshot import (
+    cleanup_orphan_snapshots, recover_interrupted_push,
+)
+from mimicrec.api.deps import get_datasets_root
 
 
 @asynccontextmanager
 async def _lifespan(app):
-    root = getattr(app.state, "datasets_root", None)
-    if root is not None:
+    root = get_datasets_root(app)   # env fallback も拾う
+    if root.exists():
+        recover_interrupted_push(Path(root))
         cleanup_orphan_snapshots(Path(root))
     yield
 
@@ -3204,19 +3298,19 @@ def create_app():
     ...
 ```
 
-既に lifespan があれば追加し、無ければ新規。
+`get_datasets_root` は `app.state.datasets_root` または `MIMICREC_DATASETS_ROOT` env を返す既存関数。
 
-- [ ] **Step 4: pass 確認**
+- [ ] **Step 5: pass 確認**
 
 ```bash
 bash scripts/test.sh tests/api/test_startup_cleanup.py -v
 ```
 
-- [ ] **Step 5: コミット**
+- [ ] **Step 6: コミット**
 
 ```bash
-git add backend/mimicrec/api/app.py tests/api/test_startup_cleanup.py
-git commit -m "feat(api): cleanup orphan .push-snapshot-* dirs on startup"
+git add backend/mimicrec/api/app.py backend/mimicrec/cloud/snapshot.py tests/api/test_startup_cleanup.py
+git commit -m "feat(api): cleanup orphan snapshots + mark interrupted pushes on startup"
 ```
 
 ---
@@ -3307,9 +3401,11 @@ git commit -m "feat(frontend): cloud API client (auth-status + hub config + push
 **Files:**
 - Modify: `frontend/src/pages/DatasetsPage.tsx`
 
-- [ ] **Step 1: Hub セクションを既存 dataset 行の中に追加**
+DatasetsPage は `<table>` レイアウト（4 列: Name / Episodes / Frames / Actions）。`HubSection` は **dataset 行の直下に `colSpan={4}` の expansion 行**として展開する。展開状態は `expanded: Record<string, boolean>` で管理し、Actions 列に "Hub" ボタンを追加してトグル。
 
-`frontend/src/pages/DatasetsPage.tsx` の「dataset 一覧の各行」内に `<HubSection ds={dsName} />` を組み込み、コンポーネント定義をファイル末尾に追加:
+- [ ] **Step 1: Actions 列に Hub ボタン追加 + expansion 行**
+
+`frontend/src/pages/DatasetsPage.tsx` の dataset 行レンダリング箇所を変更し、コンポーネント定義をファイル末尾に追加:
 
 ```tsx
 import { useEffect, useState } from "react";
@@ -3454,7 +3550,38 @@ function HubSection({ ds }: { ds: string }) {
 }
 ```
 
-`DatasetsPage.tsx` の dataset 一覧描画箇所で各 dataset 行の中に `<HubSection ds={ds.name} />` を差し込む（既存の `{ds.name}` などを表示している `<div>` の末尾に追加）。
+`DatasetsPage.tsx` の `tbody` 内のループを以下の構造に変更:
+
+```tsx
+const [expandedHub, setExpandedHub] = useState<Record<string, boolean>>({});
+
+// ループ内（既存の <tr> をフラグメントで包む）:
+{datasets.map((ds) => (
+  <React.Fragment key={ds.name}>
+    <tr className="border-b border-hairline-soft">
+      <td className="py-md">{/* Name link */}</td>
+      <td className="py-md text-slate">{ds.num_episodes}</td>
+      <td className="py-md text-slate">{ds.total_frames}</td>
+      <td className="py-md flex gap-md">
+        <Button variant="link" onClick={() => setExpandedHub(s => ({ ...s, [ds.name]: !s[ds.name] }))}>
+          {expandedHub[ds.name] ? "▾ Hub" : "▸ Hub"}
+        </Button>
+        <Button variant="link" onClick={() => setExportingDataset(ds.name)}>Export</Button>
+        {/* 既存の Annotate / Delete */}
+      </td>
+    </tr>
+    {expandedHub[ds.name] && (
+      <tr className="border-b border-hairline-soft bg-canvas">
+        <td colSpan={4} className="py-md px-lg">
+          <HubSection ds={ds.name} />
+        </td>
+      </tr>
+    )}
+  </React.Fragment>
+))}
+```
+
+`React.Fragment` 用に冒頭で `import React, { useState, useEffect, ... }` を確認（既に default import がある場合は `React` が不要だが TS 環境次第）。
 
 - [ ] **Step 2: 型チェック + ビルドが通ることを確認**
 
@@ -3542,7 +3669,7 @@ def test_snapshot_inode_frozen_after_atomic_replace(tmp_path: Path):
 
 
 def test_dirty_when_save_runs_during_push(tmp_path: Path):
-    ds = _seed(tmp_path, n_eps := 1)
+    ds = _seed(tmp_path)
     start_hash = compute_manifest_hash(ds)
     snap = make_push_snapshot(ds)
     try:
@@ -3718,6 +3845,45 @@ def test_concurrent_reader_never_sees_partial(tmp_path: Path):
     tw.start(); tr.start()
     tw.join(timeout=10); stop.set(); tr.join(timeout=2)
     assert not errors, errors
+
+
+def test_concurrent_reader_no_partial_info_json(tmp_path: Path):
+    """info.json の partial-read も発生しないこと（multi-file consistency
+    全体は snapshot で担保するが、個々のファイル単位の atomic 化はここで担保）"""
+    import json
+    init_dataset(tmp_path / "ds", fps=30, joint_names=["j0"], camera_names=[])
+    ds = tmp_path / "ds"
+    info_path = ds / "meta" / "info.json"
+    stop = threading.Event()
+    errors: list[str] = []
+
+    def writer():
+        for i in range(50):
+            if stop.is_set():
+                return
+            try:
+                append_episode(ds / "meta", {"episode_index": i, "task": "t",
+                                             "num_frames": 1, "duration_sec": 0.1, "cameras": []})
+            except Exception as e:
+                errors.append(f"writer: {e}")
+                return
+
+    def reader():
+        for _ in range(200):
+            if stop.is_set():
+                return
+            try:
+                if info_path.exists():
+                    json.loads(info_path.read_text())
+            except Exception as e:
+                errors.append(f"reader: {e}")
+                return
+
+    tw = threading.Thread(target=writer)
+    tr = threading.Thread(target=reader)
+    tw.start(); tr.start()
+    tw.join(timeout=10); stop.set(); tr.join(timeout=2)
+    assert not errors, errors
 ```
 
 - [ ] **Step 2: pass**
@@ -3795,6 +3961,15 @@ def test_live_round_trip(tmp_path: Path):
         # HF 側に居ることを確認
         info = api.repo_info(repo_id, repo_type="dataset")
         assert info is not None
+
+        # spec DoD: LeRobotDataset.from_pretrained で読めるか
+        # （lerobot がインストールされている環境のみ）
+        try:
+            from lerobot.datasets.lerobot_dataset import LeRobotDataset
+            ds_loaded = LeRobotDataset(repo_id=repo_id)
+            assert ds_loaded is not None
+        except ImportError:
+            pytest.skip("lerobot not installed; skipping LeRobotDataset round-trip check")
     finally:
         cleanup_snapshot(snap)
         try:
