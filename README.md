@@ -9,11 +9,11 @@ Local-first web application for collecting imitation-learning datasets from phys
 - **Teleoperate** a follower arm with a leader arm, keyboard, or simulator and record trajectories
 - **Hand-teach** by moving the robot under pure-compliance gravity compensation (reBotArm), with gripper friction compensation so the gripper feels light too
 - **Review** recorded episodes: save, discard, or label (success/failure)
-- **Replay** episodes on the robot — both arm and gripper follow the recorded trajectory, with a safety watchdog
+- **Replay** episodes on the robot — both arm and gripper follow the recorded trajectory with smooth setpoint interpolation between frames, under a safety watchdog
 - **Run a VLA model** (Vision-Language-Action) against the live robot via an HTTP contract — see `configs/inference/`
 - **Annotate** episodes with subtask segments via the in-app stub annotator
-- **Configure** devices, calibrations, and adapter configs from a Settings page
-- **Download** datasets as LeRobot v3 compatible zip archives
+- **Configure** devices, calibrations, and adapter configs from a Settings page — including a capability-driven picker for camera pixel format / resolution / FPS
+- **Export** datasets as LeRobot v3 archives or VLA-compat archives (downloadable zip or saved to a local destination)
 
 ## Supported hardware
 
@@ -318,7 +318,7 @@ the default save-as-success, then automatically starts the next episode.
 | **Episodes** | `/datasets/:ds/episodes` | Episode table, delete, annotate |
 | **Replay** | `/datasets/:ds/episodes/:idx/replay` | Video playback, replay on robot |
 | **Inference** | `/inference` | Run a VLA model against the live robot (start/stop, instruction, status) |
-| **Settings** | `/settings` | Device discovery, adapter configs, calibration status |
+| **Settings** | `/settings` | Device discovery, adapter configs, calibration status. Each subsection has its own Refresh button. Editing an OpenCVCamera config opens a structured form with cascading dropdowns sourced from `v4l2-ctl --list-formats-ext`; Save is validated by opening the camera and reading back the negotiated parameters before writing the YAML. |
 
 ## REST API
 
@@ -353,7 +353,7 @@ the default save-as-success, then automatically starts the next episode.
 | `GET` | `/api/datasets/:ds/episodes/:idx/frames` | Sampled frames for annotation |
 | `GET` | `/api/datasets/:ds/tasks` | List task names |
 | `POST` | `/api/datasets/:ds/tasks` | Add a task |
-| `GET` | `/api/datasets/:ds/archive` | Download as zip |
+| `GET` | `/api/datasets/:ds/archive` | Download as zip — `?format=lerobot` (default) or `format=vla_compat` (with `output_destination=download` or `local`) |
 | `POST` | `/api/datasets/:ds/episodes/:idx/annotate` | Run subtask annotation on one episode |
 | `POST` | `/api/datasets/:ds/annotate-all` | Annotate every episode in the dataset |
 | `GET` | `/api/datasets/:ds/annotate-progress` | Poll annotation progress |
@@ -377,12 +377,16 @@ Contracts live in `configs/inference/*.yaml`; see `configs/inference/README.md` 
 |--------|----------|-------------|
 | `GET` | `/api/settings/devices/serial` | Detected serial ports |
 | `GET` | `/api/settings/devices/cameras` | Detected cameras |
+| `GET` | `/api/settings/devices/cameras/:device_id/capabilities` | V4L2 formats × discrete resolutions × discrete FPS for `/dev/video<device_id>` (via `v4l2-ctl`) |
 | `GET` | `/api/settings/configs/:group` | List configs in a group |
 | `GET` | `/api/settings/configs/:group/:name` | Read a config |
-| `POST` | `/api/settings/configs/:group/:name` | Write a config |
+| `PUT` | `/api/settings/configs/:group/:name` | Update a config. For OpenCVCamera configs, validated by opening the camera and reading back negotiated params: 409 on mismatch (YAML untouched), 200 + `X-Validation-Skipped: device-busy` if the camera is in use (re-checked at session start). |
+| `POST` | `/api/settings/configs/:group/:name` | Create a new config |
 | `DELETE` | `/api/settings/configs/:group/:name` | Delete a config |
 | `GET` | `/api/settings/calibration` | List calibration files |
 | `GET` | `/api/settings/calibration/:category/:type/:id` | Read a calibration |
+
+All `/api/settings/*` GETs return `Cache-Control: no-store` so the browser doesn't serve stale device / config data after USB hot-plug or external YAML edits.
 
 ## WebSocket channels
 
@@ -420,6 +424,24 @@ datasets/my_dataset/
 2. Create a config YAML in `configs/robot/your_robot.yaml` with `_target_: your.module.YourAdapter`
 3. (Optional) Create a teleoperator implementing `Teleoperator` protocol
 4. The adapter appears in the UI's robot dropdown automatically
+
+### Camera config
+
+`configs/cameras/*.yaml` — only `_target_: mimicrec.cameras.opencv_camera.OpenCVCamera` is V4L2-driven; `MockCamera` and `SimCamera` use their own kwargs.
+
+```yaml
+_target_: mimicrec.cameras.opencv_camera.OpenCVCamera
+name: wrist
+device_id: 0
+width: 1280
+height: 720
+pixel_format: MJPG    # optional — V4L2 fourcc (e.g. MJPG, YUYV, H264)
+capture_fps: 30       # optional — V4L2 capture rate (independent of session fps)
+```
+
+`pixel_format` and `capture_fps` are optional; YAMLs without them keep the previous behavior (cv2 picks a default fourcc/fps). When set, `OpenCVCamera._open()` reads back the negotiated parameters and raises `RuntimeError` if the V4L2 driver clamped to a different format/size/fps — `CameraManager.start()` propagates that as a session-start failure rather than silently continuing without the camera. Pick combinations from the camera's actual capabilities via the `/settings` Edit modal.
+
+The session's recording rate is `fps:` in the session config, not `capture_fps:`. `init_dataset()` writes the per-camera (width, height) into `info.json` so downstream tools see the real resolution rather than the historical 480×640 default.
 
 ### Simulator bridge
 
