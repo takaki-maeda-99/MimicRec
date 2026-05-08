@@ -7,6 +7,7 @@ import json
 from dataclasses import asdict
 from pathlib import Path
 
+import cv2
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
 from omegaconf import OmegaConf
@@ -112,14 +113,89 @@ async def get_config(request: Request, group: str, name: str, response: Response
 
 
 @router.put("/settings/configs/{group}/{name}")
-async def update_config(request: Request, group: str, name: str, body: ConfigUpdate):
-    """Update a config file."""
+async def update_config(
+    request: Request, group: str, name: str, body: ConfigUpdate, response: Response
+):
+    """Update a config file. For OpenCVCamera configs, validate by opening
+    the camera and reading back the negotiated parameters before writing.
+    Returns 409 on mismatch. If the camera is busy (in use by another
+    session), validation is skipped and an X-Validation-Skipped header is
+    set so the UI can warn the user that final validation will happen at
+    session_start.
+    """
+    response.headers["Cache-Control"] = "no-store"
     root = get_configs_root(request.app)
     path = root / group / f"{name}.yaml"
+
+    if (
+        group == "cameras"
+        and isinstance(body.content, dict)
+        and body.content.get("_target_") == "mimicrec.cameras.opencv_camera.OpenCVCamera"
+    ):
+        await _validate_camera_config_or_409(body.content, response)
+
     path.parent.mkdir(parents=True, exist_ok=True)
     cfg = OmegaConf.create(body.content)
     OmegaConf.save(cfg, path)
     return {"name": name, "group": group, "content": body.content}
+
+
+async def _validate_camera_config_or_409(content: dict, response: Response) -> None:
+    """Open the camera with the requested parameters, read back, and either
+    raise HTTPException(409) on mismatch or set X-Validation-Skipped on busy.
+    Returns None when validation passes (the route falls through to write the YAML).
+    """
+    device_id = int(content.get("device_id", 0))
+    width = int(content.get("width", 640))
+    height = int(content.get("height", 480))
+    pixel_format = content.get("pixel_format")
+    capture_fps = content.get("capture_fps")
+
+    def _probe():
+        cap = cv2.VideoCapture(f"/dev/video{device_id}", cv2.CAP_V4L2)
+        if not cap.isOpened():
+            cap.release()
+            return ("busy", None)
+        try:
+            if pixel_format is not None:
+                cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*pixel_format))
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+            if capture_fps is not None:
+                cap.set(cv2.CAP_PROP_FPS, capture_fps)
+
+            actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            fourcc_int = int(cap.get(cv2.CAP_PROP_FOURCC))
+            actual_fourcc = bytes([
+                fourcc_int & 0xFF,
+                (fourcc_int >> 8) & 0xFF,
+                (fourcc_int >> 16) & 0xFF,
+                (fourcc_int >> 24) & 0xFF,
+            ]).decode("ascii", errors="replace")
+            actual_fps = int(round(cap.get(cv2.CAP_PROP_FPS)))
+        finally:
+            cap.release()
+
+        mismatches: list[str] = []
+        if actual_w != width or actual_h != height:
+            mismatches.append(f"size: requested {width}x{height}, got {actual_w}x{actual_h}")
+        if pixel_format is not None and actual_fourcc != pixel_format:
+            mismatches.append(f"fourcc: requested {pixel_format}, got {actual_fourcc!r}")
+        if capture_fps is not None and actual_fps != capture_fps:
+            mismatches.append(f"fps: requested {capture_fps}, got {actual_fps}")
+        return ("ok", mismatches)
+
+    loop = asyncio.get_running_loop()
+    status, mismatches = await loop.run_in_executor(None, _probe)
+    if status == "busy":
+        response.headers["X-Validation-Skipped"] = "device-busy"
+        return
+    if mismatches:
+        raise HTTPException(
+            status_code=409,
+            detail="validation failed: " + "; ".join(mismatches),
+        )
 
 
 @router.post("/settings/configs/{group}/{name}")
