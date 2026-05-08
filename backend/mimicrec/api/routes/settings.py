@@ -1,15 +1,18 @@
 """Settings API: device discovery, config editing, calibration status."""
 from __future__ import annotations
 
+import asyncio
 import glob
 import json
+from dataclasses import asdict
 from pathlib import Path
 
-from fastapi import APIRouter, Request, Response
+from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
 from omegaconf import OmegaConf
 
 from mimicrec.api.deps import get_configs_root
+from mimicrec.cameras.v4l2_caps import enumerate_capabilities
 
 router = APIRouter()
 
@@ -51,6 +54,24 @@ async def list_camera_devices(response: Response):
             cap.release()
         result.append({"path": dev, "device_id": dev_id, "available": opened, "width": w, "height": h})
     return result
+
+
+@router.get("/settings/devices/cameras/{device_id}/capabilities")
+async def list_camera_capabilities(device_id: int, response: Response):
+    """Enumerate V4L2 capabilities for /dev/video{device_id} via v4l2-ctl.
+
+    Returns 200 with [] if v4l2-ctl is unavailable or returns nothing useful
+    so the UI can render gracefully. Returns 404 only when /dev/video{N}
+    does not exist on disk.
+    """
+    response.headers["Cache-Control"] = "no-store"
+    path = f"/dev/video{device_id}"
+    if path not in glob.glob("/dev/video*"):
+        raise HTTPException(status_code=404, detail=f"device {path} not found")
+
+    loop = asyncio.get_running_loop()
+    caps = await loop.run_in_executor(None, enumerate_capabilities, path)
+    return [asdict(c) for c in caps]
 
 
 # --- Config CRUD ---
