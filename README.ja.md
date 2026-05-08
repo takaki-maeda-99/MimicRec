@@ -9,11 +9,11 @@
 - **テレオペレーション**: リーダーアーム / キーボード / シミュレータからフォロワーを操作して軌道を録画
 - **ハンドティーチ**: 純コンプライアンス重力補償でロボットを手で動かして教示（reBotArm）。グリッパも摩擦補償付きで軽く動かせます
 - **レビュー**: 録ったエピソードを保存／破棄／成功・失敗ラベル付け
-- **リプレイ**: アーム＋グリッパ両方が録画通りに動作、安全ウォッチドッグ付き
+- **リプレイ**: アーム＋グリッパ両方が録画通りに動作。フレーム間の setpoint 補間でなめらか、安全ウォッチドッグ付き
 - **VLA 推論実行**: HTTP 契約経由で Vision-Language-Action モデルを実機に走らせる (`configs/inference/`)
 - **サブタスクアノテーション**: アプリ内の stub アノテータ（実 VLM はまだ）
-- **設定 UI**: デバイス検出・キャリブレーション状態・アダプタ config 編集
-- **ダウンロード**: LeRobot v3 互換 zip でデータセット書き出し
+- **設定 UI**: デバイス検出・キャリブレーション状態・アダプタ config 編集（カメラは pixel format / 解像度 / FPS をケイパビリティから選択）
+- **書き出し**: LeRobot v3 zip もしくは VLA-compat 形式（ダウンロードまたはローカル保存）
 
 ## 対応ハードウェア
 
@@ -285,7 +285,7 @@ print(f"median {np.median(dt)*1000:.1f}ms  std {np.std(dt)*1000:.2f}ms  "
 | **Episodes** | `/datasets/:ds/episodes` | エピソード表・削除・アノテーション |
 | **Replay** | `/datasets/:ds/episodes/:idx/replay` | 動画再生・実機リプレイ |
 | **Inference** | `/inference` | VLA モデルを実機に走らせる (start/stop, 指示文, 状態表示) |
-| **Settings** | `/settings` | デバイス検出・アダプタ設定・キャリブ状態 |
+| **Settings** | `/settings` | デバイス検出・アダプタ設定・キャリブ状態。各セクションに Refresh ボタン。OpenCVCamera 設定の Edit は構造化フォームに切り替わり、`v4l2-ctl --list-formats-ext` 由来のドロップダウンで pixel_format → resolution → capture_fps をカスケード選択。Save 時にバックエンドがカメラを開いて読み戻し検証してから YAML を書き込み。 |
 
 ## REST API
 
@@ -320,7 +320,7 @@ print(f"median {np.median(dt)*1000:.1f}ms  std {np.std(dt)*1000:.2f}ms  "
 | `GET` | `/api/datasets/:ds/episodes/:idx/frames` | アノテーション用サンプリングフレーム |
 | `GET` | `/api/datasets/:ds/tasks` | タスク名一覧 |
 | `POST` | `/api/datasets/:ds/tasks` | タスク追加 |
-| `GET` | `/api/datasets/:ds/archive` | zip ダウンロード |
+| `GET` | `/api/datasets/:ds/archive` | zip ダウンロード — `?format=lerobot` (デフォルト) または `format=vla_compat` (`output_destination=download` または `local`) |
 | `POST` | `/api/datasets/:ds/episodes/:idx/annotate` | 1 エピソードアノテート |
 | `POST` | `/api/datasets/:ds/annotate-all` | データセット全件アノテート |
 | `GET` | `/api/datasets/:ds/annotate-progress` | アノテート進捗ポーリング |
@@ -344,12 +344,16 @@ print(f"median {np.median(dt)*1000:.1f}ms  std {np.std(dt)*1000:.2f}ms  "
 |--------|----------|------|
 | `GET` | `/api/settings/devices/serial` | 検出されたシリアルポート |
 | `GET` | `/api/settings/devices/cameras` | 検出されたカメラ |
+| `GET` | `/api/settings/devices/cameras/:device_id/capabilities` | `/dev/video<device_id>` の V4L2 能力 (format × 離散解像度 × 離散 FPS、`v4l2-ctl` 経由) |
 | `GET` | `/api/settings/configs/:group` | グループ内 config 一覧 |
 | `GET` | `/api/settings/configs/:group/:name` | config 読み取り |
-| `POST` | `/api/settings/configs/:group/:name` | config 書き込み |
+| `PUT` | `/api/settings/configs/:group/:name` | config 更新。OpenCVCamera 設定の場合はカメラを開いて読み戻し検証: 不一致なら 409 (YAML 未書き込み)、ビジー時は 200 + `X-Validation-Skipped: device-busy` (session_start で再検証)。 |
+| `POST` | `/api/settings/configs/:group/:name` | config 新規作成 |
 | `DELETE` | `/api/settings/configs/:group/:name` | config 削除 |
 | `GET` | `/api/settings/calibration` | キャリブファイル一覧 |
 | `GET` | `/api/settings/calibration/:category/:type/:id` | キャリブ読み取り |
+
+`/api/settings/*` の GET は全て `Cache-Control: no-store` を返すので、USB 抜き差しや YAML 直接編集の後でブラウザが古いデータを返すことはありません。
 
 ## WebSocket チャネル
 
@@ -387,6 +391,24 @@ datasets/my_dataset/
 2. `configs/robot/your_robot.yaml` に `_target_: your.module.YourAdapter` を書く
 3. (任意) `Teleoperator` プロトコル準拠のテレオペレータも実装
 4. UI のロボットドロップダウンに自動で出てきます
+
+### カメラ設定
+
+`configs/cameras/*.yaml` — V4L2 経由で動くのは `_target_: mimicrec.cameras.opencv_camera.OpenCVCamera` のみ (`MockCamera` / `SimCamera` はそれぞれ独自 kwargs)。
+
+```yaml
+_target_: mimicrec.cameras.opencv_camera.OpenCVCamera
+name: wrist
+device_id: 0
+width: 1280
+height: 720
+pixel_format: MJPG    # 任意 — V4L2 fourcc (MJPG, YUYV, H264 など)
+capture_fps: 30       # 任意 — V4L2 キャプチャレート (session の fps とは独立)
+```
+
+`pixel_format` / `capture_fps` は optional。指定しない YAML は従来通り（cv2 デフォルトの fourcc/fps）。指定したときは `OpenCVCamera._open()` が読み戻して、V4L2 ドライバが要求と違う format/size/fps にネゴシエートしていたら `RuntimeError` を投げ、`CameraManager.start()` が session_start ごと中止します（カメラだけ静かに脱落させない）。組み合わせは `/settings` の Edit モーダルから実機の能力に基づいて選択するのが確実です。
+
+録画レートは session config の `fps:` 側で、`capture_fps:` ではない点に注意。`init_dataset()` は各カメラの実 (width, height) を `info.json` に書き込むので、下流ツールが過去の 480×640 ハードコードに惑わされません。
 
 ### シミュレータブリッジ
 
