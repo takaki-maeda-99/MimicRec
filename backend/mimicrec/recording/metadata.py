@@ -5,6 +5,8 @@ import pyarrow.parquet as pq
 from pathlib import Path
 from typing import Iterator
 
+from mimicrec.recording.atomic_io import _atomic_write_parquet, _atomic_write_text
+
 
 def _episodes_dir(meta_dir: Path) -> Path:
     return meta_dir / "episodes"
@@ -88,7 +90,7 @@ def append_episode(meta_dir: Path, row: dict) -> None:
     else:
         table = pa.Table.from_pylist([ep_record])
 
-    pq.write_table(table, pq_path)
+    _atomic_write_parquet(table, pq_path)
     update_info_totals(meta_dir)
 
 
@@ -122,7 +124,7 @@ def tombstone_episode(meta_dir: Path, episode_index: int, deleted_at_unix: int) 
             found = True
     if not found:
         raise KeyError(f"episode {episode_index} not found")
-    pq.write_table(pa.Table.from_pylist(rows), pq_path)
+    _atomic_write_parquet(pa.Table.from_pylist(rows), pq_path)
     update_info_totals(meta_dir)
 
 
@@ -139,7 +141,7 @@ def upsert_task(meta_dir: Path, task_name: str, instruction: str) -> None:
     else:
         task_index = len(tasks)
         tasks.append({"task": task_name, "task_index": task_index, "instruction": instruction})
-    pq.write_table(pa.Table.from_pylist(tasks), pq_path)
+    _atomic_write_parquet(pa.Table.from_pylist(tasks), pq_path)
 
 
 def update_info_totals(meta_dir: Path) -> None:
@@ -157,4 +159,4 @@ def update_info_totals(meta_dir: Path) -> None:
     info["total_frames"] = total_frames
     info["total_tasks"] = total_tasks
     info["splits"] = {"train": f"0:{total_episodes}"}
-    info_path.write_text(json.dumps(info, indent=2))
+    _atomic_write_text(info_path, json.dumps(info, indent=2))
