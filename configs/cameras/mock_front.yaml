@@ -1,0 +1,4 @@
+_target_: mimicrec.cameras.mock_camera.MockCamera
+name: mock_front
+width: 224
+height: 224

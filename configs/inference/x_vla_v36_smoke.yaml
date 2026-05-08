@@ -1,0 +1,46 @@
+# configs/deploy/mimicrec_pairing_example.yaml
+#
+# This file is INFORMATIONAL — it shows the MimicRec-side contract YAML that
+# pairs with this server's v36_libero_spatial.yaml deploy. It does NOT live
+# in this server's process; copy it (or its key fields) into MimicRec's
+# configs/inference/<your-name>.yaml.
+#
+# Critical fields:
+#   - response.action.normalization.method = none  (server emits physical units)
+#   - response.chunk.expected_size = 8             (matches v36 action_chunk_len)
+#   - response.action.gripper.units = normalized_0_1
+#   - response.action.frame = ee_local             (server has wire_only_smoke=true)
+name: x_vla_v36_libero_spatial_smoke
+description: "X-VLA-Adapter v36 (LIBERO Spatial single-domain), HoldPosition smoke."
+endpoint:
+  url: "http://localhost:8001/predict"
+  method: POST
+  timeout_s: 5.0
+  retry: { max_attempts: 0 }
+request:
+  images:
+    front: { field: image_primary, encoding: jpeg_base64, resize: [224, 224], jpeg_quality: 90 }
+    wrist: { field: image_wrist,   encoding: jpeg_base64, resize: [224, 224], jpeg_quality: 90 }
+  state:
+    field: proprio
+    components: [joint_pos, gripper_pos]
+    normalization: { method: none }
+  instruction:
+    field: instruction
+  extra_fields:
+    model_version: x_vla_v36_libero_spatial
+response:
+  actions_path: actions
+  chunk:
+    expected_size: 8
+    on_size_mismatch: use_actual
+  action:
+    type: ee_delta
+    frame: ee_local
+    pose:
+      units: meter_axisangle_rad
+    gripper:
+      kind: absolute
+      units: normalized_0_1
+    components: [ee_delta, gripper]
+    normalization: { method: none }
