@@ -29,26 +29,26 @@ export class ErrorBoundary extends Component<Props, State> {
       }
       return (
         <div className="p-6 max-w-2xl mx-auto">
-          <div className="rounded-md border border-red-300 bg-red-50 p-4">
-            <h2 className="text-lg font-semibold text-red-800 mb-1">
+          <div className="rounded-md border border-brand-error/30 bg-brand-error/10 p-4">
+            <h2 className="text-lg font-semibold text-brand-error mb-1">
               Something went wrong
             </h2>
-            <p className="text-sm text-red-700 mb-2">
+            <p className="text-sm text-brand-error mb-2">
               {this.state.error.message || "Unknown render error"}
             </p>
-            <pre className="text-xs text-red-900 bg-red-100 p-2 rounded overflow-auto max-h-48">
+            <pre className="text-xs text-brand-error bg-brand-error/15 p-2 rounded overflow-auto max-h-48">
               {this.state.error.stack}
             </pre>
             <div className="mt-3 flex gap-2">
               <button
                 onClick={this.reset}
-                className="px-3 py-1.5 text-sm rounded-md bg-red-600 text-white hover:bg-red-700"
+                className="px-3 py-1.5 text-sm rounded-md bg-brand-error text-on-dark hover:bg-brand-error/90"
               >
                 Try again
               </button>
               <button
                 onClick={() => window.location.reload()}
-                className="px-3 py-1.5 text-sm rounded-md bg-gray-200 text-gray-800 hover:bg-gray-300"
+                className="px-3 py-1.5 text-sm rounded-md bg-surface text-ink hover:bg-hairline"
               >
                 Reload page
               </button>
