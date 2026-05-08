@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Button } from "./ui/button";
+import { Select } from "./ui/select";
 import { apiFetch } from "../api/client";
 
 interface Subtask {
@@ -70,35 +71,35 @@ export default function SubtaskAnnotator({ ds, idx, cameras }: Props) {
   return (
     <div>
       <div className="flex items-center gap-3 mb-3">
-        <h3 className="text-sm font-medium text-steel">Subtask Annotation</h3>
-        <select
-          className="text-xs border rounded px-2 py-1"
+        <h3 className="text-micro-uppercase uppercase tracking-[0.5px] text-steel mt-md mb-xs">Subtask Annotation</h3>
+        <Select
           value={camera}
           onChange={(e) => setCamera(e.target.value)}
+          className="h-8 w-auto px-sm text-body-sm"
         >
           {cameras.map((c) => (
             <option key={c} value={c}>{c}</option>
           ))}
-        </select>
-        <select
-          className="text-xs border rounded px-2 py-1"
+        </Select>
+        <Select
           value={model}
           onChange={(e) => setModel(e.target.value)}
+          className="h-8 w-auto px-sm text-body-sm"
         >
           <option value="google/gemma-4-E4B">Gemma 4 E4B</option>
           <option value="google/gemma-4-E2B-it">Gemma 4 E2B-it</option>
-        </select>
-        <button
-          className="text-xs text-brand-tag hover:underline"
+        </Select>
+        <Button
+          variant="link"
           onClick={() => setShowPrompt(!showPrompt)}
         >
           {showPrompt ? "Hide Prompt" : "Edit Prompt"}
-        </button>
+        </Button>
       </div>
 
       {showPrompt && (
         <textarea
-          className="w-full h-40 font-mono text-xs border rounded p-3 mb-3"
+          className="w-full h-40 rounded-md border border-hairline bg-canvas p-md font-mono text-code-sm text-charcoal focus:outline-none focus:border-2 focus:border-ink mb-3"
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
         />
@@ -113,41 +114,41 @@ export default function SubtaskAnnotator({ ds, idx, cameras }: Props) {
           {loading ? "Analyzing..." : "Annotate Subtasks"}
         </Button>
         {loading && (
-          <span className="text-xs text-stone">
+          <span className="text-caption text-stone">
             Loading model & running inference (may take 30-60s first time)...
           </span>
         )}
       </div>
 
       {error && (
-        <p className="text-brand-error text-sm mb-3">{error}</p>
+        <p className="text-brand-error text-body-sm mb-3">{error}</p>
       )}
 
       {result && (
         <div className="space-y-2">
-          <p className="text-sm text-slate">
-            Found <span className="font-medium">{result.num_subtasks}</span> subtasks:
+          <p className="text-body-sm text-slate">
+            Found <span className="text-body-sm-medium">{result.num_subtasks}</span> subtasks:
           </p>
           <div className="space-y-1">
             {result.subtasks.map((st, i) => (
               <div
                 key={i}
-                className="flex items-start gap-3 bg-surface-soft rounded px-3 py-2 text-sm"
+                className="flex items-start gap-3 bg-surface-soft rounded-md px-3 py-2 text-body-sm"
               >
-                <span className="bg-brand-tag/15 text-brand-tag px-2 py-0.5 rounded text-xs font-medium shrink-0">
+                <span className="bg-brand-tag/15 text-brand-tag px-2 py-0.5 rounded-md text-caption text-body-sm-medium shrink-0">
                   {i + 1}
                 </span>
                 <div className="flex-1">
-                  <div className="font-medium">{st.name}</div>
-                  <div className="text-steel text-xs">{st.description}</div>
+                  <div className="text-body-sm-medium">{st.name}</div>
+                  <div className="text-steel text-caption">{st.description}</div>
                 </div>
-                <span className="text-xs text-stone shrink-0">
+                <span className="text-caption text-stone shrink-0">
                   frame {st.start_frame}–{st.end_frame}
                 </span>
               </div>
             ))}
           </div>
-          <p className="text-xs text-stone mt-2">
+          <p className="text-caption text-stone mt-2">
             Saved to episode parquet as subtask_index + subtask_name columns.
           </p>
         </div>
