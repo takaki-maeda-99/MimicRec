@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { apiFetch } from "../api/client";
 import { Button } from "../components/ui/button";
+import { Card } from "../components/ui/card";
+import { Badge } from "../components/ui/badge";
 import { CameraConfigForm } from "../components/CameraConfigForm";
 
 interface SerialDevice {
@@ -104,45 +106,53 @@ export default function SettingsPage() {
   };
 
   return (
-    <div className="p-6 max-w-4xl">
-      <h2 className="text-2xl font-bold mb-6">Settings</h2>
+    <div>
+      <header className="flex items-center justify-between pb-sm mb-lg border-b border-hairline">
+        <h2 className="text-heading-3 text-ink">Settings</h2>
+      </header>
 
       {/* Devices */}
-      <section className="mb-8">
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="text-lg font-semibold">Devices</h3>
-          <Button variant="outline" size="sm" onClick={loadDevices} disabled={refreshingDevices}>
+      <section className="mb-xl">
+        <div className="flex items-center justify-between mb-md">
+          <h3 className="text-micro-uppercase uppercase tracking-[0.5px] text-steel">Devices</h3>
+          <Button variant="secondary" size="sm" onClick={loadDevices} disabled={refreshingDevices}>
             {refreshingDevices ? "Refreshing..." : "Refresh"}
           </Button>
         </div>
-        <div className="grid grid-cols-2 gap-4">
+        <Card className="grid grid-cols-2 gap-xl">
           <div>
-            <h4 className="text-sm font-medium text-gray-500 mb-2">Serial Ports</h4>
+            <h4 className="text-caption-bold text-steel mb-xs">Serial Ports</h4>
             {serialPorts.length === 0 ? (
-              <p className="text-sm text-gray-400">No serial ports found</p>
+              <p className="text-body-sm text-stone">No serial ports found</p>
             ) : (
-              <div className="space-y-1">
+              <div className="flex flex-col gap-1">
                 {serialPorts.map((p) => (
-                  <div key={p.port} className="flex items-center gap-2 text-sm">
-                    <span className={`w-2 h-2 rounded-full ${p.available ? "bg-green-500" : "bg-red-500"}`} />
-                    <span className="font-mono">{p.port}</span>
+                  <div key={p.port} className="flex items-center gap-xs text-body-sm">
+                    <span
+                      className={`w-2 h-2 rounded-full ${p.available ? "bg-brand-green" : "bg-brand-error"}`}
+                      aria-hidden
+                    />
+                    <span className="font-mono text-code-sm text-charcoal">{p.port}</span>
                   </div>
                 ))}
               </div>
             )}
           </div>
           <div>
-            <h4 className="text-sm font-medium text-gray-500 mb-2">Cameras</h4>
+            <h4 className="text-caption-bold text-steel mb-xs">Cameras</h4>
             {cameras.length === 0 ? (
-              <p className="text-sm text-gray-400">No cameras found</p>
+              <p className="text-body-sm text-stone">No cameras found</p>
             ) : (
-              <div className="space-y-1">
+              <div className="flex flex-col gap-1">
                 {cameras.map((c) => (
-                  <div key={c.path} className="flex items-center gap-2 text-sm">
-                    <span className={`w-2 h-2 rounded-full ${c.available ? "bg-green-500" : "bg-red-500"}`} />
-                    <span className="font-mono">{c.path}</span>
+                  <div key={c.path} className="flex items-center gap-xs text-body-sm">
+                    <span
+                      className={`w-2 h-2 rounded-full ${c.available ? "bg-brand-green" : "bg-brand-error"}`}
+                      aria-hidden
+                    />
+                    <span className="font-mono text-code-sm text-charcoal">{c.path}</span>
                     {c.available && (
-                      <span className="text-gray-400">
+                      <span className="text-caption text-stone">
                         {c.width}x{c.height}
                       </span>
                     )}
@@ -151,45 +161,43 @@ export default function SettingsPage() {
               </div>
             )}
           </div>
-        </div>
+        </Card>
       </section>
 
-      {/* Configs */}
-      <section className="mb-8">
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="text-lg font-semibold">Configurations</h3>
-          <Button variant="outline" size="sm" onClick={loadConfigs} disabled={refreshingConfigs}>
+      {/* Configurations */}
+      <section className="mb-xl">
+        <div className="flex items-center justify-between mb-md">
+          <h3 className="text-micro-uppercase uppercase tracking-[0.5px] text-steel">Configurations</h3>
+          <Button variant="secondary" size="sm" onClick={loadConfigs} disabled={refreshingConfigs}>
             {refreshingConfigs ? "Refreshing..." : "Refresh"}
           </Button>
         </div>
         {CONFIG_GROUPS.map((group) => (
-          <div key={group} className="mb-4">
-            <h4 className="text-sm font-medium text-gray-500 mb-2 capitalize">{group}</h4>
-            <div className="space-y-1">
+          <div key={group} className="mb-md">
+            <h4 className="text-caption-bold text-steel mb-xs capitalize">{group}</h4>
+            <div className="flex flex-col gap-1">
               {(configs[group] || []).map((cfg) => (
                 <div
                   key={cfg.name}
-                  className="flex items-center justify-between bg-gray-50 rounded px-3 py-2"
+                  className="flex items-center justify-between bg-surface rounded-md px-md py-xs"
                 >
-                  <div>
-                    <span className="font-medium text-sm">{cfg.name}</span>
-                    <span className="text-xs text-gray-400 ml-2">
-                      {(cfg.content as Record<string, unknown>)?._target_
-                        ? String((cfg.content as Record<string, unknown>)._target_).split(".").pop()
-                        : ""}
-                    </span>
+                  <div className="flex items-center gap-xs">
+                    <span className="text-body-sm-medium text-ink">{cfg.name}</span>
+                    {!!(cfg.content as Record<string, unknown>)?._target_ && (
+                      <Badge variant="type">
+                        {String((cfg.content as Record<string, unknown>)._target_).split(".").pop() ?? ""}
+                      </Badge>
+                    )}
                   </div>
-                  <div className="flex gap-2">
-                    <button
-                      className="text-xs text-blue-600 hover:text-blue-800"
-                      onClick={() => {
-                        setEditingConfig({ ...cfg, group });
-                        setEditJson(JSON.stringify(cfg.content, null, 2));
-                      }}
-                    >
-                      Edit
-                    </button>
-                  </div>
+                  <Button
+                    variant="link"
+                    onClick={() => {
+                      setEditingConfig({ ...cfg, group });
+                      setEditJson(JSON.stringify(cfg.content, null, 2));
+                    }}
+                  >
+                    Edit
+                  </Button>
                 </div>
               ))}
             </div>
@@ -199,8 +207,14 @@ export default function SettingsPage() {
 
       {/* Config editor modal */}
       {editingConfig && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg p-6 w-[600px] max-h-[80vh] overflow-auto">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-canvas-dark/40"
+          onClick={() => setEditingConfig(null)}
+        >
+          <div
+            className="bg-canvas rounded-lg border border-hairline p-xl w-[600px] max-h-[80vh] overflow-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
             {editingConfig.group === "cameras"
               && (editingConfig.content as Record<string, unknown>)._target_
                   === "mimicrec.cameras.opencv_camera.OpenCVCamera" ? (
@@ -221,18 +235,16 @@ export default function SettingsPage() {
               />
             ) : (
               <>
-                <h3 className="text-lg font-semibold mb-2">
+                <h3 className="text-heading-5 text-ink mb-xs">
                   Edit {editingConfig.group}/{editingConfig.name}
                 </h3>
                 <textarea
-                  className="w-full h-64 font-mono text-sm border rounded p-3 mb-4"
+                  className="w-full h-64 rounded-md border border-hairline bg-canvas p-md font-mono text-code-sm text-charcoal mb-md focus:outline-none focus:border-2 focus:border-ink"
                   value={editJson}
                   onChange={(e) => setEditJson(e.target.value)}
                 />
-                <div className="flex gap-3 justify-end">
-                  <Button variant="outline" onClick={() => setEditingConfig(null)}>
-                    Cancel
-                  </Button>
+                <div className="flex justify-end gap-xs">
+                  <Button variant="secondary" onClick={() => setEditingConfig(null)}>Cancel</Button>
                   <Button onClick={handleSaveConfig}>Save</Button>
                 </div>
               </>
@@ -243,23 +255,23 @@ export default function SettingsPage() {
 
       {/* Calibration */}
       <section>
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="text-lg font-semibold">Calibration</h3>
-          <Button variant="outline" size="sm" onClick={loadCalibrations} disabled={refreshingCalibrations}>
+        <div className="flex items-center justify-between mb-md">
+          <h3 className="text-micro-uppercase uppercase tracking-[0.5px] text-steel">Calibration</h3>
+          <Button variant="secondary" size="sm" onClick={loadCalibrations} disabled={refreshingCalibrations}>
             {refreshingCalibrations ? "Refreshing..." : "Refresh"}
           </Button>
         </div>
         {Object.entries(calibrations).map(([category, robots]) => (
-          <div key={category} className="mb-3">
-            <h4 className="text-sm font-medium text-gray-500 mb-1 capitalize">{category}</h4>
+          <div key={category} className="mb-sm">
+            <h4 className="text-caption-bold text-steel mb-xs capitalize">{category}</h4>
             {Object.entries(robots).length === 0 ? (
-              <p className="text-sm text-gray-400">No calibrations found</p>
+              <p className="text-body-sm text-stone">No calibrations found</p>
             ) : (
-              <div className="space-y-1">
+              <div className="flex flex-col gap-1">
                 {Object.entries(robots).map(([robotType, ids]) => (
-                  <div key={robotType} className="bg-gray-50 rounded px-3 py-2 text-sm">
-                    <span className="font-medium">{robotType}</span>
-                    <span className="text-gray-400 ml-2">
+                  <div key={robotType} className="bg-surface rounded-md px-md py-xs text-body-sm">
+                    <span className="text-body-sm-medium text-ink">{robotType}</span>
+                    <span className="ml-xs text-stone">
                       {ids.length > 0 ? ids.join(", ") : "no calibrations"}
                     </span>
                   </div>
@@ -268,9 +280,9 @@ export default function SettingsPage() {
             )}
           </div>
         ))}
-        <p className="text-xs text-gray-400 mt-2">
+        <p className="mt-xs text-caption text-stone">
           Run calibration:{" "}
-          <code className="bg-gray-100 px-1 rounded">
+          <code className="rounded-xs border border-hairline bg-surface px-1.5 py-0.5 font-mono text-code-inline text-charcoal">
             python scripts/calibrate_so101.py --port /dev/ttyACM0 --id my_arm --type follower
           </code>
         </p>

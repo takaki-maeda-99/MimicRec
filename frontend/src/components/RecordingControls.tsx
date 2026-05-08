@@ -125,17 +125,26 @@ export default function RecordingControls() {
   }, [handleSpace, saveWith, handleDiscard, cancelCycle]);
 
   const cycleBadge = cycleActive && (
-    <Badge className="bg-blue-100 text-blue-700">
+    <Badge variant="tag" className="gap-2">
       Auto cycle{cycleCountdown !== null ? ` · ${cycleCountdown}s` : ""}
-      <button className="ml-2 text-xs underline" onClick={cancelCycle}>cancel (Esc)</button>
+      <button className="ml-2 text-caption underline" onClick={cancelCycle}>
+        cancel (Esc)
+      </button>
     </Badge>
   );
 
   if (sessionState === "ready") {
     return (
-      <div className="space-y-3">
+      <div className="flex flex-col gap-sm">
         {cycleBadge}
-        <Button variant="destructive" size="lg" onClick={() => { if (autoCycle) setCycleActive(true); episodeStart.mutate(); }}>
+        <Button
+          size="lg"
+          className="!bg-brand-error !text-on-dark hover:!bg-brand-error/90"
+          onClick={() => {
+            if (autoCycle) setCycleActive(true);
+            episodeStart.mutate();
+          }}
+        >
           Start Recording (Space){autoCycle ? " · cycle ON" : ""}
         </Button>
       </div>
@@ -145,20 +154,20 @@ export default function RecordingControls() {
   if (sessionState === "recording") {
     const effectiveFps = fps ?? 30;
     return (
-      <div className="space-y-3">
-        <div className="flex items-center gap-4">
+      <div className="flex flex-col gap-sm">
+        <div className="flex items-center gap-md">
           <Badge variant="destructive" className="gap-2">
-            <span className="w-2 h-2 bg-red-500 rounded-full animate-pulse" />
+            <span className="w-2 h-2 bg-on-dark rounded-full animate-pulse" />
             Recording
           </Badge>
           {progress && (
-            <span className="text-sm text-gray-600">
+            <span className="text-body-sm text-slate">
               {progress.num_frames} frames &middot; {(progress.num_frames / effectiveFps).toFixed(1)}s
             </span>
           )}
           {cycleBadge}
         </div>
-        <Button size="lg" className="bg-gray-800 hover:bg-gray-900" onClick={() => episodeStop.mutate()}>
+        <Button size="lg" onClick={() => episodeStop.mutate()}>
           Stop Recording (Space)
         </Button>
       </div>
@@ -167,20 +176,47 @@ export default function RecordingControls() {
 
   if (sessionState === "review") {
     return (
-      <div className="space-y-4">
-        <div className="flex items-center gap-3">
-          <div className="text-lg font-medium text-gray-700">Review Episode</div>
+      <div className="flex flex-col gap-md">
+        <div className="flex items-center gap-sm">
+          <div className="text-heading-5 text-charcoal">Review Episode</div>
           {cycleBadge}
         </div>
-        <div className="flex gap-2">
-          <Button size="sm" onClick={() => setSuccessLabel(true)} className={successLabel === true ? "bg-green-600 text-white hover:bg-green-700" : ""} variant={successLabel === true ? "default" : "outline"}>1: Success</Button>
-          <Button size="sm" onClick={() => setSuccessLabel(false)} className={successLabel === false ? "bg-red-600 text-white hover:bg-red-700" : ""} variant={successLabel === false ? "destructive" : "outline"}>2: Failure</Button>
-          <Button size="sm" onClick={() => setSuccessLabel(null)} className={successLabel === null ? "bg-yellow-600 text-white hover:bg-yellow-700" : ""} variant={successLabel === null ? "default" : "outline"}>3: Skip</Button>
+        <div className="flex gap-xs">
+          <Button
+            size="sm"
+            variant={successLabel === true ? "primary" : "secondary"}
+            className={successLabel === true ? "!bg-brand-green !text-primary" : ""}
+            onClick={() => setSuccessLabel(true)}
+          >
+            1: Success
+          </Button>
+          <Button
+            size="sm"
+            variant={successLabel === false ? "primary" : "secondary"}
+            className={successLabel === false ? "!bg-brand-error !text-on-dark" : ""}
+            onClick={() => setSuccessLabel(false)}
+          >
+            2: Failure
+          </Button>
+          <Button
+            size="sm"
+            variant={successLabel === null ? "primary" : "secondary"}
+            className={successLabel === null ? "!bg-brand-warn !text-on-dark" : ""}
+            onClick={() => setSuccessLabel(null)}
+          >
+            3: Skip
+          </Button>
         </div>
-        <div className="flex gap-3">
-          <Button className="bg-green-600 hover:bg-green-700" onClick={() => saveWith(true)}>Save Success (Space)</Button>
-          <Button className="bg-amber-600 text-white hover:bg-amber-700" onClick={() => saveWith(false)}>Save Failure (F)</Button>
-          <Button variant="outline" className="bg-gray-600 text-white hover:bg-gray-700" onClick={handleDiscard}>Discard (D)</Button>
+        <div className="flex gap-sm">
+          <Button className="!bg-brand-green !text-primary hover:!bg-brand-green-deep" onClick={() => saveWith(true)}>
+            Save Success (Space)
+          </Button>
+          <Button className="!bg-brand-warn !text-on-dark" onClick={() => saveWith(false)}>
+            Save Failure (F)
+          </Button>
+          <Button variant="secondary" onClick={handleDiscard}>
+            Discard (D)
+          </Button>
         </div>
       </div>
     );

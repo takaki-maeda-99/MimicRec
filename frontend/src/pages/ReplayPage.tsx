@@ -6,6 +6,8 @@ import JointPlot from "../components/JointPlot";
 import EndEffectorPlot from "../components/EndEffectorPlot";
 import SubtaskAnnotator from "../components/SubtaskAnnotator";
 import SubtaskTimeline from "../components/SubtaskTimeline";
+import { Button } from "../components/ui/button";
+import { Card } from "../components/ui/card";
 
 export default function ReplayPage() {
   const { ds, idx } = useParams<{ ds: string; idx: string }>();
@@ -21,80 +23,84 @@ export default function ReplayPage() {
   if (!ds || !idx) return <div className="p-6">Invalid URL</div>;
 
   return (
-    <div className="p-6 max-w-5xl">
-      <div className="mb-6">
-        <Link to={`/datasets/${ds}/episodes`} className="text-sm text-gray-500 hover:text-gray-700">
-          &larr; Episodes — {ds}
-        </Link>
-        <h2 className="text-2xl font-bold mt-1">Episode {idx}</h2>
-      </div>
+    <div>
+      <header className="flex items-center justify-between pb-sm mb-lg border-b border-hairline">
+        <div>
+          <Link to={`/datasets/${ds}/episodes`} className="text-caption text-stone hover:text-ink">
+            &larr; Episodes — {ds}
+          </Link>
+          <h2 className="mt-1 text-heading-3 text-ink">Episode {idx}</h2>
+        </div>
+      </header>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-lg mb-md">
         {/* Metadata panel */}
-        <div className="bg-white rounded-lg border border-gray-200 p-4">
-          <h3 className="text-sm font-medium text-gray-500 mb-3">Metadata</h3>
+        <Card>
+          <h3 className="text-heading-5 text-ink mb-md">Metadata</h3>
           {episode ? (
-            <dl className="space-y-2 text-sm">
+            <dl className="space-y-2 text-body-sm">
               <div className="flex justify-between">
-                <dt className="text-gray-500">Task</dt>
-                <dd className="font-medium">{episode.task}</dd>
+                <dt className="text-steel">Task</dt>
+                <dd className="text-ink font-medium">{episode.task}</dd>
               </div>
               <div className="flex justify-between">
-                <dt className="text-gray-500">Duration</dt>
-                <dd className="font-medium">{episode.duration_sec.toFixed(1)}s</dd>
+                <dt className="text-steel">Duration</dt>
+                <dd className="text-ink font-medium">{episode.duration_sec.toFixed(1)}s</dd>
               </div>
               <div className="flex justify-between">
-                <dt className="text-gray-500">Frames</dt>
-                <dd className="font-medium">{episode.num_frames}</dd>
+                <dt className="text-steel">Frames</dt>
+                <dd className="text-ink font-medium">{episode.num_frames}</dd>
               </div>
               <div className="flex justify-between">
-                <dt className="text-gray-500">Success</dt>
-                <dd className="font-medium">
+                <dt className="text-steel">Success</dt>
+                <dd className="text-ink font-medium">
                   {episode.success === true ? "Yes" : episode.success === false ? "No" : "—"}
                 </dd>
               </div>
               <div className="flex justify-between">
-                <dt className="text-gray-500">Mode</dt>
-                <dd className="font-medium">{episode.mode}</dd>
+                <dt className="text-steel">Mode</dt>
+                <dd className="text-ink font-medium">{episode.mode}</dd>
               </div>
               <div className="flex justify-between">
-                <dt className="text-gray-500">Robot</dt>
-                <dd className="font-medium">{episode.robot}</dd>
+                <dt className="text-steel">Robot</dt>
+                <dd className="text-ink font-medium">{episode.robot}</dd>
               </div>
             </dl>
           ) : (
-            <p className="text-gray-400">Loading...</p>
+            <p className="text-stone">Loading...</p>
           )}
-        </div>
+        </Card>
 
         {/* Video + replay controls */}
-        <div className="lg:col-span-2 space-y-4">
-          {/* Video players — show cameras that were used in this episode */}
-          <div className="space-y-4">
-            {(episode?.cameras || ["front"]).map((cam: string) => (
-              <VideoPlayer key={cam} ds={ds} idx={episodeIdx} cam={cam} />
-            ))}
-          </div>
+        <div className="lg:col-span-2 space-y-xl">
+          {/* Video players */}
+          <Card>
+            <h3 className="text-heading-5 text-ink mb-md">Video</h3>
+            <div className="space-y-md">
+              {(episode?.cameras || ["front"]).map((cam: string) => (
+                <VideoPlayer key={cam} ds={ds} idx={episodeIdx} cam={cam} />
+              ))}
+            </div>
+          </Card>
 
           {/* Replay controls */}
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-md">
             {subState === "replaying" ? (
               <>
-                <button
-                  className="bg-red-600 text-white px-6 py-2 rounded-md font-medium hover:bg-red-700"
+                <Button
+                  className="!bg-brand-error !text-on-dark hover:!bg-brand-error/90"
                   onClick={() => replayStop.mutate()}
                 >
                   Stop Replay
-                </button>
+                </Button>
                 {replayProgress && (
-                  <span className="text-sm text-gray-600">
+                  <span className="text-body-sm text-slate">
                     Frame {replayProgress.frame_index} / {replayProgress.total_frames}
                   </span>
                 )}
               </>
             ) : (
-              <button
-                className="bg-blue-600 text-white px-6 py-2 rounded-md font-medium hover:bg-blue-700 disabled:opacity-50"
+              <Button
                 onClick={() => replayStart.mutate({ dataset: ds, episode_idx: episodeIdx })}
                 disabled={sessionState !== "ready" || replayStart.isPending}
               >
@@ -103,36 +109,38 @@ export default function ReplayPage() {
                   : replayStart.isPending
                   ? "Starting..."
                   : "Replay on Robot"}
-              </button>
+              </Button>
             )}
           </div>
           {replayStart.isError && (
-            <p className="text-red-600 text-sm">{(replayStart.error as Error).message}</p>
+            <p className="text-brand-error text-body-sm">{(replayStart.error as Error).message}</p>
           )}
         </div>
       </div>
 
-      {/* Subtask timeline (shows if annotations exist) */}
-      <div className="mt-8 bg-white rounded-lg border border-gray-200 p-4">
+      {/* Subtask timeline */}
+      <Card className="mb-md">
+        <h3 className="text-heading-5 text-ink mb-md">Subtask Timeline</h3>
         <SubtaskTimeline ds={ds} idx={episodeIdx} />
-      </div>
+      </Card>
 
       {/* Joint angle plot */}
-      <div className="mt-6 bg-white rounded-lg border border-gray-200 p-4">
-        <h3 className="text-sm font-medium text-gray-500 mb-3">Joint Data</h3>
+      <Card className="mb-md">
+        <h3 className="text-heading-5 text-ink mb-md">Joint trajectory</h3>
         <JointPlot ds={ds} idx={episodeIdx} />
-      </div>
+      </Card>
 
-      {/* End-effector plot (gripper today; extensible to other EE signals) */}
-      <div className="mt-6 bg-white rounded-lg border border-gray-200 p-4">
-        <h3 className="text-sm font-medium text-gray-500 mb-3">End-Effector</h3>
+      {/* End-effector plot */}
+      <Card className="mb-md">
+        <h3 className="text-heading-5 text-ink mb-md">End-Effector</h3>
         <EndEffectorPlot ds={ds} idx={episodeIdx} />
-      </div>
+      </Card>
 
       {/* Subtask annotation */}
-      <div className="mt-6 bg-white rounded-lg border border-gray-200 p-4">
+      <Card>
+        <h3 className="text-heading-5 text-ink mb-md">Subtask Annotation</h3>
         <SubtaskAnnotator ds={ds} idx={episodeIdx} cameras={episode?.cameras || ["front"]} />
-      </div>
+      </Card>
     </div>
   );
 }

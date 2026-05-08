@@ -57,6 +57,8 @@ class PendingEpisode:
             for name, stamped in frames.items():
                 if stamped is None:
                     continue
+                if getattr(stamped.value, "preview_only", False):
+                    continue
                 writer = self._video_writers.get(name)
                 if writer is not None:
                     writer.write_frame(stamped.value.image)

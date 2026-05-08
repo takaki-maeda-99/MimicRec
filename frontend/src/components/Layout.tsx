@@ -1,8 +1,9 @@
 import { useEffect } from "react";
-import { NavLink, Outlet } from "react-router-dom";
+import { Outlet } from "react-router-dom";
 import { useSessionStore } from "../state/session-store";
 import { useSessionState } from "../api/queries";
 import { Badge } from "./ui/badge";
+import { SidebarNavItem } from "./ui/sidebar-nav-item";
 import { ErrorBoundary } from "./ErrorBoundary";
 
 const navItems = [
@@ -15,26 +16,35 @@ const navItems = [
 function SessionBadge() {
   const state = useSessionStore((s) => s.state);
   const robot = useSessionStore((s) => s.robot);
-  const variantMap: Record<string, "outline" | "success" | "destructive" | "warning"> = {
+  const variantMap: Record<string, "outline" | "success" | "destructive" | "tag"> = {
     idle: "outline",
     ready: "success",
     recording: "destructive",
-    review: "warning",
+    review: "tag",
   };
   return (
     <div className="flex flex-col items-end gap-0.5">
-      <Badge variant={variantMap[state] || "outline"}>
-        {state.toUpperCase()}
+      <Badge variant={variantMap[state] || "outline"} className="text-micro-uppercase uppercase tracking-[0.5px]">
+        {state}
       </Badge>
       {state !== "idle" && robot && (
-        <span className="text-[10px] text-gray-400">{robot}</span>
+        <span className="text-caption text-stone">{robot}</span>
       )}
     </div>
   );
 }
 
+function ConnectionStatus() {
+  // Static pill for now — wire to real WS/API health in a follow-up.
+  return (
+    <div className="flex items-center gap-xs px-md py-xs text-caption text-steel">
+      <span className="w-2 h-2 rounded-full bg-brand-green" aria-hidden />
+      <span>Connected</span>
+    </div>
+  );
+}
+
 export default function Layout() {
-  // Sync session state from API on app load (survives refresh)
   const { data: apiState } = useSessionState();
   const setSessionState = useSessionStore((s) => s.setSessionState);
 
@@ -45,34 +55,29 @@ export default function Layout() {
   }, [apiState, setSessionState]);
 
   return (
-    <div className="flex h-screen bg-gray-50">
-      <aside className="w-56 bg-white border-r border-gray-200 flex flex-col">
-        <div className="p-4 border-b border-gray-200 flex items-center justify-between">
-          <h1 className="text-lg font-bold text-gray-900">MimicRec</h1>
+    <div className="flex h-screen bg-surface-soft">
+      <aside className="w-60 bg-canvas border-r border-hairline-soft flex flex-col">
+        <div className="px-md py-md border-b border-hairline-soft flex items-center justify-between">
+          <h1 className="text-heading-5 text-ink">MimicRec</h1>
           <SessionBadge />
         </div>
-        <nav className="flex-1 p-2">
+        <nav className="flex-1 p-xs flex flex-col gap-0.5">
           {navItems.map((item) => (
-            <NavLink
-              key={item.to}
-              to={item.to}
-              className={({ isActive }) =>
-                `block px-3 py-2 rounded-md text-sm font-medium ${
-                  isActive
-                    ? "bg-blue-50 text-blue-700"
-                    : "text-gray-700 hover:bg-gray-100"
-                }`
-              }
-            >
+            <SidebarNavItem key={item.to} to={item.to}>
               {item.label}
-            </NavLink>
+            </SidebarNavItem>
           ))}
         </nav>
+        <div className="border-t border-hairline-soft">
+          <ConnectionStatus />
+        </div>
       </aside>
       <main className="flex-1 overflow-auto">
-        <ErrorBoundary>
-          <Outlet />
-        </ErrorBoundary>
+        <div className="max-w-[1280px] mx-auto px-lg py-md">
+          <ErrorBoundary>
+            <Outlet />
+          </ErrorBoundary>
+        </div>
       </main>
     </div>
   );

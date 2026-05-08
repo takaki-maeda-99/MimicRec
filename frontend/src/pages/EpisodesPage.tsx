@@ -1,5 +1,7 @@
 import { useParams, Link } from "react-router-dom";
 import { useEpisodes, useDeleteEpisode } from "../api/queries";
+import { Button } from "../components/ui/button";
+import { CodeInline } from "../components/ui/code-inline";
 
 export default function EpisodesPage() {
   const { ds } = useParams<{ ds: string }>();
@@ -9,56 +11,57 @@ export default function EpisodesPage() {
   if (!ds) return <div className="p-6">No dataset selected</div>;
 
   return (
-    <div className="p-6 max-w-5xl">
-      <div className="flex items-center justify-between mb-6">
+    <div>
+      <header className="flex items-center justify-between pb-sm mb-lg border-b border-hairline">
         <div>
-          <Link to="/datasets" className="text-sm text-gray-500 hover:text-gray-700">&larr; Datasets</Link>
-          <h2 className="text-2xl font-bold mt-1">Episodes — {ds}</h2>
+          <Link to="/datasets" className="text-caption text-stone hover:text-ink">&larr; Datasets</Link>
+          <h2 className="mt-1 text-heading-3 text-ink">Episodes — <CodeInline>{ds}</CodeInline></h2>
         </div>
-      </div>
+      </header>
 
       {isLoading ? (
-        <p className="text-gray-500">Loading...</p>
+        <p className="text-steel">Loading...</p>
       ) : !episodes?.length ? (
-        <p className="text-gray-500">No episodes recorded yet.</p>
+        <p className="text-steel">No episodes recorded yet.</p>
       ) : (
-        <table className="w-full text-sm">
+        <table className="w-full text-body-sm">
           <thead>
-            <tr className="border-b border-gray-200 text-left text-gray-500">
-              <th className="pb-2 font-medium">#</th>
-              <th className="pb-2 font-medium">Task</th>
-              <th className="pb-2 font-medium">Duration</th>
-              <th className="pb-2 font-medium">Frames</th>
-              <th className="pb-2 font-medium">Success</th>
-              <th className="pb-2 font-medium">Mode</th>
-              <th className="pb-2 font-medium">Recorded</th>
-              <th className="pb-2 font-medium">Actions</th>
+            <tr className="border-b border-hairline text-left text-steel text-micro-uppercase uppercase tracking-[0.5px]">
+              <th className="pb-sm font-semibold">#</th>
+              <th className="pb-sm font-semibold">Task</th>
+              <th className="pb-sm font-semibold">Duration</th>
+              <th className="pb-sm font-semibold">Frames</th>
+              <th className="pb-sm font-semibold">Success</th>
+              <th className="pb-sm font-semibold">Mode</th>
+              <th className="pb-sm font-semibold">Recorded</th>
+              <th className="pb-sm font-semibold">Actions</th>
             </tr>
           </thead>
           <tbody>
             {episodes.map((ep) => (
-              <tr key={ep.episode_index} className="border-b border-gray-100 hover:bg-gray-50">
-                <td className="py-3">
+              <tr key={ep.episode_index} className="border-b border-hairline-soft">
+                <td className="py-md">
                   <Link
                     to={`/datasets/${ds}/episodes/${ep.episode_index}/replay`}
-                    className="text-blue-600 hover:underline font-medium"
+                    className="text-ink text-body-sm-medium hover:underline"
                   >
                     {ep.display_index}
                   </Link>
                 </td>
-                <td className="py-3 text-gray-600">{ep.task}</td>
-                <td className="py-3 text-gray-600">{ep.duration_sec.toFixed(1)}s</td>
-                <td className="py-3 text-gray-600">{ep.num_frames}</td>
-                <td className="py-3">
-                  {ep.success === true && <span className="text-green-600">Success</span>}
-                  {ep.success === false && <span className="text-red-600">Failure</span>}
-                  {ep.success === null && <span className="text-gray-400">—</span>}
+                <td className="py-md text-slate">{ep.task}</td>
+                <td className="py-md text-slate">{ep.duration_sec.toFixed(1)}s</td>
+                <td className="py-md text-slate">{ep.num_frames}</td>
+                <td className="py-md">
+                  {ep.success === true && <span className="text-brand-green-deep">Success</span>}
+                  {ep.success === false && <span className="text-brand-error">Failure</span>}
+                  {ep.success === null && <span className="text-stone">—</span>}
                 </td>
-                <td className="py-3 text-gray-600">{ep.mode}</td>
-                <td className="py-3 text-gray-500 text-xs">{ep.recorded_at || "—"}</td>
-                <td className="py-3">
-                  <button
-                    className="text-red-600 hover:text-red-800 text-sm"
+                <td className="py-md text-slate">{ep.mode}</td>
+                <td className="py-md text-steel text-caption">{ep.recorded_at || "—"}</td>
+                <td className="py-md">
+                  <Button
+                    variant="link"
+                    className="!text-brand-error"
                     onClick={() => {
                       if (confirm(`Delete episode #${ep.display_index}?`)) {
                         deleteMutation.mutate(ep.episode_index);
@@ -66,7 +69,7 @@ export default function EpisodesPage() {
                     }}
                   >
                     Delete
-                  </button>
+                  </Button>
                 </td>
               </tr>
             ))}

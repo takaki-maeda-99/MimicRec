@@ -59,7 +59,7 @@ export function InferencePage() {
           <h1 className="text-2xl font-semibold">Inference</h1>
           {isLive && <Badge variant="success">● live</Badge>}
           {sessionRobot && (
-            <span className="text-xs text-gray-500">
+            <span className="text-xs text-steel">
               robot: <code>{sessionRobot}</code>
               {sessionMode && <> · mode: <code>{sessionMode}</code></>}
             </span>
@@ -71,11 +71,11 @@ export function InferencePage() {
       </header>
 
       {s.error && (
-        <div className="rounded-md border border-red-300 bg-red-50 p-3 flex items-start justify-between gap-3">
-          <div className="text-sm text-red-800 break-words">{s.error}</div>
+        <div className="rounded-md border border-brand-error/30 bg-brand-error/10 p-3 flex items-start justify-between gap-3">
+          <div className="text-sm text-brand-error break-words">{s.error}</div>
           <button
             onClick={() => s.setError(null)}
-            className="text-red-700 hover:text-red-900 text-lg leading-none"
+            className="text-brand-error hover:text-brand-error text-lg leading-none"
             aria-label="dismiss"
           >
             ×
@@ -84,7 +84,7 @@ export function InferencePage() {
       )}
 
       {sessionBlocker && s.phase === "pre-start" && (
-        <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
+        <div className="rounded-md border border-brand-warn/30 bg-brand-warn/10 p-3 text-sm text-brand-warn">
           <div className="font-medium mb-1">
             {sessionBlocker === "no-session" && "⚠ No active session"}
             {sessionBlocker === "recording" && "⚠ Session is recording"}
@@ -115,7 +115,7 @@ export function InferencePage() {
       )}
 
       {isLive && (
-        <div className="rounded-md border border-amber-400 bg-amber-100 px-3 py-2 text-sm font-semibold text-amber-900">
+        <div className="rounded-md border border-brand-warn/40 bg-brand-warn/15 px-3 py-2 text-sm font-semibold text-brand-warn">
           ⚠ Robot under model control — use E-STOP to halt
         </div>
       )}
@@ -162,14 +162,14 @@ function PreStartPanel({
             ))}
           </Select>
           {selected?.description && (
-            <div className={`text-xs mt-1 ${selectedHasError ? "text-red-700" : "text-gray-500"}`}>
+            <div className={`text-xs mt-1 ${selectedHasError ? "text-brand-error" : "text-steel"}`}>
               {selected.description}
             </div>
           )}
         </Field>
-        <div className="text-xs text-gray-600">
+        <div className="text-xs text-slate">
           Successful episodes save to the active session's dataset:{" "}
-          <code className="text-gray-900">{activeDataset ?? "—"}</code>. Switch datasets on the Record page.
+          <code className="text-ink">{activeDataset ?? "—"}</code>. Switch datasets on the Record page.
         </div>
         <Field label="Instruction">
           <Input
@@ -235,14 +235,14 @@ function RecordingPanel() {
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="text-sm">
-          <span className="text-gray-500">Instruction (locked):</span>{" "}
+          <span className="text-steel">Instruction (locked):</span>{" "}
           <span className="font-medium">"{s.lockedInstruction ?? ""}"</span>
         </div>
         <div className="text-sm">
-          <span className="text-gray-500">Model done signal:</span>{" "}
+          <span className="text-steel">Model done signal:</span>{" "}
           {s.telemetry.modelDoneSignal === "waiting" && <span>waiting…</span>}
-          {s.telemetry.modelDoneSignal === "received" && <span className="text-green-700">received ✓</span>}
-          {s.telemetry.modelDoneSignal === "unsupported" && <span className="text-gray-400">unsupported</span>}
+          {s.telemetry.modelDoneSignal === "received" && <span className="text-brand-green-deep">received ✓</span>}
+          {s.telemetry.modelDoneSignal === "unsupported" && <span className="text-stone">unsupported</span>}
         </div>
         <TelemetryBlock />
         <ActionPreview />
@@ -309,8 +309,8 @@ function TelemetryBlock() {
 function Stat({ label, value, warn }: { label: string; value: string; warn?: boolean }) {
   return (
     <div>
-      <div className="text-[11px] uppercase tracking-wide text-gray-500">{label}</div>
-      <div className={`font-mono ${warn ? "text-red-700 font-semibold" : "text-gray-900"}`}>
+      <div className="text-[11px] uppercase tracking-wide text-steel">{label}</div>
+      <div className={`font-mono ${warn ? "text-brand-error font-semibold" : "text-ink"}`}>
         {value}
       </div>
     </div>
@@ -322,8 +322,8 @@ function ActionPreview() {
   const a = useInferenceStore((x) => x.telemetry.nextAction);
   if (!a || !Array.isArray(a.ee_delta)) return null;
   return (
-    <div className="rounded-md bg-gray-50 border border-gray-200 px-3 py-2 font-mono text-xs">
-      <span className="text-gray-500">next action:</span>{" "}
+    <div className="rounded-md bg-surface-soft border border-hairline px-3 py-2 font-mono text-xs">
+      <span className="text-steel">next action:</span>{" "}
       ΔEE [{a.ee_delta.map((v) => v.toFixed(3)).join(", ")}]{" "}
       gripper {typeof a.gripper === "number" ? a.gripper.toFixed(3) : "—"}
     </div>
@@ -334,7 +334,7 @@ function ActionPreview() {
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <label className="block">
-      <div className="text-xs text-gray-600 mb-1">{label}</div>
+      <div className="text-xs text-slate mb-1">{label}</div>
       <div>{children}</div>
     </label>
   );

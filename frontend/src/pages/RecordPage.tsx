@@ -8,6 +8,10 @@ import RecordingControls from "../components/RecordingControls.tsx";
 import KeyboardTeleop from "../components/KeyboardTeleop.tsx";
 import EEMonitor from "../components/EEMonitor.tsx";
 import EStopButton from "../components/EStopButton.tsx";
+import { Button } from "../components/ui/button";
+import { Card } from "../components/ui/card";
+import { CodeInline } from "../components/ui/code-inline";
+import { PillTab } from "../components/ui/pill-tab";
 import type { EpisodeProgress, ReplayProgress } from "../api/types.ts";
 
 export default function RecordPage() {
@@ -25,7 +29,6 @@ export default function RecordPage() {
   const endSession = useEndSession();
   const { data: episodes } = useEpisodes(dataset || "");
 
-  // Restore session state from API on mount (survives page navigation / refresh)
   const { data: apiState } = useSessionState();
   useEffect(() => {
     if (apiState && apiState.state !== "idle") {
@@ -33,7 +36,6 @@ export default function RecordPage() {
     }
   }, [apiState, setSessionState]);
 
-  // Connect to /ws/session when session is active
   const isIdle = sessionState === "idle";
   useEffect(() => {
     if (isIdle) return;
@@ -56,94 +58,84 @@ export default function RecordPage() {
 
   if (sessionState === "idle") {
     return (
-      <div className="p-6">
-        <h2 className="text-2xl font-bold mb-6">Record</h2>
-        <SessionConfigForm onStarted={() => {}} />
+      <div>
+        <header className="flex items-center justify-between pb-sm mb-lg border-b border-hairline">
+          <h2 className="text-heading-3 text-ink">Record</h2>
+        </header>
+        <Card variant="feature">
+          <SessionConfigForm onStarted={() => {}} />
+        </Card>
       </div>
     );
   }
 
   return (
-    <div className="p-6">
-      {/* Session info bar */}
-      <div className="flex items-center justify-between mb-4">
-        <h2 className="text-2xl font-bold">Record</h2>
-        <div className="flex items-center gap-3">
+    <div>
+      <header className="flex items-center justify-between pb-sm mb-lg border-b border-hairline">
+        <h2 className="text-heading-3 text-ink">Record</h2>
+        <div className="flex items-center gap-md">
           {subState === "replaying" && (
-            <span className="bg-purple-100 text-purple-700 px-3 py-1 rounded-full text-sm font-medium">
-              Replaying...
-            </span>
+            <PillTab active tone="state" disabled>Replaying</PillTab>
           )}
-          <button
-            className="text-sm text-red-600 hover:text-red-800 border border-red-300 px-3 py-1 rounded-md"
-            onClick={() => endSession.mutate()}
-          >
+          <Button variant="secondary" className="!text-brand-error" onClick={() => endSession.mutate()}>
             End Session
-          </button>
+          </Button>
         </div>
-      </div>
+      </header>
 
-      {/* Active session summary */}
-      <div className="bg-gray-100 rounded-lg px-4 py-2 mb-6 flex gap-6 text-sm text-gray-600">
-        <span>
-          <span className="text-gray-400">Robot:</span>{" "}
-          <span className="font-medium text-gray-800">{robot}</span>
+      <Card className="mb-md flex gap-lg flex-wrap text-body-sm">
+        <span className="flex items-center gap-xs">
+          <span className="text-caption text-stone">Robot</span>
+          <CodeInline>{robot}</CodeInline>
         </span>
-        <span>
-          <span className="text-gray-400">Mode:</span>{" "}
-          <span className="font-medium text-gray-800">{mode}</span>
+        <span className="flex items-center gap-xs">
+          <span className="text-caption text-stone">Mode</span>
+          <CodeInline>{mode}</CodeInline>
         </span>
-        <span>
-          <span className="text-gray-400">Teleop:</span>{" "}
-          <span className="font-medium text-gray-800">{teleop || "—"}</span>
+        <span className="flex items-center gap-xs">
+          <span className="text-caption text-stone">Teleop</span>
+          <CodeInline>{teleop || "—"}</CodeInline>
         </span>
-        <span>
-          <span className="text-gray-400">Dataset:</span>{" "}
-          <span className="font-medium text-gray-800">{dataset}</span>
+        <span className="flex items-center gap-xs">
+          <span className="text-caption text-stone">Dataset</span>
+          <CodeInline>{dataset}</CodeInline>
         </span>
-        <span>
-          <span className="text-gray-400">Episodes:</span>{" "}
-          <span className="font-medium text-gray-800">{episodes?.length ?? "—"}</span>
+        <span className="flex items-center gap-xs">
+          <span className="text-caption text-stone">Episodes</span>
+          <CodeInline>{episodes?.length ?? "—"}</CodeInline>
         </span>
         {cameras.length > 0 && (
-          <span>
-            <span className="text-gray-400">Cameras:</span>{" "}
-            <span className="font-medium text-gray-800">
-              {cameras.join(", ")}
-            </span>
+          <span className="flex items-center gap-xs">
+            <span className="text-caption text-stone">Cameras</span>
+            <CodeInline>{cameras.join(", ")}</CodeInline>
           </span>
         )}
-      </div>
+      </Card>
 
-      {/* Camera previews */}
       {cameras.length > 0 && sessionState !== "review" && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-md mb-md">
           {cameras.map((cam) => (
             <CameraPreview key={cam} camName={cam} />
           ))}
         </div>
       )}
 
-      {/* Keyboard teleop (only when web_keyboard adapter is selected) */}
       {teleop === "web_keyboard" && (
-        <div className="mb-6">
+        <div className="mb-md">
           <KeyboardTeleop enabled={sessionState !== "review"} />
         </div>
       )}
 
-      {/* Live end-effector pose (shows only if backend sends ee_pos) */}
-      <div className="mb-6">
+      <div className="mb-md">
         <EEMonitor enabled />
       </div>
 
-      {/* E-stop button (only for rebotarm adapter) */}
       {robot === "rebotarm" && (
-        <div className="mb-6">
+        <div className="mb-md">
           <EStopButton />
         </div>
       )}
 
-      {/* Recording controls */}
       <RecordingControls />
     </div>
   );

@@ -1,17 +1,25 @@
 import { cn } from "../../lib/utils";
 
-export function Card({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
-  return <div className={cn("rounded-lg border border-gray-200 bg-white shadow-sm", className)} {...props} />;
+interface CardProps extends React.HTMLAttributes<HTMLDivElement> {
+  variant?: "base" | "feature";
+}
+
+export function Card({ className, variant = "base", ...props }: CardProps) {
+  const variants = {
+    base: "rounded-lg border border-hairline bg-canvas p-lg",
+    feature: "rounded-lg bg-surface p-xl",
+  } as const;
+  return <div className={cn(variants[variant], className)} {...props} />;
 }
 
 export function CardHeader({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
-  return <div className={cn("flex flex-col space-y-1.5 p-6", className)} {...props} />;
+  return <div className={cn("flex flex-col gap-1.5 mb-md", className)} {...props} />;
 }
 
 export function CardTitle({ className, ...props }: React.HTMLAttributes<HTMLHeadingElement>) {
-  return <h3 className={cn("font-semibold leading-none tracking-tight", className)} {...props} />;
+  return <h3 className={cn("text-heading-5 text-ink", className)} {...props} />;
 }
 
 export function CardContent({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
-  return <div className={cn("p-6 pt-0", className)} {...props} />;
+  return <div className={cn("text-body-sm text-charcoal", className)} {...props} />;
 }
