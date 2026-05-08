@@ -34,7 +34,7 @@ class CameraManager:
         try:
             for name, cam in self._cameras.items():
                 if hasattr(cam, "connect"):
-                    await cam.connect()
+                    await asyncio.wait_for(cam.connect(), timeout=10.0)
                 connected.append(name)
         except Exception as e:
             for prev in connected:
