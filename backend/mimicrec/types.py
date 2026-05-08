@@ -70,6 +70,7 @@ class TeleopAction:
 class Frame:
     image: np.ndarray          # HxWx3 uint8 BGR
     t_mono_ns: int = 0
+    preview_only: bool = False
 
 
 @dataclass
