@@ -12,12 +12,16 @@ import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import cv2
 import numpy as np
 import pyarrow.parquet as pq
 
 from mimicrec.recording.dataset_layout import dataset_paths, resolve_chunk
+
+if TYPE_CHECKING:
+    from mimicrec.cloud.push_state import PushCoordinator
 
 logger = logging.getLogger(__name__)
 
@@ -223,12 +227,12 @@ def _parse_response(
     return segments
 
 
-def save_annotations(
+def _save_annotations_inner(
     ds_root: Path,
     episode_idx: int,
     segments: list[SubtaskSegment],
 ) -> None:
-    """Save subtask annotations back to the episode parquet."""
+    """Core implementation of save_annotations (no locking)."""
     paths = dataset_paths(ds_root)
     chunk = resolve_chunk(episode_idx)
     pq_path = paths.episode_parquet(chunk, episode_idx)
@@ -254,3 +258,20 @@ def save_annotations(
     new_table = pa.Table.from_pylist(rows)
     _atomic_write_parquet(new_table, pq_path)
     logger.info(f"Saved {len(segments)} subtask annotations to {pq_path}")
+
+
+def save_annotations(
+    ds_root: Path,
+    episode_idx: int,
+    segments: list[SubtaskSegment],
+    *,
+    coordinator: "PushCoordinator | None" = None,
+    ds_name: str | None = None,
+) -> None:
+    """Save subtask annotations back to the episode parquet."""
+    if coordinator is not None and ds_name is not None:
+        lock = coordinator.get_save_lock(ds_name)
+        with lock:
+            _save_annotations_inner(ds_root, episode_idx, segments)
+    else:
+        _save_annotations_inner(ds_root, episode_idx, segments)
