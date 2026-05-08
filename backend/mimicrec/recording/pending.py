@@ -84,6 +84,7 @@ class PendingEpisode:
             raise RuntimeError("call finalize() before save()")
         import pyarrow as pa
         import pyarrow.parquet as pq
+        from mimicrec.recording.atomic_io import _atomic_write_parquet
 
         chunk_idx = resolve_chunk(self._episode_index)
         self._paths.chunk_dir(chunk_idx).mkdir(parents=True, exist_ok=True)
@@ -110,7 +111,7 @@ class PendingEpisode:
         table = table.set_column(
             table.schema.get_field_index("index"), "index", indices,
         )
-        pq.write_table(table, dst)
+        _atomic_write_parquet(table, dst)
         src.unlink()
 
         for mp4 in self._stage.glob("*.mp4"):
