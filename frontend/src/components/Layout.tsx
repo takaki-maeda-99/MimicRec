@@ -3,10 +3,12 @@ import { NavLink, Outlet } from "react-router-dom";
 import { useSessionStore } from "../state/session-store";
 import { useSessionState } from "../api/queries";
 import { Badge } from "./ui/badge";
+import { ErrorBoundary } from "./ErrorBoundary";
 
 const navItems = [
   { to: "/datasets", label: "Datasets" },
   { to: "/record", label: "Record" },
+  { to: "/inference", label: "Inference" },
   { to: "/settings", label: "Settings" },
 ];
 
@@ -68,7 +70,9 @@ export default function Layout() {
         </nav>
       </aside>
       <main className="flex-1 overflow-auto">
-        <Outlet />
+        <ErrorBoundary>
+          <Outlet />
+        </ErrorBoundary>
       </main>
     </div>
   );
