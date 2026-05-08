@@ -13,7 +13,7 @@ export default function VideoPlayer({ ds, idx, cam }: Props) {
   return (
     <div className="bg-black rounded-lg overflow-hidden">
       {error ? (
-        <div className="flex items-center justify-center h-48 text-gray-500 text-sm">
+        <div className="flex items-center justify-center h-48 text-steel text-sm">
           Video unavailable for {cam}
         </div>
       ) : (
@@ -24,7 +24,7 @@ export default function VideoPlayer({ ds, idx, cam }: Props) {
           onError={() => setError(true)}
         />
       )}
-      <div className="px-2 py-1 text-xs text-gray-400 bg-gray-900">{cam}</div>
+      <div className="px-2 py-1 text-caption text-stone bg-canvas-dark">{cam}</div>
     </div>
   );
 }

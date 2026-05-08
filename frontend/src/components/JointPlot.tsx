@@ -71,8 +71,8 @@ export default function JointPlot({ ds, idx }: Props) {
       .finally(() => setLoading(false));
   }, [ds, idx]);
 
-  if (loading) return <p className="text-gray-400 p-4">Loading chart...</p>;
-  if (!data.length) return <p className="text-gray-400 p-4">No data</p>;
+  if (loading) return <p className="text-stone p-4">Loading chart...</p>;
+  if (!data.length) return <p className="text-stone p-4">No data</p>;
 
   const prefix = mode === "position" ? "pos_" : "vel_";
   const unit = mode === "position" ? "rad" : "rad/s";
@@ -82,13 +82,13 @@ export default function JointPlot({ ds, idx }: Props) {
       {hasVelocity && (
         <div className="flex gap-2 mb-3">
           <button
-            className={`px-3 py-1 rounded text-sm ${mode === "position" ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-700"}`}
+            className={`px-3 py-1 rounded text-sm ${mode === "position" ? "bg-primary text-on-primary" : "bg-surface text-charcoal"}`}
             onClick={() => setMode("position")}
           >
             Position
           </button>
           <button
-            className={`px-3 py-1 rounded text-sm ${mode === "velocity" ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-700"}`}
+            className={`px-3 py-1 rounded text-sm ${mode === "velocity" ? "bg-primary text-on-primary" : "bg-surface text-charcoal"}`}
             onClick={() => setMode("velocity")}
           >
             Velocity
@@ -97,21 +97,21 @@ export default function JointPlot({ ds, idx }: Props) {
       )}
       <ResponsiveContainer width="100%" height={300}>
         <LineChart data={data}>
-          <CartesianGrid strokeDasharray="3 3" opacity={0.3} />
+          <CartesianGrid strokeDasharray="3 3" stroke="var(--color-hairline)" opacity={0.6} />
           <XAxis
             dataKey="time"
-            label={{ value: "Time (s)", position: "insideBottom", offset: -5 }}
-            tick={{ fontSize: 11 }}
+            label={{ value: "Time (s)", position: "insideBottom", offset: -5, fill: "var(--color-steel)" }}
+            tick={{ fontSize: 11, fill: "var(--color-steel)" }}
           />
           <YAxis
-            label={{ value: unit, angle: -90, position: "insideLeft" }}
-            tick={{ fontSize: 11 }}
+            label={{ value: unit, angle: -90, position: "insideLeft", fill: "var(--color-steel)" }}
+            tick={{ fontSize: 11, fill: "var(--color-steel)" }}
           />
           <Tooltip
-            contentStyle={{ fontSize: 12 }}
+            contentStyle={{ fontSize: 12, borderColor: "var(--color-hairline)", color: "var(--color-charcoal)" }}
             formatter={(value) => `${Number(value).toFixed(3)} ${unit}`}
           />
-          <Legend wrapperStyle={{ fontSize: 11 }} />
+          <Legend wrapperStyle={{ fontSize: 11, color: "var(--color-steel)" }} />
           {jointNames.map((name, i) => (
             <Line
               key={name}
