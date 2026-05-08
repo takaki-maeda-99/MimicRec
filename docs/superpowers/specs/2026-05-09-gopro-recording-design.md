@@ -32,7 +32,7 @@ GoPro は通常の UVC カメラと違い、
 - [ ] session 中に SIGKILL → 再起動で `.pending/gopro_dl/<uuid>.json` が resume され、未取得の MP4 が dataset に揃う。
 - [ ] 2 台同時運用で DL が直列化される（DLWorker のログで確認）。
 - [ ] GoPro なしでも `MockGoProDevice` ベースの unit test が通る（CI 含む）。
-- [ ] `Frame.preview_only=True` のフレームが `PendingEpisode` から確実に弾かれることを単体テストで確認。
+- [ ] `Frame.preview_only=True` のフレームが `PendingEpisode` の **video writer 経路に渡らない**（row 自体は parquet に append される）ことを単体テストで確認。
 
 ## Non-goals (Out of scope)
 
@@ -124,18 +124,31 @@ GoPro は通常の UVC カメラと違い、
 
 ## Components
 
-### `backend/mimicrec/gopro/device.py`（新規）
+### `backend/mimicrec/gopro/types.py`（新規）
 
 ```python
-@dataclass
+@dataclass(frozen=True)
 class GoProSpec:
-    """info.json features 用、コードの値ソース。"""
+    """info.json features 用の resolved 値。
+    `gopro/types.py` に置く理由: `recording/dataset_layout.py:init_dataset` が
+    `GoProSpec` をパラメータで受ける。`recording/` → `gopro/types.py` の一方向
+    依存に留め、`gopro/device.py`（重い import: open_gopro 等）への循環を避ける。"""
     name: str
     width: int
     height: int
     fps: int
-    codec: str           # e.g. "h264"
+    codec: str           # "h264" / "h265"
 
+@dataclass
+class MediaItem:
+    filename: str        # "GX010001.MP4" 形式
+    size: int
+    mtime_ns: int        # camera-clock 由来、host clock とのマップは別経路
+```
+
+### `backend/mimicrec/gopro/device.py`（新規）
+
+```python
 class GoProDevice:
     """1 物理カメラを表す。SDK client の所有者。
     制御コマンドは全部ここを通る（preview/recorder は view）。"""
@@ -165,7 +178,7 @@ class GoProDevice:
     async def shutter_off(self) -> None: ...
 
     async def media_list(self) -> list[MediaItem]:
-        """SD カード上のファイル一覧。MediaItem は (filename, size, mtime_iso)。"""
+        """SD カード上のファイル一覧（型定義は gopro/types.py 参照）。"""
 
     # preview plane（GoProPreviewSource が呼ぶ）
     async def start_preview(self, port: int) -> None:
@@ -177,7 +190,17 @@ class GoProDevice:
     # info.json 用の resolved spec
     def get_spec(self) -> GoProSpec:
         """recording_preset から (width, height, fps, codec) を解決。
-        例: '1080p_60_wide' -> (1920, 1080, 60, 'h264')。"""
+        内部に preset → (w, h, fps, codec) の lookup table を持つ。
+        Hero 11 の代表的 preset の出発セット:
+          - '1080p_60_wide'    -> (1920, 1080, 60, 'h264')
+          - '1080p_30_wide'    -> (1920, 1080, 30, 'h264')
+          - '2.7K_60_wide'     -> (2704, 1520, 60, 'h264')
+          - '4K_30_wide'       -> (3840, 2160, 30, 'h265')
+          - '4K_60_wide'       -> (3840, 2160, 60, 'h265')
+          - '5.3K_30_wide'     -> (5312, 2988, 30, 'h265')
+        実装時に SDK ドキュメント・実機検証で表を埋める。
+        unknown preset は connect() 時点で `FatalHardwareError("unknown preset: ...")` を上げ、
+        device を disable する（YAML typo を即時に検知）。"""
 
     # DL plane（DLWorker が呼ぶ）
     async def download_file(self, sd_filename: str, dest: Path) -> None: ...
@@ -189,8 +212,6 @@ class GoProDevice:
     def disable(self, reason: str) -> None:
         """以後 shutter/preview/download を no-op にする。一度だけログ出力。"""
 ```
-
-`MediaItem` は dataclass で `filename: str`, `size: int`, `mtime_ns: int`（host monotonic にマップした値ではなく、SDから取れる camera-clock のもの）。
 
 ### `backend/mimicrec/gopro/preview.py`（新規）
 
@@ -213,7 +234,12 @@ class GoProPreviewSource:
 
     async def read(self) -> Frame:
         """pyav の decode loop が pushed した最新フレームを返す。
-        必ず Frame.preview_only=True を立てる。"""
+        必ず Frame.preview_only=True を立てる。
+
+        device.is_disabled の状態では: 永久に解放されない `asyncio.Event` を
+        await して clean idle 状態になる（cancel まで block）。
+        例外を上げないことで `CameraManager._run_camera` が 50ms ごとに
+        HardwareError を publish する spam ループを避ける。"""
 ```
 
 UDP ポートは registry が **デバイスごとに別ポートを割り当てる**（ベース 8556 + index）。ポート衝突時は次ポートを試す。
@@ -261,8 +287,10 @@ class GoProRecorder:
         3. GoProDLJob を組んで dl_queue.enqueue。
            cam_name = device.name
            chunk_index = resolve_chunk(episode_index)
-           mp4_dest_relative = f"observation.images.{cam_name}/chunk-{chunk_index:03d}/episode_{episode_index:06d}.mp4"
-           gopro_t0_mono_ns は None のままでも入れる（duration check 側で None 判定）"""
+           gopro_t0_mono_ns は None のままでも入れる（duration check 側で None 判定）。
+           **dest path は DLWorker 実行時に `paths.episode_video(chunk_index, cam_name, episode_index)`
+           で recompute する**（sidecar JSON に絶対/相対パス文字列を保存しない — レイアウト関数の
+           将来変更に追従できるようにするため）。"""
 ```
 
 ### `backend/mimicrec/gopro/dl_queue.py`（新規）
@@ -270,13 +298,16 @@ class GoProRecorder:
 ```python
 @dataclass
 class GoProDLJob:
+    """sidecar JSON に直結する schema。
+    **dest path は持たない** — DLWorker 実行時に
+    `paths.episode_video(chunk_index, cam_name, episode_index)` で recompute する。
+    これによりデータセット移動 + DatasetPaths レイアウト関数の将来変更の両方に追従する。"""
     job_id: str                      # uuid4
     gopro_serial: str
     sd_filename: str                 # enqueue 時には必ず resolved
     episode_index: int
-    chunk_index: int
+    chunk_index: int                 # `resolve_chunk(episode_index)` の denormalized cache
     cam_name: str
-    mp4_dest_relative: str           # videos_dir からの相対パス（移植性のため）
     gopro_t0_mono_ns: int | None     # None なら duration check skip
     episode_stop_mono_ns: int
 
@@ -339,16 +370,19 @@ class GoProDLWorker:
           if need_download:
               await device.download_file(job.sd_filename, tmp)
 
-          # MP4 duration check
+          # MP4 duration check（"録画ロス" の片側だけ警告する）
+          # gopro_t0 は polling 検出時刻なので実際の record start より 100-300ms 遅い、
+          # shutter_off も 100-300ms の tail を持つので、健全な MP4 は expected より
+          # わずかに長くなる。**短い**方向のズレだけが record loss を意味する。
           if job.gopro_t0_mono_ns is not None:
               duration = probe_mp4_duration(tmp)
               expected = (job.episode_stop_mono_ns - job.gopro_t0_mono_ns) / 1e9
-              if abs(duration - expected) > 0.2:
+              if duration < expected - 0.5:
                   errors.publish(HardwareError(
-                      f'GoPro MP4 duration mismatch: ep {job.episode_index} '
-                      f'duration={duration:.3f}s expected={expected:.3f}s'))
+                      f'GoPro recording shorter than episode: ep {job.episode_index} '
+                      f'duration={duration:.3f}s expected≈{expected:.3f}s'))
 
-          dest = paths.videos_dir / job.mp4_dest_relative
+          dest = paths.episode_video(job.chunk_index, job.cam_name, job.episode_index)
           dest.parent.mkdir(parents=True, exist_ok=True)
           shutil.move(str(tmp), str(dest))    # cross-device 安全（fallback to copy+unlink）
           await queue.mark_done(job.job_id)
@@ -468,9 +502,10 @@ YAML には `width/height` を **書かない**。先行するカメラ系コー
 | `backend/mimicrec/types.py` | `Frame` に `preview_only: bool = False` フィールド追加 |
 | `backend/mimicrec/recording/pending.py` | `append_row` で `frames[name].value.preview_only` をチェックし、True なら video writer に渡さない（silent skip）。row 自体は通常通り append。 |
 | `backend/mimicrec/recording/pending.py` | `open_video_writers` の引数 `cameras` から GoPro 由来カメラを除外する（呼び出し側責任、registry が gopro 名一覧を提供）。 |
-| `backend/mimicrec/recording/dataset_layout.py` | `init_dataset` に `gopro_specs: dict[str, GoProSpec] \| None = None` を追加。features dict に GoPro 専用エントリを書く（後述）。 |
-| `backend/mimicrec/api/deps.py` | (1) `req.gopros: list[str]` を新設、(2) `configs/gopros/<n>.yaml` から `GoProDevice` を instantiate、(3) `GoProDeviceRegistry` を構築・start、(4) preview_sources を `cams` dict に merge してから `CameraManager` を構築、(5) `init_dataset` に `gopro_specs=registry.gopro_specs()` を渡す、(6) `app.state.gopro_registry` に保存、(7) `req.cameras` から GoPro 名は除外（OpenCV 側のみ）。 |
-| `backend/mimicrec/api/routes/...` | session_meta に `"gopros": list[str]` 追加。frontend に pending DL 件数を expose する endpoint を1個追加（`GET /api/session/gopro_pending`）。 |
+| `backend/mimicrec/recording/dataset_layout.py` | `init_dataset` に `gopro_specs: dict[str, GoProSpec] \| None = None` を追加（`GoProSpec` は `mimicrec.gopro.types` から import — `gopro/types.py` は leaf module なので循環依存にならない）。features dict に GoPro 専用エントリを書く（後述）。 |
+| `backend/mimicrec/api/schemas.py` | `_BaseSessionRequest` に `gopros: list[str] = field(default_factory=list)` を追加（既存クライアントは送らないので default 空リストで後方互換）。`SessionStatePayload` 系にも `gopros: list[str] = []` を追加して response にも GoPro 名を載せる。 |
+| `backend/mimicrec/api/deps.py` | (1) `req.gopros` を読む、(2) `configs/gopros/<n>.yaml` から `GoProDevice` を instantiate、(3) `GoProDeviceRegistry` を構築・start、(4) preview_sources を `cams` dict に merge してから `CameraManager` を構築、(5) `init_dataset` に `gopro_specs=registry.gopro_specs()` を渡す、(6) `app.state.gopro_registry` に保存、(7) `req.cameras` から GoPro 名は除外（OpenCV 側のみ）。`req.cameras` と `req.gopros` の名前空間は disjoint であることを deps.py で assert する（YAML が両方に置かれる事故を防ぐ）。 |
+| `backend/mimicrec/api/routes/...` | session_meta / SessionStatePayload に `"gopros": list[str]` 追加。frontend に pending DL 件数を expose する endpoint を1個追加（`GET /api/session/gopro_pending`）。 |
 | `backend/mimicrec/cameras/manager.py` | **変更なし**。`Frame.preview_only` は `_run_camera` で素通り（LatestValue / JPEG fan-out には流す）。チェックは `PendingEpisode` 側でのみ行う。 |
 | `frontend/src/...` | pending DL 件数バッジ。session 終了時に「N pending」が残っていたら警告ダイアログ。 |
 
@@ -599,14 +634,15 @@ loop:
     if not skip_dl:
       await device.download_file(job.sd_filename, tmp)
 
-    # duration check (gopro_t0 が取れている時のみ)
+    # duration check（"短い" 方向だけ警告 — record loss 検出用、
+    # 詳細は Components > GoProDLWorker 参照）
     if job.gopro_t0_mono_ns is not None:
       duration = probe_mp4_duration(tmp)
       expected = (job.episode_stop_mono_ns - job.gopro_t0_mono_ns) / 1e9
-      if abs(duration - expected) > 0.2:
-        errors.publish(HardwareError(f'duration mismatch ep {job.episode_index}'))
+      if duration < expected - 0.5:
+        errors.publish(HardwareError(f'GoPro recording shorter than episode {job.episode_index}'))
 
-    dest = paths.videos_dir / job.mp4_dest_relative
+    dest = paths.episode_video(job.chunk_index, job.cam_name, job.episode_index)
     dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(tmp), str(dest))   # 同一 FS なら rename、跨いだら copy+unlink
     await queue.mark_done(job.job_id)
@@ -660,7 +696,8 @@ loop:
 | **photo/timelapse モードで GoPro 起動済み** | connect の `set_video_mode` で video に切替。失敗なら disable。 | — | 起動失敗で気付ける |
 | DLWorker 中の `download_file` 失敗 | sidecar 残置、errors publish、worker は次の job へ | 残置 | 次回起動時 restore で再 DL |
 | **`shutil.move` 失敗（cross-device、ENOSPC、EACCES）** | tmp 残置、sidecar 残置、errors publish | 残置 | 次回起動時、resume-from-tmp で move からやり直し（再 DL は走らない） |
-| MP4 duration mismatch >200ms | `HardwareError` 警告（致命ではない）、DL は完遂 | 削除（mark_done） | データセット側に MP4 は届く、警告は記録 |
+| MP4 duration が expected より 500ms 以上短い | `HardwareError` 警告（致命ではない）、DL は完遂 | 削除（mark_done） | record loss 疑い。長い側は許容（polling/tail latency 由来） |
+| DL中に `probe_sd_size` が device エラーで失敗（USB blip） | 例外で worker が continue、sidecar 残置、次回 session で再試行 | 残置 | 該当 device が `is_disabled=True` になっていれば次の job も skip。session 中の自動復旧はしない |
 | **`pending_dir` 不在（初回起動）** | `DLQueue.restore` が `mkdir(parents=True, exist_ok=True)` で作成 | — | 影響無し |
 | **同一データセットへの並行 session** | 検出しない（既存制約踏襲）。`mark_done` 競合は最後勝ち | 不定 | README に1セッション/データセットを明記、本 spec では対象外 |
 | アプリクラッシュ（SIGKILL 含む） | sidecar が残る → 次回 `DLQueue.restore()` で全件 in-memory queue に再ロード | 残置 | 全 pending が自動再開 |
@@ -699,8 +736,8 @@ USB3 ハブで複数 GoPro を扱う場合の運用ガイド：
 - `DLQueue` の永続化／restore（sidecar JSON の create/fsync/delete を tmpdir で確認）。
 - `DLWorker` の MP4 duration mismatch 検出（fixture MP4 を使う）。
 - `DLWorker` の resume-from-tmp 動作（`shutil.move` を monkeypatch して失敗 → 再起動 → tmp が残ってる前提で再試行 → 今度は成功）。
-- `Frame.preview_only` が `PendingEpisode.append_row` で video writer に渡らないことの確認（Mock Camera が preview_only=True を emit）。
-- `Frame.preview_only` でも row 自体は append される（per-frame parquet には書かれる）。
+- **PendingEpisode の preview_only 契約（GoPro 関与なし）**: `Frame(preview_only=True)` を直接構築 → `PendingEpisode.append_row` → video writer は呼ばれない / row は parquet に書かれる、を1つの単体テストで検証する。GoPro mock は不要。
+- **Preview source が preview_only=True を emit する積分テスト**: `MockGoProDevice(emit_preview=True)` + `MockGoProPreviewSource` を使い、CameraManager 経由で流れたフレームの `preview_only` フラグを確認する（生成と伝搬の両方）。
 - `GoProDeviceRegistry` の name/serial 重複でコンストラクタが ValueError を上げる。
 - `init_dataset(gopro_specs=...)` で `info.json.features.observation.images.<gopro>.info.has_gpmf=True` が書かれる。
 
@@ -731,6 +768,6 @@ USB3 ハブで複数 GoPro を扱う場合の運用ガイド：
 
 - **GPMF 抽出 / IMU を parquet 化する処理は本 feature では書かない**。MP4 にそのまま埋まったまま。loader 側の対応は別 feature。
 - **シャッター latency 補償のための同期信号（LED 等）は本 feature では入れない**。±1 秒精度で運用する前提。
-- **GoPro 設定 UI**（preset 切り替え等）は本 feature では入れない。YAML 編集のみ。
+- **GoPro 設定 UI**（preset 切り替え等）は本 feature では入れない。YAML 編集のみ。`configs/gopros/*.yaml` は手書き（または将来別 spec で UI を足す）。frontend の Settings 系画面（`configs/cameras/` を読む既存画面）には GoPro は出ない — これは設計上の意図。
 - **ホットプラグでの session 中 device 再接続**。disable したら基本セッション終了まで disabled。
 - **同一データセットへの並行 session の安全化**。既存制約を継続。
