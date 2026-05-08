@@ -8,8 +8,9 @@ interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: Variant;
   size?: "default" | "sm" | "lg";
   // Legacy aliases preserved so existing callers don't break.
-  // "default" maps to "primary"; "destructive" maps to "primary" with text-brand-error color
-  // applied at the call site via className; "outline" maps to "secondary".
+  // "default" maps to "primary"; "destructive" is normalized to an internal "destructive" key
+  // that produces a primary-shaped pill with text-brand-error foreground (applied internally,
+  // not at the call site); "outline" maps to "secondary".
 }
 
 export function Button({
@@ -19,10 +20,10 @@ export function Button({
   ...props
 }: ButtonProps) {
   // Normalize legacy variants
-  const normalized: VariantNew =
+  const normalized: VariantNew | "destructive" =
     variant === "default" ? "primary" :
     variant === "outline" ? "secondary" :
-    variant === "destructive" ? "primary" :
+    variant === "destructive" ? "destructive" :
     variant;
 
   const base = "inline-flex items-center justify-center font-medium transition-colors disabled:cursor-not-allowed";
@@ -31,7 +32,7 @@ export function Button({
     size === "lg" ? "px-xl py-3 text-body-md-medium" :
     "px-lg py-2.5 text-button-md";
 
-  const variants: Record<string, string> = {
+  const variants: Record<VariantNew | "destructive", string> = {
     primary:
       "rounded-full bg-primary text-on-primary " +
       pillPad +
@@ -40,6 +41,11 @@ export function Button({
       "rounded-full border border-hairline bg-transparent text-ink " +
       pillPad +
       " hover:bg-surface disabled:text-muted",
+    destructive:
+      "rounded-full bg-primary text-brand-error " +
+      pillPad +
+      " hover:bg-charcoal disabled:bg-hairline disabled:text-muted",
+    // Note: ghost and iconCircular have fixed dimensions; the size prop is intentionally ignored.
     ghost:
       "rounded-md bg-transparent text-ink text-button-md px-3 py-2 hover:bg-surface disabled:text-muted",
     link:
@@ -48,12 +54,9 @@ export function Button({
       "rounded-full bg-canvas text-ink border border-hairline w-8 h-8 hover:bg-surface",
   };
 
-  // Destructive legacy: tint the text red on top of primary visuals
-  const destructiveTint = variant === "destructive" ? "!text-brand-error" : "";
-
   return (
     <button
-      className={cn(base, variants[normalized], destructiveTint, className)}
+      className={cn(base, variants[normalized], className)}
       {...props}
     />
   );
