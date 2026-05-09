@@ -10,6 +10,10 @@ GRAVITY_COMP for hand-teaching).
 from __future__ import annotations
 
 import logging
+import math
+import os
+import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -44,6 +48,42 @@ def load_idle_pose(path: Path | str = DEFAULT_IDLE_POSE_PATH) -> IdlePose:
         ),
         joint_names=tuple(doc.get("joint_names", [])),
     )
+
+
+def save_idle_pose(
+    pose: IdlePose,
+    path: Path | str = DEFAULT_IDLE_POSE_PATH,
+    *,
+    source: str = "ui_capture",
+) -> dict:
+    """Serialize ``pose`` to YAML at ``path`` (atomic via temp+rename).
+
+    Returns the dict that was written so callers can include it in API
+    responses without re-reading the file.
+    """
+    p = Path(path)
+    rad_list = [float(x) for x in pose.joint_pos_rad.tolist()]
+    doc = {
+        "joint_names": list(pose.joint_names),
+        "joint_pos_rad": rad_list,
+        "joint_pos_deg": [math.degrees(x) for x in rad_list],
+        "gripper_pos": (None if pose.gripper_pos is None else float(pose.gripper_pos)),
+        "captured_at_unix": time.time(),
+        "source": source,
+    }
+    p.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(prefix=p.name + ".", suffix=".tmp", dir=p.parent)
+    try:
+        with os.fdopen(fd, "w") as f:
+            yaml.safe_dump(doc, f, sort_keys=False, allow_unicode=True)
+        os.replace(tmp_path, p)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except FileNotFoundError:
+            pass
+        raise
+    return doc
 
 
 async def move_to_idle(
