@@ -229,13 +229,13 @@ def _parse_response(
 
 def _save_annotations_inner(
     ds_root: Path,
-    episode_idx: int,
+    episode_index: int,
     segments: list[SubtaskSegment],
 ) -> None:
     """Core implementation of save_annotations (no locking)."""
     paths = dataset_paths(ds_root)
-    chunk = resolve_chunk(episode_idx)
-    pq_path = paths.episode_parquet(chunk, episode_idx)
+    chunk = resolve_chunk(episode_index)
+    pq_path = paths.episode_parquet(chunk, episode_index)
 
     table = pq.read_table(pq_path)
     rows = table.to_pylist()
@@ -262,7 +262,7 @@ def _save_annotations_inner(
 
 def save_annotations(
     ds_root: Path,
-    episode_idx: int,
+    episode_index: int,
     segments: list[SubtaskSegment],
     *,
     coordinator: "PushCoordinator | None" = None,
@@ -272,6 +272,6 @@ def save_annotations(
     if coordinator is not None and ds_name is not None:
         lock = coordinator.get_save_lock(ds_name)
         with lock:
-            _save_annotations_inner(ds_root, episode_idx, segments)
+            _save_annotations_inner(ds_root, episode_index, segments)
     else:
-        _save_annotations_inner(ds_root, episode_idx, segments)
+        _save_annotations_inner(ds_root, episode_index, segments)

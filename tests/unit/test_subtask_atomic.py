@@ -38,7 +38,7 @@ def test_save_annotations_no_partial(tmp_path: Path, monkeypatch):
 
     segments = [SubtaskSegment(name="grasp", start_frame=0, end_frame=4, description="x")]
     with pytest.raises(RuntimeError):
-        save_annotations(ds, episode_idx=0, segments=segments)
+        save_annotations(ds, episode_index=0, segments=segments)
 
     # 元 parquet が無傷
     assert pq_path.read_bytes() == original_bytes
