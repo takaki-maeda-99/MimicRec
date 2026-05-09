@@ -8,6 +8,10 @@ import EpisodesPage from "./pages/EpisodesPage";
 import ReplayPage from "./pages/ReplayPage";
 import SettingsPage from "./pages/SettingsPage";
 import { InferencePage } from "./pages/InferencePage";
+import MockIndex from "./pages/mocks/MockIndex";
+import MockMissionControl from "./pages/mocks/MockMissionControl";
+import MockEditorial from "./pages/mocks/MockEditorial";
+import MockNotebook from "./pages/mocks/MockNotebook";
 
 const queryClient = new QueryClient();
 
@@ -26,6 +30,11 @@ export default function App() {
               <Route path="/settings" element={<SettingsPage />} />
               <Route path="/inference" element={<InferencePage />} />
             </Route>
+            {/* Layout-comparison mocks (no shell — each mock owns the screen) */}
+            <Route path="/mocks" element={<MockIndex />} />
+            <Route path="/mocks/mission-control" element={<MockMissionControl />} />
+            <Route path="/mocks/editorial" element={<MockEditorial />} />
+            <Route path="/mocks/notebook" element={<MockNotebook />} />
           </Routes>
         </BrowserRouter>
       </QueryClientProvider>
