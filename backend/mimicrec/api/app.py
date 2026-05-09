@@ -27,6 +27,7 @@ def create_app() -> FastAPI:
     app.state.session_manager = None
     app.state.error_bus = None
     app.state.camera_manager = None
+    app.state.gopro_registry = None
     app.state.resolved_config = None
     app.state.session_meta = None
     app.state.configs_root = None

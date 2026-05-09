@@ -5,6 +5,7 @@ import { useSessionState } from "../api/queries";
 import { Badge } from "./ui/badge";
 import { SidebarNavItem } from "./ui/sidebar-nav-item";
 import { ErrorBoundary } from "./ErrorBoundary";
+import { GoProPendingBadge } from "./GoProPendingBadge";
 
 const navItems = [
   { to: "/datasets", label: "Datasets" },
@@ -59,7 +60,10 @@ export default function Layout() {
       <aside className="w-60 bg-canvas border-r border-hairline-soft flex flex-col">
         <div className="px-md py-md border-b border-hairline-soft flex items-center justify-between">
           <h1 className="text-heading-5 text-ink">MimicRec</h1>
-          <SessionBadge />
+          <div className="flex flex-col items-end gap-1">
+            <SessionBadge />
+            <GoProPendingBadge />
+          </div>
         </div>
         <nav className="flex-1 p-xs flex flex-col gap-0.5">
           {navItems.map((item) => (

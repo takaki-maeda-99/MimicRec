@@ -202,6 +202,15 @@ export function useReplayStop() {
   });
 }
 
+// --------------- GoPro ---------------
+
+export async function getGoProPending(): Promise<number> {
+  const r = await fetch('/api/session/gopro_pending', { cache: 'no-store' });
+  if (!r.ok) return 0;
+  const j = await r.json();
+  return j.pending ?? 0;
+}
+
 // --------------- Export ---------------
 
 export function useExportDataset(ds: string) {

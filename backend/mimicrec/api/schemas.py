@@ -11,6 +11,7 @@ class _BaseSessionRequest(BaseModel):
     robot: str
     cameras: list[str]
     fps: int = 30
+    gopros: list[str] = Field(default_factory=list)
 
 
 class TeleopSessionRequest(_BaseSessionRequest):
@@ -63,6 +64,7 @@ class SessionStatePayload(BaseModel):
     mapper: str | None = None
     cameras: list[str] = []
     fps: int | None = None
+    gopros: list[str] = Field(default_factory=list)
 
 
 class DatasetSummary(BaseModel):

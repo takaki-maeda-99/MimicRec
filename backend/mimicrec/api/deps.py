@@ -2,6 +2,7 @@ from __future__ import annotations
 import importlib
 from pathlib import Path
 
+from fastapi import HTTPException
 from omegaconf import OmegaConf
 
 from mimicrec.cameras.manager import CameraManager
@@ -113,7 +114,47 @@ async def create_session_from_request(app, req) -> SessionManager:
         cam_kwargs.setdefault("name", cam_name)
         cams[cam_name] = instantiate_adapter(str(cam_cfg._target_), **cam_kwargs)
 
+    # GoPros (NEW)
+    overlap = set(req.cameras) & set(getattr(req, "gopros", []))
+    if overlap:
+        raise HTTPException(status_code=400,
+                            detail=f"name overlap between cameras and gopros: {sorted(overlap)}")
+
+    gopro_devices: list = []
+    for g_name in getattr(req, "gopros", []):
+        try:
+            g_cfg = OmegaConf.load(configs_root / "gopros" / f"{g_name}.yaml")
+            g_kwargs = {k: v for k, v in OmegaConf.to_container(g_cfg).items()
+                        if k not in ("_target_",)}
+            g_kwargs.setdefault("name", g_name)
+            gopro_devices.append(instantiate_adapter(str(g_cfg._target_), **g_kwargs))
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=400,
+                                detail=f"GoPro config '{g_name}' invalid: {e}") from e
+
     error_bus = ErrorBus()
+
+    from mimicrec.recording.dataset_layout import dataset_paths as _ds_paths
+    _paths = _ds_paths(datasets_root / req.dataset)
+    _paths.pending_dir.mkdir(parents=True, exist_ok=True)
+
+    gopro_registry = None
+    if gopro_devices:
+        from mimicrec.gopro.registry import GoProDeviceRegistry
+        try:
+            gopro_registry = GoProDeviceRegistry(
+                devices=gopro_devices, paths=_paths, errors=error_bus,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=400,
+                                detail=f"GoPro registry invalid: {e}") from e
+
+        await gopro_registry.start()
+        for name, src in gopro_registry.preview_sources().items():
+            cams[name] = src
+
     cm = CameraManager(cameras=cams, error_bus=error_bus)
 
     # Replay safety
@@ -140,7 +181,10 @@ async def create_session_from_request(app, req) -> SessionManager:
 
     # Dataset
     ds_root = datasets_root / req.dataset
-    if not ds_root.exists():
+    # NOTE: pending_dir.mkdir (above) may have already created ds_root.
+    # Guard on info.json presence rather than directory existence so that
+    # init_dataset is called even when the pending dir was pre-created.
+    if not (ds_root / "meta" / "info.json").exists():
         # Capture per-adapter declarations if available (None for mock adapters).
         rt = type(robot).__name__
         gc = (
@@ -175,6 +219,7 @@ async def create_session_from_request(app, req) -> SessionManager:
                 } if pl else None
             ),
             camera_resolutions=camera_resolutions,
+            gopro_specs=gopro_registry.gopro_specs() if gopro_registry else None,
         )
 
     # Resolved config snapshot
@@ -189,6 +234,7 @@ async def create_session_from_request(app, req) -> SessionManager:
     # Store metadata in app.state for payload building
     app.state.error_bus = error_bus
     app.state.camera_manager = cm
+    app.state.gopro_registry = gopro_registry
     app.state.resolved_config = resolved
     app.state.session_meta = {
         "dataset": req.dataset,
@@ -197,6 +243,7 @@ async def create_session_from_request(app, req) -> SessionManager:
         "teleop": teleop_name,
         "mapper": mapper_name,
         "cameras": list(req.cameras),
+        "gopros": list(getattr(req, "gopros", [])),
         "fps": req.fps,
     }
 
@@ -216,5 +263,6 @@ async def create_session_from_request(app, req) -> SessionManager:
         fk=fk,
         task=req.task or "default",
         instruction=getattr(req, "instruction", "") or "",
+        gopro_registry=gopro_registry,
     )
     return sm
