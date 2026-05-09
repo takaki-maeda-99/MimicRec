@@ -65,12 +65,17 @@ async def delete_dataset(request: Request, ds: str):
     if not ds_root.exists():
         raise HTTPException(status_code=404, detail=f"dataset '{ds}' not found")
     coord = request.app.state.push_coordinator
-    if ds in coord.in_flight:
+    # Atomic check-and-reserve: blocks concurrent push
+    if not coord.try_reserve_delete(ds):
         raise HTTPException(status_code=409, detail="cannot delete: push in flight")
-    save_lock = coord.get_save_lock(ds)
-    with save_lock:
-        shutil.rmtree(ds_root)
-        coord.drop_dataset(ds)
+    try:
+        save_lock = coord.get_save_lock(ds)
+        with save_lock:
+            shutil.rmtree(ds_root)
+            coord.drop_dataset(ds)
+    except BaseException:
+        coord.release(ds)
+        raise
 
 
 @router.post("/datasets")

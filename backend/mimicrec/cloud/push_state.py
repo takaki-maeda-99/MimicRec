@@ -45,6 +45,17 @@ class PushCoordinator:
                 self.save_locks[ds_name] = existing
             return existing
 
+    def try_reserve_delete(self, ds_name: str) -> bool:
+        """Atomically reserve `ds_name` for deletion if no push is in flight.
+        Returns True if successfully reserved (caller may proceed to delete),
+        False if a push is in flight. Reservation prevents concurrent push.
+        Caller must call drop_dataset(ds_name) when done."""
+        with self._mu:
+            if ds_name in self.in_flight:
+                return False
+            self.in_flight.add(ds_name)
+            return True
+
     def drop_dataset(self, ds_name: str) -> None:
         """Cleanup all state for a deleted dataset."""
         with self._mu:

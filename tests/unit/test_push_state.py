@@ -65,3 +65,18 @@ def test_drop_dataset_clears_state():
     assert "ds_a" not in c.in_flight
     assert "ds_a" not in c.save_locks
     assert "ds_a" not in c.progress
+
+
+def test_try_reserve_delete_blocks_when_push_in_flight():
+    c = PushCoordinator()
+    assert c.try_reserve("ds") is True
+    assert c.try_reserve_delete("ds") is False
+    c.release("ds")
+    assert c.try_reserve_delete("ds") is True
+
+
+def test_try_reserve_delete_blocks_subsequent_push():
+    c = PushCoordinator()
+    assert c.try_reserve_delete("ds") is True
+    # delete reservation prevents push reservation (same in_flight set)
+    assert c.try_reserve("ds") is False
