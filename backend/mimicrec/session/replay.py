@@ -41,7 +41,7 @@ async def run_replay(
     measured_state_slot: "LatestValue | None" = None,
     safety: "ReplaySafetyConfig | None" = None,
     error_bus: "object | None" = None,
-    interp_steps: int = 5,
+    interp_steps: int = 10,
 ) -> None:
     if session.state != SessionState.READY:
         from mimicrec.errors import InvalidTransitionError
