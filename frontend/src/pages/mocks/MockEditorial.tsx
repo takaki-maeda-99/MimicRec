@@ -46,20 +46,20 @@ export default function MockEditorial() {
           className="w-[232px] flex flex-col px-6 py-7 border-r"
           style={{ borderColor: "var(--rule)", background: "var(--bg)" }}
         >
-          <div className="mb-10 flex items-center gap-2.5">
+          <div className="mb-12 flex items-center gap-3">
             <span
-              className="inline-block w-3 h-3 rounded-sm"
+              className="inline-block w-5 h-5 rounded-md"
               style={{ background: "var(--lime)" }}
             />
             <div
-              className="text-[20px] leading-[1] tracking-[-0.025em]"
+              className="text-[26px] leading-[1] tracking-[-0.025em]"
               style={{ fontWeight: 700, color: "var(--ink)" }}
             >
               MimicRec
             </div>
           </div>
 
-          <nav className="flex flex-col gap-1 mb-10">
+          <nav className="flex flex-col gap-1.5 mb-10">
             <NavLink active>Datasets</NavLink>
             <NavLink>Record</NavLink>
             <NavLink>Inference</NavLink>
@@ -67,24 +67,24 @@ export default function MockEditorial() {
           </nav>
 
           <div
-            className="text-[12px] mt-auto pt-4 border-t flex flex-col gap-1.5"
+            className="mt-auto pt-5 border-t flex flex-col gap-2"
             style={{ borderColor: "var(--rule)", color: "var(--steel)" }}
           >
             <div
-              className="text-[10px] tracking-[0.2em] uppercase"
-              style={{ color: "var(--stone)", fontWeight: 500 }}
+              className="text-[11px] tracking-[0.22em] uppercase"
+              style={{ color: "var(--stone)", fontWeight: 600 }}
             >
               Operator
             </div>
             <div
-              className="text-[14px]"
+              className="text-[18px] tracking-[-0.01em]"
               style={{ color: "var(--ink)", fontWeight: 600 }}
             >
               {MOCK_USER}
             </div>
-            <div className="flex items-center gap-1.5 mt-2 text-[11px]">
+            <div className="flex items-center gap-2 mt-2 text-[13px]">
               <span
-                className="w-2 h-2 rounded-full"
+                className="w-2.5 h-2.5 rounded-full"
                 style={{ background: "var(--lime)" }}
               />
               <span style={{ color: "var(--slate)" }}>Hub authenticated</span>
@@ -209,7 +209,7 @@ function NavLink({
   return (
     <a
       href="#"
-      className="group flex items-center gap-2.5 text-[14px] py-1.5 px-2 rounded-md transition-colors"
+      className="group flex items-center gap-3 text-[16px] py-2.5 px-3 rounded-md transition-colors"
       style={{
         color: active ? "var(--ink)" : "var(--steel)",
         fontWeight: active ? 600 : 500,
@@ -217,7 +217,7 @@ function NavLink({
       }}
     >
       <span
-        className="w-1 h-4 rounded-sm transition-all"
+        className="w-1.5 h-5 rounded-sm transition-all"
         style={{
           background: active ? "var(--lime)" : "transparent",
         }}
