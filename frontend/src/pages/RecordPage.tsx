@@ -18,6 +18,7 @@ export default function RecordPage() {
   const sessionState = useSessionStore((s) => s.state);
   const subState = useSessionStore((s) => s.subState);
   const cameras = useSessionStore((s) => s.cameras);
+  const gopros = useSessionStore((s) => s.gopros);
   const dataset = useSessionStore((s) => s.dataset);
   const robot = useSessionStore((s) => s.robot);
   const teleop = useSessionStore((s) => s.teleop);
@@ -110,11 +111,17 @@ export default function RecordPage() {
             <CodeInline>{cameras.join(", ")}</CodeInline>
           </span>
         )}
+        {gopros.length > 0 && (
+          <span className="flex items-center gap-xs">
+            <span className="text-caption text-stone">GoPros</span>
+            <CodeInline>{gopros.join(", ")}</CodeInline>
+          </span>
+        )}
       </Card>
 
-      {cameras.length > 0 && sessionState !== "review" && (
+      {(cameras.length > 0 || gopros.length > 0) && sessionState !== "review" && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-md mb-md">
-          {cameras.map((cam) => (
+          {[...cameras, ...gopros].map((cam) => (
             <CameraPreview key={cam} camName={cam} />
           ))}
         </div>

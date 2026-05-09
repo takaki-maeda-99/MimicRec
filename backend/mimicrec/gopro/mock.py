@@ -22,6 +22,7 @@ class MockGoProDevice:
         emit_preview: bool = False,
         storage_remaining: int = 1_000_000_000,
         chapters_per_episode: int = 1,
+        udp_preview_port: int = 8554,
     ) -> None:
         # Validate via picker (raises if (w,h,fps) impossible).
         self._preset, self._aspect_match = pick_preset(width, height, fps, aspect_mode)
@@ -37,6 +38,7 @@ class MockGoProDevice:
         self._storage = storage_remaining
         self._chapters_per_episode = max(1, chapters_per_episode)
 
+        self._udp_preview_port = int(udp_preview_port)
         self._connected = False
         self._disabled = False
         self._files: list[MediaItem] = []
@@ -52,6 +54,8 @@ class MockGoProDevice:
     def selected_preset(self) -> NativePreset: return self._preset
     @property
     def aspect_mode(self) -> str: return self._aspect_mode
+    @property
+    def udp_preview_port(self) -> int: return self._udp_preview_port
 
     def get_spec(self) -> GoProSpec:
         return GoProSpec(

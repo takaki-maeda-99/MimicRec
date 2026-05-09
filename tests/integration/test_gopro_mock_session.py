@@ -64,6 +64,9 @@ async def test_three_episodes_with_mock_gopro(tmp_path: Path):
         })
         assert r.status_code == 200, r.text
         assert r.json()["state"] == "ready"
+        # GoPros declared at session start must round-trip through
+        # /session/state so the frontend can render preview tiles for them.
+        assert r.json()["gopros"] == ["mock_gopro"]
 
         # ── 2. Three episode cycles ───────────────────────────────────────────
         for ep_i in range(3):

@@ -52,6 +52,7 @@ def build_state_payload(app) -> dict:
         mapper=meta.get("mapper"),
         cameras=meta.get("cameras", []),
         fps=meta.get("fps"),
+        gopros=meta.get("gopros", []),
     ).model_dump()
 
 

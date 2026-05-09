@@ -54,9 +54,14 @@ class GoProDeviceRegistry:
 
         # 2. Restore queue, build recorders + preview sources.
         self._queue = DLQueue.restore(self._paths.pending_dir / "gopro_dl")
-        for idx, d in enumerate(self._devices):
+        for d in self._devices:
             self._recorders[d.name] = GoProRecorder(d, self._queue, self._paths, self._errors)
-            self._previews[d.name] = GoProPreviewSource(d, udp_port=18556 + idx)
+            # The device knows which UDP port the camera will actually emit
+            # to: HERO9–11 firmware ignores the port arg and forces 8554,
+            # so the device must claim it via ``udp_preview_port`` and the
+            # preview source binds the same. Multi-camera HERO12+ setups
+            # override the port per device in yaml.
+            self._previews[d.name] = GoProPreviewSource(d, udp_port=d.udp_preview_port)
 
         # 3. Start the DL worker.
         devices_by_serial = {d.usb_serial: d for d in self._devices}

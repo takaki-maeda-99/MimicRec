@@ -11,6 +11,7 @@ interface SessionStore {
   teleop: string | null;
   mapper: string | null;
   cameras: string[];
+  gopros: string[];
   fps: number | null;
   episodeProgress: EpisodeProgress | null;
   replayProgress: ReplayProgress | null;
@@ -33,6 +34,7 @@ export const useSessionStore = create<SessionStore>((set) => ({
   teleop: null,
   mapper: null,
   cameras: [],
+  gopros: [],
   fps: null,
   episodeProgress: null,
   replayProgress: null,
@@ -49,6 +51,7 @@ export const useSessionStore = create<SessionStore>((set) => ({
       teleop: (data.teleop as string) ?? null,
       mapper: (data.mapper as string) ?? null,
       cameras: (data.cameras as string[]) ?? [],
+      gopros: (data.gopros as string[]) ?? [],
       fps: (data.fps as number) ?? null,
     }),
 

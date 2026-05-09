@@ -12,14 +12,79 @@ log = logging.getLogger(__name__)
 try:
     from open_gopro import WiredGoPro                # type: ignore
     from open_gopro.models import constants, proto   # type: ignore
+    from open_gopro.models.constants import settings as _gp_settings  # type: ignore
 except Exception:
     WiredGoPro = None  # type: ignore[assignment]
     constants = None   # type: ignore[assignment]
     proto = None       # type: ignore[assignment]
+    _gp_settings = None  # type: ignore[assignment]
 
 
 # Phase 0 confirmed: SD remaining is at state.data["54"] in KB.
 _STORAGE_MIN_KB = 500_000   # 500 MB ≈ 500_000 KB
+
+
+_MAX_LENS_MOD_VALUES = {
+    "none": "NONE",
+    "max_lens_1_0": "MAX_LENS_1_0",
+    "max_lens_2_0": "MAX_LENS_2_0",
+    "max_lens_2_5": "MAX_LENS_2_5",
+    "macro": "MACRO",
+    "anamorphic": "ANAMORPHIC",
+    "nd_4": "ND_4", "nd_8": "ND_8", "nd_16": "ND_16", "nd_32": "ND_32",
+    "standard_lens": "STANDARD_LENS",
+    "auto_detect": "AUTO_DETECT",
+}
+
+_VIDEO_LENS_VALUES = {
+    "max_superview": "MAX_SUPERVIEW",
+    "linear_horizon_leveling": "LINEAR_HORIZON_LEVELING",
+    "linear_horizon_lock": "LINEAR_HORIZON_LOCK",
+    "max_hyperview": "MAX_HYPERVIEW",
+}
+
+
+# HERO9–11 only expose the legacy on/off setting 162 (`MAX_LENS`); they
+# return 403 Forbidden for the granular 189/190 pair introduced for Max Lens
+# Mod 2.0 on HERO12/13. We pick the right API automatically from the mod
+# value so the operator doesn't have to know which firmware uses which.
+_LEGACY_API_MODS = {"max_lens_1_0", "none"}
+
+
+def _resolve_max_lens(cfg: dict | None) -> tuple[object, object | None, str]:
+    """Validate the optional ``max_lens`` block from a GoPro yaml.
+
+    Returns ``(mod_enum, fov_enum_or_None, api_kind)`` where ``api_kind`` is
+    ``"legacy"`` (setting 162) or ``"modern"`` (settings 189+190). Returns
+    ``(None, None, "legacy")`` when the block is omitted. Validation runs
+    at construction time so a typo in yaml fails fast (before the camera
+    is even connected) instead of surfacing as an opaque HardwareError
+    mid-session.
+    """
+    if cfg is None:
+        return (None, None, "legacy")
+    if _gp_settings is None:
+        raise ValueError("max_lens configured but open_gopro is not installed")
+    mod_key = str(cfg.get("mod", "")).lower()
+    if mod_key not in _MAX_LENS_MOD_VALUES:
+        raise ValueError(
+            f"max_lens.mod={cfg.get('mod')!r} is invalid; "
+            f"expected one of {sorted(_MAX_LENS_MOD_VALUES)}"
+        )
+    mod_enum = getattr(_gp_settings.MaxLensMod, _MAX_LENS_MOD_VALUES[mod_key])
+
+    fov_enum = None
+    fov_key = cfg.get("fov")
+    if fov_key is not None:
+        fov_key = str(fov_key).lower()
+        if fov_key not in _VIDEO_LENS_VALUES:
+            raise ValueError(
+                f"max_lens.fov={cfg.get('fov')!r} is invalid; "
+                f"expected one of {sorted(_VIDEO_LENS_VALUES)}"
+            )
+        fov_enum = getattr(_gp_settings.VideoLens, _VIDEO_LENS_VALUES[fov_key])
+    api_kind = "legacy" if mod_key in _LEGACY_API_MODS else "modern"
+    return (mod_enum, fov_enum, api_kind)
 
 
 class GoProDevice:
@@ -31,6 +96,8 @@ class GoProDevice:
         height: int,
         fps: int,
         aspect_mode: str = "crop",
+        max_lens: dict | None = None,
+        udp_preview_port: int = 8554,
     ) -> None:
         self._preset, self._aspect_match = pick_preset(width, height, fps, aspect_mode)
         self._name = name
@@ -39,6 +106,14 @@ class GoProDevice:
         self._target_h = height
         self._target_fps = fps
         self._aspect_mode = aspect_mode
+        self._max_lens_mod, self._max_lens_fov, self._max_lens_api = _resolve_max_lens(max_lens)
+        # HERO9–11 firmware ignores the ``port`` argument to
+        # ``set_preview_stream`` and always emits to UDP 8554. HERO12/13
+        # respect the port argument. Defaulting to the OpenGoPro spec's
+        # canonical port (8554) makes the single-camera HERO11 case work
+        # out of the box; multi-camera HERO12+ setups should override per
+        # device in yaml.
+        self._udp_preview_port = int(udp_preview_port)
         self._client_ctx = None
         self._client = None
         self._disabled = False
@@ -53,6 +128,8 @@ class GoProDevice:
     def selected_preset(self) -> NativePreset: return self._preset
     @property
     def aspect_mode(self) -> str: return self._aspect_mode
+    @property
+    def udp_preview_port(self) -> int: return self._udp_preview_port
 
     def get_spec(self) -> GoProSpec:
         return GoProSpec(
@@ -88,6 +165,33 @@ class GoProDevice:
             self._client.http_command.load_preset(preset=self._preset.sdk_id),
             f"load_preset {self._preset.name}",
         )
+        if self._max_lens_mod is not None:
+            if self._max_lens_api == "legacy":
+                # HERO9–11 expose only setting 162 (a simple on/off). The
+                # specific mod variant is implicit (only 1.0 exists for these
+                # cameras), so we don't need to declare it separately.
+                await self._must_ok(
+                    self._client.http_setting.max_lens.set(_gp_settings.MaxLens.ON),
+                    "max_lens on (legacy 162)",
+                )
+            else:
+                # HERO12/13 require the granular 189/190 pair. Enable BEFORE
+                # declaring which mod is attached, otherwise the camera
+                # rejects the mod ID with "lens mod disabled".
+                await self._must_ok(
+                    self._client.http_setting.max_lens_mod_enable.set(
+                        _gp_settings.MaxLensModEnable.ON),
+                    "max_lens_mod_enable on",
+                )
+                await self._must_ok(
+                    self._client.http_setting.max_lens_mod.set(self._max_lens_mod),
+                    f"max_lens_mod {self._max_lens_mod.name}",
+                )
+            if self._max_lens_fov is not None:
+                await self._must_ok(
+                    self._client.http_setting.video_lens.set(self._max_lens_fov),
+                    f"video_lens {self._max_lens_fov.name}",
+                )
         state = await self._must_ok(
             self._client.http_command.get_camera_state(), "get_camera_state",
         )
@@ -143,6 +247,17 @@ class GoProDevice:
 
     async def start_preview(self, port: int) -> None:
         if self._disabled or self._client is None: return
+        # Mirror open_gopro.features.streaming.preview_stream's pre-flight:
+        # if a previous session left the preview stream running (or a stale
+        # one on a different port), the camera silently keeps it on the
+        # OLD port and the new ENABLE returns ok without actually emitting
+        # anything to the new port. A leading DISABLE makes ENABLE
+        # idempotent. Suppress errors — if it wasn't running, that's fine.
+        try:
+            await self._client.http_command.set_preview_stream(
+                mode=constants.Toggle.DISABLE)
+        except Exception as e:
+            log.debug("preview pre-flight DISABLE failed (ignored): %s", e)
         await self._must_ok(
             self._client.http_command.set_preview_stream(
                 mode=constants.Toggle.ENABLE, port=port),

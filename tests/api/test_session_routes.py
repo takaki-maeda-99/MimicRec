@@ -35,9 +35,12 @@ async def test_session_start_and_end(app, tmp_path):
         assert r.status_code == 200
         assert r.json()["state"] == "ready"
         assert r.json()["mode"] == "teleop"
+        assert r.json()["cameras"] == []
+        assert r.json()["gopros"] == []
 
         r = await ac.get("/api/session/state")
         assert r.json()["state"] == "ready"
+        assert r.json()["gopros"] == []
 
         r = await ac.post("/api/session/end")
         assert r.status_code == 200

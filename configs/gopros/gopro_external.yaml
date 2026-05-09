@@ -5,3 +5,11 @@ width: 1280
 height: 720
 fps: 30
 aspect_mode: crop
+# HERO11 + Max Lens Mod 1.0. The device layer routes mod=max_lens_1_0 to
+# the legacy setting 162 (`MAX_LENS` on/off) because HERO9–11 return 403
+# Forbidden for the granular 189/190 pair introduced for HERO12/13.
+# Mod 2.0/2.5 are HERO12/13 only — switching to those values flips the
+# device to the modern API automatically.
+max_lens:
+  mod: max_lens_1_0
+  fov: max_superview
