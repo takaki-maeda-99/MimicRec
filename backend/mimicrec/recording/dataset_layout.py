@@ -53,7 +53,10 @@ def init_dataset(
     camera_resolutions: dict[str, tuple[int, int]] | None = None,
     gopro_specs: "dict[str, object] | None" = None,
 ) -> None:
-    ds_root.mkdir(parents=True, exist_ok=False)
+    # ds_root may already exist if the caller pre-created subdirs (e.g.
+    # api/deps.py creates `.pending/` before init_dataset is invoked when a
+    # GoPro registry is configured). Tolerate an empty pre-existing ds_root.
+    ds_root.mkdir(parents=True, exist_ok=True)
     p = dataset_paths(ds_root)
     p.meta_dir.mkdir(parents=True, exist_ok=True)
     p.data_dir.mkdir(parents=True, exist_ok=True)

@@ -184,7 +184,8 @@ async def create_session_from_request(app, req) -> SessionManager:
     # NOTE: pending_dir.mkdir (above) may have already created ds_root.
     # Guard on info.json presence rather than directory existence so that
     # init_dataset is called even when the pending dir was pre-created.
-    if not (ds_root / "meta" / "info.json").exists():
+    info_path = ds_root / "meta" / "info.json"
+    if not info_path.exists():
         # Capture per-adapter declarations if available (None for mock adapters).
         rt = type(robot).__name__
         gc = (
@@ -221,6 +222,67 @@ async def create_session_from_request(app, req) -> SessionManager:
             camera_resolutions=camera_resolutions,
             gopro_specs=gopro_registry.gopro_specs() if gopro_registry else None,
         )
+    else:
+        # Existing dataset — its features schema is fixed at creation time.
+        # Reject session start if robot type, fps, or camera/gopro set differs
+        # from what info.json declares. Without this guard you can:
+        #   - record episode 3 with a different robot than episodes 0-2
+        #   - add cameras mid-dataset that aren't in info.json (orphan files
+        #     on disk that no loader will read)
+        # → produces silently-broken datasets. LeRobot v3 expects one schema.
+        import json as _json
+        try:
+            info = _json.loads(info_path.read_text())
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"dataset '{req.dataset}' info.json is unreadable: {e}",
+            ) from e
+
+        existing_robot_type = info.get("robot_type")
+        actual_robot_type = type(robot).__name__
+        if existing_robot_type and existing_robot_type != actual_robot_type:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"dataset '{req.dataset}' was created with robot_type="
+                    f"{existing_robot_type!r}; this request uses {actual_robot_type!r}. "
+                    f"Create a new dataset for a different robot."
+                ),
+            )
+
+        existing_fps = info.get("fps")
+        if existing_fps and int(existing_fps) != int(req.fps):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"dataset '{req.dataset}' fps={existing_fps}; this request "
+                    f"fps={req.fps}. Cannot change fps mid-dataset."
+                ),
+            )
+
+        existing_image_keys = {
+            k.removeprefix("observation.images.")
+            for k in info.get("features", {})
+            if k.startswith("observation.images.")
+        }
+        requested_images = set(req.cameras) | set(getattr(req, "gopros", []))
+        if existing_image_keys != requested_images:
+            missing = sorted(existing_image_keys - requested_images)
+            extra = sorted(requested_images - existing_image_keys)
+            parts: list[str] = []
+            if missing:
+                parts.append(f"missing {missing}")
+            if extra:
+                parts.append(f"unexpected {extra} (not in dataset schema)")
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"dataset '{req.dataset}' was created with cameras+gopros="
+                    f"{sorted(existing_image_keys)}; request differs ({'; '.join(parts)}). "
+                    f"Create a new dataset to use a different camera set."
+                ),
+            )
 
     # Resolved config snapshot
     resolved: dict[str, object] = {"robot": OmegaConf.to_container(robot_cfg)}
