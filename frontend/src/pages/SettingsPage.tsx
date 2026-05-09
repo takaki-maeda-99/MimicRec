@@ -183,13 +183,15 @@ export default function SettingsPage() {
                   group={group}
                   rightSlot={
                     <Button
-                      variant="link"
+                      variant="secondary"
+                      size="sm"
+                      className="!bg-surface hover:!bg-hairline"
                       onClick={() => {
                         setEditingConfig({ ...cfg, group });
                         setEditJson(JSON.stringify(cfg.content, null, 2));
                       }}
                     >
-                      Edit
+                      ⚙ Edit
                     </Button>
                   }
                 />

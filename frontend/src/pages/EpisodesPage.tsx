@@ -1,4 +1,4 @@
-import { useParams, Link } from "react-router-dom";
+import { useParams, Link, useNavigate } from "react-router-dom";
 import { useEpisodes, useDeleteEpisode } from "../api/queries";
 import { Button } from "../components/ui/button";
 import { CodeInline } from "../components/ui/code-inline";
@@ -7,6 +7,7 @@ export default function EpisodesPage() {
   const { ds } = useParams<{ ds: string }>();
   const { data: episodes, isLoading } = useEpisodes(ds || "");
   const deleteMutation = useDeleteEpisode(ds || "");
+  const navigate = useNavigate();
 
   if (!ds) return <div className="p-6">No dataset selected</div>;
 
@@ -34,19 +35,22 @@ export default function EpisodesPage() {
               <th className="pb-sm font-semibold">Success</th>
               <th className="pb-sm font-semibold">Mode</th>
               <th className="pb-sm font-semibold">Recorded</th>
-              <th className="pb-sm font-semibold">Actions</th>
+              <th className="pb-sm font-semibold"></th>
             </tr>
           </thead>
           <tbody>
             {episodes.map((ep) => (
-              <tr key={ep.episode_index} className="border-b border-hairline-soft">
+              <tr
+                key={ep.episode_index}
+                className="border-b border-hairline-soft hover:bg-surface cursor-pointer transition-colors group"
+                onClick={() => navigate(`/datasets/${ds}/episodes/${ep.episode_index}/replay`)}
+                title={`Open replay for episode #${ep.display_index}`}
+              >
                 <td className="py-md">
-                  <Link
-                    to={`/datasets/${ds}/episodes/${ep.episode_index}/replay`}
-                    className="text-ink text-body-sm-medium hover:underline"
-                  >
+                  <span className="inline-flex items-center gap-1 text-ink text-body-sm-medium group-hover:underline">
                     {ep.display_index}
-                  </Link>
+                    <span className="text-stone group-hover:text-ink">→</span>
+                  </span>
                 </td>
                 <td className="py-md text-slate">{ep.task}</td>
                 <td className="py-md text-slate">{ep.duration_sec.toFixed(1)}s</td>
@@ -58,17 +62,18 @@ export default function EpisodesPage() {
                 </td>
                 <td className="py-md text-slate">{ep.mode}</td>
                 <td className="py-md text-steel text-caption">{ep.recorded_at || "—"}</td>
-                <td className="py-md">
+                <td className="py-md text-right" onClick={(e) => e.stopPropagation()}>
                   <Button
-                    variant="link"
-                    className="!text-brand-error"
+                    variant="secondary"
+                    size="sm"
+                    className="!bg-brand-error/10 !text-brand-error hover:!bg-brand-error/20"
                     onClick={() => {
                       if (confirm(`Delete episode #${ep.display_index}?`)) {
                         deleteMutation.mutate(ep.episode_index);
                       }
                     }}
                   >
-                    Delete
+                    🗑 Delete
                   </Button>
                 </td>
               </tr>
