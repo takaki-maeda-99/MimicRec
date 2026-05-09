@@ -15,6 +15,7 @@ export default function SessionConfigForm({ onStarted }: Props) {
   const { data: teleops } = useConfigsWithContent("teleop");
   const { data: mappers } = useConfigsWithContent("mapper");
   const { data: cameras } = useConfigsWithContent("cameras");
+  const { data: gopros } = useConfigsWithContent("gopros", { optional: true });
   const { data: datasets } = useDatasets();
   const startSession = useStartSession();
 
@@ -22,7 +23,7 @@ export default function SessionConfigForm({ onStarted }: Props) {
   const clearError = useSessionStore((s) => s.clearError);
 
   const form = useRecordFormStore();
-  const { mode, robot, teleop, mapper, selectedCams, dataset, task, fps } = form;
+  const { mode, robot, teleop, mapper, selectedCams, selectedGopros, dataset, task, fps } = form;
 
   const datasetExists = !!datasets?.some(d => d.name === dataset);
   const { data: tasks } = useTasks(datasetExists ? dataset : "");
@@ -33,7 +34,7 @@ export default function SessionConfigForm({ onStarted }: Props) {
     // to the new attempt's spinner.
     clearError();
     const body: Record<string, unknown> = {
-      mode, dataset, task, robot, cameras: selectedCams, fps,
+      mode, dataset, task, robot, cameras: selectedCams, gopros: selectedGopros, fps,
     };
     if (mode === "teleop") {
       body.teleop = teleop;
@@ -157,6 +158,30 @@ export default function SessionConfigForm({ onStarted }: Props) {
           ))}
         </div>
       </div>
+      {gopros && gopros.length > 0 && (
+        <div>
+          <label className="block text-body-sm-medium text-charcoal mb-xs">
+            GoPros <span className="text-stone font-normal">(複数選択)</span>
+          </label>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            {gopros.map(g => (
+              <ConfigCard
+                key={g.name}
+                config={g}
+                group="gopros"
+                multiSelect
+                selected={selectedGopros.includes(g.name)}
+                onClick={() => {
+                  const next = selectedGopros.includes(g.name)
+                    ? selectedGopros.filter(x => x !== g.name)
+                    : [...selectedGopros, g.name];
+                  form.set({ selectedGopros: next });
+                }}
+              />
+            ))}
+          </div>
+        </div>
+      )}
       <div>
         <label className="block text-sm font-medium text-charcoal mb-1">FPS</label>
         <Input type="number" className="w-20" value={fps} onChange={e => form.set({ fps: Number(e.target.value) })} />

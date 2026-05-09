@@ -82,10 +82,17 @@ export function useConfigs(group: string) {
   });
 }
 
-export function useConfigsWithContent(group: string) {
+export function useConfigsWithContent(
+  group: string,
+  options?: { optional?: boolean },
+) {
   return useQuery({
     queryKey: ["configs-with-content", group],
     queryFn: () => apiFetch<ConfigEntry[]>(`/api/settings/configs/${group}`),
+    // Optional groups (e.g. gopros) may not have a configs/ dir on every host —
+    // a 404 means "no configs of this kind yet", not "broken". Suppress retries
+    // so the form silently hides those pickers without console noise.
+    retry: options?.optional ? false : 3,
   });
 }
 

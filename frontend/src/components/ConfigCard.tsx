@@ -1,10 +1,10 @@
 import type { ReactNode } from "react";
-import { ArrowRightLeft, Bot, Camera, Check, Gamepad2 } from "lucide-react";
+import { Aperture, ArrowRightLeft, Bot, Camera, Check, Gamepad2 } from "lucide-react";
 import { cn } from "../lib/utils";
 import { Badge } from "./ui/badge";
 import { CodeInline } from "./ui/code-inline";
 
-export type ConfigGroup = "robot" | "teleop" | "mapper" | "cameras";
+export type ConfigGroup = "robot" | "teleop" | "mapper" | "cameras" | "gopros";
 
 export interface ConfigCardEntry {
   name: string;
@@ -26,6 +26,7 @@ const ICON_BY_GROUP = {
   teleop: Gamepad2,
   mapper: ArrowRightLeft,
   cameras: Camera,
+  gopros: Aperture,
 } as const;
 
 const ICON_THEME_BY_GROUP: Record<ConfigGroup, string> = {
@@ -33,6 +34,7 @@ const ICON_THEME_BY_GROUP: Record<ConfigGroup, string> = {
   teleop: "bg-brand-warn/15 text-brand-warn",
   mapper: "bg-surface text-steel",
   cameras: "bg-brand-green/20 text-brand-green-deep",
+  gopros: "bg-brand-error/15 text-brand-error",
 };
 
 function getTypeBadge(content: Record<string, unknown>): string | null {
@@ -68,6 +70,20 @@ function getMeta(group: ConfigGroup, content: Record<string, unknown>): ReactNod
       <>
         {deviceId !== undefined && <CodeInline>device {String(deviceId)}</CodeInline>}
         {width !== null && height !== null && <span>{width} × {height}</span>}
+      </>
+    );
+  }
+  if (group === "gopros") {
+    const width = typeof content.width === "number" ? content.width : null;
+    const height = typeof content.height === "number" ? content.height : null;
+    const fps = typeof content.fps === "number" ? content.fps : null;
+    const serial = typeof content.usb_serial === "string" ? content.usb_serial : null;
+    if (width === null && fps === null && serial === null) return null;
+    return (
+      <>
+        {width !== null && height !== null && <span>{width} × {height}</span>}
+        {fps !== null && <span>{fps} fps</span>}
+        {serial && <CodeInline>{serial}</CodeInline>}
       </>
     );
   }

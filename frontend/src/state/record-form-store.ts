@@ -7,6 +7,7 @@ export interface RecordFormDraft {
   teleop: string;
   mapper: string;
   selectedCams: string[];
+  selectedGopros: string[];
   dataset: string;
   task: string;
   fps: number;
@@ -26,6 +27,7 @@ const DEFAULTS: RecordFormDraft = {
   teleop: "",
   mapper: "",
   selectedCams: [],
+  selectedGopros: [],
   dataset: "",
   task: "",
   fps: 30,
