@@ -77,3 +77,9 @@ export interface ExportResponse {
   num_frames: number;
   warnings: string[];
 }
+
+export interface ConfigEntry {
+  name: string;
+  file?: string;
+  content: Record<string, unknown>;
+}
