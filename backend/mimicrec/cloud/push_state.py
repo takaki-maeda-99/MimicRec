@@ -15,7 +15,14 @@ class PushProgress:
 
 
 class PushCoordinator:
-    """Per-process state for HF push tasks. Single-process / single-event-loop only."""
+    """Per-process state for HF push tasks. Single-process / single-event-loop only.
+
+    Memory: progress / save_locks dicts grow as datasets are pushed. Each entry
+    is small (~200 bytes) and cleaned up via drop_dataset() on dataset deletion.
+    For backends that push thousands of distinct datasets without deleting them,
+    consider periodic cleanup of done/error entries older than N hours. v1
+    accepts unbounded growth on the assumption that dataset count is bounded.
+    """
 
     def __init__(self) -> None:
         self._mu = threading.Lock()
