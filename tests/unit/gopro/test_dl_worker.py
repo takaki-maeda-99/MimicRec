@@ -136,6 +136,72 @@ async def test_dl_with_discard_pending_skips_dl(paths):
 
 
 @pytest.mark.asyncio
+async def test_commit_pending_set_during_staging_window_is_not_overwritten(paths):
+    """Race regression: if registry.commit_episode flips state pending_dl →
+    commit_pending AFTER the DLWorker's pre-stage read but BEFORE its
+    update_sidecar(staged) write, the worker must NOT clobber the
+    commit_pending state with staged.
+
+    Symptom (the bug this fix targets): the staged mp4 sits in
+    .pending/gopro_staged/ forever and the dataset's
+    videos/.../episode_NNNNNN.mp4 never appears. /api/session/gopro_pending
+    keeps reporting nonzero.
+
+    Simulation: patch read_sidecar so the FIRST call (line 143 of
+    _process_one) returns the on-disk pending_dl value but ALSO writes
+    commit_pending to disk as a side effect. This models the asyncio
+    interleaving where commit_episode lands its update during the
+    yield in read_sidecar.
+    """
+    d = MockGoProDevice(name="g1", usb_serial="S1", fixture_mp4=FIXTURE)
+    await d.connect()
+    queue = DLQueue(paths.pending_dir / "gopro_dl")
+    errors = ErrorBus()
+    worker = GoProDLWorker(queue, devices={"S1": d}, paths=paths, errors=errors)
+
+    await d.shutter_on(); await d.shutter_off()
+    files = await d.media_list()
+    job = _job(job_id="j_race")
+    job.sd_filename = files[0].filename
+    await queue.enqueue(job)
+
+    # Race injector: replace read_sidecar so that on its FIRST invocation,
+    # after returning the cached pending_dl object, it commits a
+    # commit_pending state to disk before the worker can write staged.
+    real_read = queue.read_sidecar
+    real_update = queue.update_sidecar
+    race_fired = {"v": False}
+
+    async def racing_read(job_id):
+        result = await real_read(job_id)
+        if not race_fired["v"] and result is not None and result.state == "pending_dl":
+            race_fired["v"] = True
+            flipped = GoProDLJob(**{**result.to_json(), "state": "commit_pending"})
+            await real_update(flipped)
+        return result
+
+    queue.read_sidecar = racing_read  # type: ignore[assignment]
+
+    task = asyncio.create_task(worker.run())
+    await asyncio.sleep(0.5)
+    await worker.stop()
+    try: await asyncio.wait_for(task, timeout=2.0)
+    except asyncio.CancelledError: pass
+
+    # Invariant: the race-flipped commit_pending must result in a
+    # committed dataset video, NOT an orphaned staged file.
+    assert paths.episode_video(0, "g1", 0).exists(), (
+        "DLWorker overwrote commit_pending with staged — staged mp4 is "
+        "now stuck in pending dir and dataset video is missing"
+    )
+    assert not (paths.pending_dir / "gopro_dl" / "j_race.json").exists(), (
+        "Sidecar should be marked done after commit"
+    )
+    # Staged file should be gone (moved into dataset).
+    assert not (paths.pending_dir / "gopro_staged" / "j_race.mp4").exists()
+
+
+@pytest.mark.asyncio
 async def test_resume_from_tmp_skips_redownload(paths):
     """When tmp_raw already matches SD-side size (i.e. previous DL completed
     but ffmpeg/staging failed), DLWorker should skip download and re-run ffmpeg.

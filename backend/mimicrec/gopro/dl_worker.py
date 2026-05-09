@@ -155,13 +155,33 @@ class GoProDLWorker:
             await self._queue.mark_done(job.job_id)
             return
 
-        # Normal path: mark as staged, await registry's commit/discard.
+        # Re-read RIGHT before writing 'staged'. Without this, a registry
+        # update_sidecar(commit_pending|discard_pending) that landed during
+        # any prior await (download, ffmpeg, the read above — all yield via
+        # asyncio.to_thread) would be silently overwritten by our staged
+        # write, leaving the mp4 orphaned in pending_staged forever and
+        # the dataset's episode video file missing.
+        fresh = await self._queue.read_sidecar(job.job_id)
+        if fresh is None:
+            staged.unlink(missing_ok=True)
+            return
+        if fresh.state == "commit_pending":
+            await self._commit_to_dataset(fresh, staged)
+            await self._queue.mark_done(job.job_id)
+            return
+        if fresh.state == "discard_pending":
+            staged.unlink(missing_ok=True)
+            await self._queue.mark_done(job.job_id)
+            return
+
+        # Still pending_dl on disk: mark as staged, await registry's commit/discard.
         fresh.state = "staged"
         fresh.staged_path = str(staged)
         await self._queue.update_sidecar(fresh)
 
-        # Race: registry may have written commit_pending/discard_pending between
-        # our read and update. Re-read once more.
+        # Even after the just-before-write re-read, registry could have
+        # written commit_pending/discard_pending while update_sidecar was
+        # awaiting the to_thread fsync. Re-read once more.
         after = await self._queue.read_sidecar(job.job_id)
         if after is None:
             staged.unlink(missing_ok=True)
