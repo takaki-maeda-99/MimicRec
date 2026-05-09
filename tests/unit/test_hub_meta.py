@@ -89,3 +89,19 @@ def test_manifest_hash_changes_on_mtime_only_change(tmp_path: Path):
     os.utime(f, (new_mtime, new_mtime))
     h2 = compute_manifest_hash(ds)
     assert h1 != h2
+
+
+def test_read_hub_meta_returns_none_on_corrupt_json(tmp_path: Path):
+    ds = _mkds(tmp_path)
+    hub_meta_path(ds).parent.mkdir(parents=True, exist_ok=True)
+    hub_meta_path(ds).write_text("{ this is not valid JSON")
+    # 例外を投げず None を返す（未設定扱い）
+    assert read_hub_meta(ds) is None
+
+
+def test_read_hub_meta_returns_none_on_missing_required_field(tmp_path: Path):
+    ds = _mkds(tmp_path)
+    hub_meta_path(ds).parent.mkdir(parents=True, exist_ok=True)
+    # repo_id 必須なのに無い
+    hub_meta_path(ds).write_text('{"private": true}')
+    assert read_hub_meta(ds) is None

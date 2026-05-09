@@ -27,10 +27,18 @@ def read_hub_meta(ds_root: Path) -> HubMeta | None:
     p = hub_meta_path(ds_root)
     if not p.exists():
         return None
-    raw = json.loads(p.read_text())
-    # 未知 key は無視（forward-compat）
+    try:
+        raw = json.loads(p.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
+    if not isinstance(raw, dict):
+        return None
     known = {f.name for f in fields(HubMeta)}
-    return HubMeta(**{k: v for k, v in raw.items() if k in known})
+    filtered = {k: v for k, v in raw.items() if k in known}
+    try:
+        return HubMeta(**filtered)
+    except (TypeError, ValueError):
+        return None
 
 
 def write_hub_meta(ds_root: Path, meta: HubMeta) -> None:
