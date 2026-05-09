@@ -1,14 +1,17 @@
 from __future__ import annotations
 import logging
 from typing import Annotated, Union
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
+import numpy as np
 from pydantic import Field
 from mimicrec.api.schemas import (
     TeleopSessionRequest, HandTeachSessionRequest, SessionStatePayload,
 )
 from mimicrec.api.deps import create_session_from_request, get_session_manager, get_session_manager_or_none
 from mimicrec.errors import InvalidTransitionError
-from mimicrec.types import SessionState
+from mimicrec.session import idle as _idle_mod
+from mimicrec.session.idle import IdlePose, save_idle_pose
+from mimicrec.types import SessionMode, SessionState
 
 logger = logging.getLogger(__name__)
 
@@ -181,3 +184,33 @@ async def robot_clear_estop(request: Request):
     # is allowed. Operator must still explicitly start a new session.
     sm._estop_latched = False
     return result
+
+
+@router.post("/session/idle-pose/capture")
+async def capture_idle_pose(request: Request):
+    """Read the active session's robot state and save it as the new idle
+    pose YAML. Requires an active HAND_TEACH session.
+
+    Returns 409 when no session is active or the mode is not
+    HAND_TEACH. Returns the written YAML body on success.
+    """
+    sm = get_session_manager(request.app)
+    if sm.session.mode != SessionMode.HAND_TEACH:
+        raise HTTPException(
+            status_code=409,
+            detail="idle capture requires an active HAND_TEACH session",
+        )
+
+    state = await sm._robot.read_state()
+    pose = IdlePose(
+        joint_pos_rad=np.asarray(state.joint_pos, dtype=np.float32),
+        gripper_pos=(None if state.gripper_pos is None else float(state.gripper_pos)),
+        joint_names=tuple(sm._robot.joint_names),
+    )
+    # Resolve the path through the module attribute (not the function
+    # default, which is bound once at definition time) so test monkeypatch
+    # of ``DEFAULT_IDLE_POSE_PATH`` actually redirects writes.
+    return save_idle_pose(
+        pose, _idle_mod.DEFAULT_IDLE_POSE_PATH,
+        source="ui_capture via session adapter",
+    )
