@@ -170,11 +170,18 @@ function HubSection({ ds }: { ds: string }) {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    fetchAuthStatus().then(setAuth).catch(() => setAuth(null));
-    fetchHub(ds).then((r) => {
-      setHub(r);
-      if (r.config) setDraft(r.config);
-    }).catch(() => setHub(null));
+    let mounted = true;
+    fetchAuthStatus()
+      .then((s) => { if (mounted) setAuth(s); })
+      .catch(() => { if (mounted) setAuth(null); });
+    fetchHub(ds)
+      .then((r) => {
+        if (!mounted) return;
+        setHub(r);
+        if (r.config) setDraft(r.config);
+      })
+      .catch(() => { if (mounted) setHub(null); });
+    return () => { mounted = false; };
   }, [ds]);
 
   useEffect(() => {
