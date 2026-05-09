@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiFetch, ApiError } from "./client.ts";
-import type { DatasetSummary, EpisodeSummary, ExportRequest, ExportResponse, SessionStatePayload, TaskSummary } from "./types.ts";
+import type { ConfigEntry, DatasetSummary, EpisodeSummary, ExportRequest, ExportResponse, SessionStatePayload, TaskSummary } from "./types.ts";
 
 // --------------- Datasets ---------------
 
@@ -79,6 +79,13 @@ export function useConfigs(group: string) {
   return useQuery({
     queryKey: ["configs", group],
     queryFn: () => apiFetch<string[]>(`/api/configs/${group}`),
+  });
+}
+
+export function useConfigsWithContent(group: string) {
+  return useQuery({
+    queryKey: ["configs-with-content", group],
+    queryFn: () => apiFetch<ConfigEntry[]>(`/api/settings/configs/${group}`),
   });
 }
 

@@ -1,19 +1,20 @@
-import { useConfigs, useDatasets, useStartSession, useTasks } from "../api/queries.ts";
+import { useConfigsWithContent, useDatasets, useStartSession, useTasks } from "../api/queries.ts";
 import { useRecordFormStore } from "../state/record-form-store.ts";
 import { useSessionStore } from "../state/session-store.ts";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
-import { Select } from "./ui/select";
+import { ConfigCard } from "./ConfigCard";
+import { SegmentedTab, SegmentedTabBar } from "./ui/segmented-tab";
 
 interface Props {
   onStarted: () => void;
 }
 
 export default function SessionConfigForm({ onStarted }: Props) {
-  const { data: robots } = useConfigs("robot");
-  const { data: teleops } = useConfigs("teleop");
-  const { data: mappers } = useConfigs("mapper");
-  const { data: cameras } = useConfigs("cameras");
+  const { data: robots } = useConfigsWithContent("robot");
+  const { data: teleops } = useConfigsWithContent("teleop");
+  const { data: mappers } = useConfigsWithContent("mapper");
+  const { data: cameras } = useConfigsWithContent("cameras");
   const { data: datasets } = useDatasets();
   const startSession = useStartSession();
 
@@ -42,85 +43,117 @@ export default function SessionConfigForm({ onStarted }: Props) {
   };
 
   return (
-    <div className="space-y-4 max-w-[28rem]">
+    <div className="space-y-md max-w-[40rem]">
       <div>
-        <label className="block text-sm font-medium text-charcoal mb-1">Mode</label>
-        <Select value={mode} onChange={e => form.set({ mode: e.target.value as "teleop" | "hand_teach" })}>
-          <option value="teleop">Teleop</option>
-          <option value="hand_teach">Hand Teach</option>
-        </Select>
+        <label className="block text-body-sm-medium text-charcoal mb-xs">Mode</label>
+        <SegmentedTabBar>
+          <SegmentedTab active={mode === "teleop"} onClick={() => form.set({ mode: "teleop" })}>
+            Teleop
+          </SegmentedTab>
+          <SegmentedTab active={mode === "hand_teach"} onClick={() => form.set({ mode: "hand_teach" })}>
+            Hand Teach
+          </SegmentedTab>
+        </SegmentedTabBar>
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-md">
+        <div>
+          <label className="block text-body-sm-medium text-charcoal mb-xs">Dataset</label>
+          <Input
+            list="existing-datasets"
+            value={dataset}
+            onChange={e => form.set({ dataset: e.target.value })}
+            placeholder="my_dataset"
+          />
+          <datalist id="existing-datasets">
+            {datasets?.map(d => (
+              <option key={d.name} value={d.name}>
+                {d.num_episodes} episodes
+              </option>
+            ))}
+          </datalist>
+        </div>
+        <div>
+          <label className="block text-body-sm-medium text-charcoal mb-xs">Task</label>
+          <Input
+            list="existing-tasks"
+            value={task}
+            onChange={e => form.set({ task: e.target.value })}
+            placeholder="pick"
+          />
+          <datalist id="existing-tasks">
+            {tasks?.map(t => (
+              <option key={t.task_index} value={t.task}>
+                {t.instruction ?? ""}
+              </option>
+            ))}
+          </datalist>
+        </div>
       </div>
       <div>
-        <label className="block text-sm font-medium text-charcoal mb-1">Dataset</label>
-        <Input
-          list="existing-datasets"
-          value={dataset}
-          onChange={e => form.set({ dataset: e.target.value })}
-          placeholder="my_dataset"
-        />
-        <datalist id="existing-datasets">
-          {datasets?.map(d => (
-            <option key={d.name} value={d.name}>
-              {d.num_episodes} episodes
-            </option>
+        <label className="block text-body-sm-medium text-charcoal mb-xs">Robot</label>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          {robots?.map(r => (
+            <ConfigCard
+              key={r.name}
+              config={r}
+              group="robot"
+              selected={robot === r.name}
+              onClick={() => form.set({ robot: r.name })}
+            />
           ))}
-        </datalist>
-      </div>
-      <div>
-        <label className="block text-sm font-medium text-charcoal mb-1">Task</label>
-        <Input
-          list="existing-tasks"
-          value={task}
-          onChange={e => form.set({ task: e.target.value })}
-          placeholder="pick"
-        />
-        <datalist id="existing-tasks">
-          {tasks?.map(t => (
-            <option key={t.task_index} value={t.task}>
-              {t.instruction ?? ""}
-            </option>
-          ))}
-        </datalist>
-      </div>
-      <div>
-        <label className="block text-sm font-medium text-charcoal mb-1">Robot</label>
-        <Select value={robot} onChange={e => form.set({ robot: e.target.value })}>
-          <option value="">Select...</option>
-          {robots?.map(r => <option key={r} value={r}>{r}</option>)}
-        </Select>
+        </div>
       </div>
       {mode === "teleop" && (
         <>
           <div>
-            <label className="block text-sm font-medium text-charcoal mb-1">Teleop</label>
-            <Select value={teleop} onChange={e => form.set({ teleop: e.target.value })}>
-              <option value="">Select...</option>
-              {teleops?.map(t => <option key={t} value={t}>{t}</option>)}
-            </Select>
+            <label className="block text-body-sm-medium text-charcoal mb-xs">Teleop</label>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {teleops?.map(t => (
+                <ConfigCard
+                  key={t.name}
+                  config={t}
+                  group="teleop"
+                  selected={teleop === t.name}
+                  onClick={() => form.set({ teleop: t.name })}
+                />
+              ))}
+            </div>
           </div>
           <div>
-            <label className="block text-sm font-medium text-charcoal mb-1">Mapper</label>
-            <Select value={mapper} onChange={e => form.set({ mapper: e.target.value })}>
-              <option value="">Select...</option>
-              {mappers?.map(m => <option key={m} value={m}>{m}</option>)}
-            </Select>
+            <label className="block text-body-sm-medium text-charcoal mb-xs">Mapper</label>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {mappers?.map(m => (
+                <ConfigCard
+                  key={m.name}
+                  config={m}
+                  group="mapper"
+                  selected={mapper === m.name}
+                  onClick={() => form.set({ mapper: m.name })}
+                />
+              ))}
+            </div>
           </div>
         </>
       )}
       <div>
-        <label className="block text-sm font-medium text-charcoal mb-1">Cameras</label>
-        <div className="space-y-1">
+        <label className="block text-body-sm-medium text-charcoal mb-xs">
+          Cameras <span className="text-stone font-normal">(複数選択)</span>
+        </label>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
           {cameras?.map(c => (
-            <label key={c} className="flex items-center gap-2 text-sm">
-              <input type="checkbox" checked={selectedCams.includes(c)} onChange={e => {
-                form.set({
-                  selectedCams: e.target.checked
-                    ? [...selectedCams, c]
-                    : selectedCams.filter(x => x !== c),
-                });
-              }} />
-              {c}
-            </label>
+            <ConfigCard
+              key={c.name}
+              config={c}
+              group="cameras"
+              multiSelect
+              selected={selectedCams.includes(c.name)}
+              onClick={() => {
+                const next = selectedCams.includes(c.name)
+                  ? selectedCams.filter(x => x !== c.name)
+                  : [...selectedCams, c.name];
+                form.set({ selectedCams: next });
+              }}
+            />
           ))}
         </div>
       </div>

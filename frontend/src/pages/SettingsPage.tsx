@@ -2,8 +2,8 @@ import { useEffect, useState } from "react";
 import { apiFetch } from "../api/client";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
-import { Badge } from "../components/ui/badge";
 import { CameraConfigForm } from "../components/CameraConfigForm";
+import { ConfigCard, type ConfigGroup } from "../components/ConfigCard";
 
 interface SerialDevice {
   port: string;
@@ -24,7 +24,7 @@ interface ConfigEntry {
   content: Record<string, unknown>;
 }
 
-const CONFIG_GROUPS = ["robot", "teleop", "mapper", "cameras"];
+const CONFIG_GROUPS: ConfigGroup[] = ["robot", "teleop", "mapper", "cameras"];
 
 export default function SettingsPage() {
   const [serialPorts, setSerialPorts] = useState<SerialDevice[]>([]);
@@ -175,30 +175,24 @@ export default function SettingsPage() {
         {CONFIG_GROUPS.map((group) => (
           <div key={group} className="mb-md">
             <h4 className="text-caption-bold text-steel mb-xs capitalize">{group}</h4>
-            <div className="flex flex-col gap-1">
+            <div className="flex flex-col gap-2">
               {(configs[group] || []).map((cfg) => (
-                <div
+                <ConfigCard
                   key={cfg.name}
-                  className="flex items-center justify-between bg-surface rounded-md px-md py-xs"
-                >
-                  <div className="flex items-center gap-xs">
-                    <span className="text-body-sm-medium text-ink">{cfg.name}</span>
-                    {!!(cfg.content as Record<string, unknown>)?._target_ && (
-                      <Badge variant="type">
-                        {String((cfg.content as Record<string, unknown>)._target_).split(".").pop() ?? ""}
-                      </Badge>
-                    )}
-                  </div>
-                  <Button
-                    variant="link"
-                    onClick={() => {
-                      setEditingConfig({ ...cfg, group });
-                      setEditJson(JSON.stringify(cfg.content, null, 2));
-                    }}
-                  >
-                    Edit
-                  </Button>
-                </div>
+                  config={cfg}
+                  group={group}
+                  rightSlot={
+                    <Button
+                      variant="link"
+                      onClick={() => {
+                        setEditingConfig({ ...cfg, group });
+                        setEditJson(JSON.stringify(cfg.content, null, 2));
+                      }}
+                    >
+                      Edit
+                    </Button>
+                  }
+                />
               ))}
             </div>
           </div>
