@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiFetch, ApiError } from "./client.ts";
-import type { DatasetSummary, EpisodeSummary, ExportRequest, ExportResponse, SessionStatePayload, TaskSummary } from "./types.ts";
+import type { ConfigEntry, DatasetSummary, EpisodeSummary, ExportRequest, ExportResponse, SessionStatePayload, TaskSummary } from "./types.ts";
 
 // --------------- Datasets ---------------
 
@@ -79,6 +79,13 @@ export function useConfigs(group: string) {
   return useQuery({
     queryKey: ["configs", group],
     queryFn: () => apiFetch<string[]>(`/api/configs/${group}`),
+  });
+}
+
+export function useConfigsWithContent(group: string) {
+  return useQuery({
+    queryKey: ["configs-with-content", group],
+    queryFn: () => apiFetch<ConfigEntry[]>(`/api/settings/configs/${group}`),
   });
 }
 
@@ -200,6 +207,15 @@ export function useReplayStop() {
       apiFetch<SessionStatePayload>("/api/replay/stop", { method: "POST" }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["session-state"] }),
   });
+}
+
+// --------------- GoPro ---------------
+
+export async function getGoProPending(): Promise<number> {
+  const r = await fetch('/api/session/gopro_pending', { cache: 'no-store' });
+  if (!r.ok) return 0;
+  const j = await r.json();
+  return j.pending ?? 0;
 }
 
 // --------------- Export ---------------

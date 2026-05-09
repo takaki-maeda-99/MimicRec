@@ -26,6 +26,7 @@ def _clear_session_state(app) -> None:
     app.state.resolved_config = None
     app.state.error_bus = None
     app.state.camera_manager = None
+    app.state.gopro_registry = None
 
 router = APIRouter()
 
@@ -104,6 +105,12 @@ async def session_end(request: Request):
     await sm.end()
     _clear_session_state(request.app)
     return build_state_payload(request.app)
+
+
+@router.get("/session/gopro_pending")
+async def gopro_pending(request: Request) -> dict[str, int]:
+    reg = getattr(request.app.state, "gopro_registry", None)
+    return {"pending": int(reg.pending_count) if reg is not None else 0}
 
 
 @router.get("/session/state")

@@ -86,6 +86,7 @@ class SessionManager:
         coordinator=None,
         ds_name=None,
         app=None,
+        gopro_registry: object | None = None,
     ):
         self.session = Session(mode=mode, state=SessionState.IDLE)
         self._dataset_root = dataset_root
@@ -100,6 +101,7 @@ class SessionManager:
         self._task = task
         self._instruction = instruction
         self._fk = fk
+        self._gopro_registry = gopro_registry
         self._metrics = Metrics()
         self._coordinator = coordinator
         self._ds_name = ds_name
@@ -412,6 +414,12 @@ class SessionManager:
             max_sec = getattr(self, "_session_config", None)
             max_sec = (max_sec.max_episode_seconds if max_sec else None) or 120
             self._inference_watchdog_task = asyncio.create_task(self._run_watchdog(max_sec))
+        if self._gopro_registry is not None:
+            try:
+                await self._gopro_registry.episode_start(self._episode_index, time.monotonic_ns())
+            except Exception:
+                # registry is internally fail-open; don't let it break the local episode start.
+                pass
 
     async def episode_stop(self, *, stop_reason: str = "manual") -> None:
         """RECORDING -> REVIEW. Drain writer, clear pending slot, finalize."""
@@ -457,6 +465,11 @@ class SessionManager:
         self._current_pending.set(None, t_mono_ns=time.monotonic_ns())
         if self._pending:
             self._pending.finalize()
+        if self._gopro_registry is not None:
+            try:
+                await self._gopro_registry.episode_stop(self._episode_index)
+            except Exception:
+                pass
 
     async def episode_save(self, success: bool | None = None, comment: str | None = None) -> None:
         """REVIEW -> READY. Save pending episode with metadata."""
@@ -464,6 +477,11 @@ class SessionManager:
             raise InvalidTransitionError(
                 f"episode_save requires REVIEW, got {self.session.state}"
             )
+        if self._gopro_registry is not None:
+            try:
+                await self._gopro_registry.commit_episode(self._episode_index)
+            except Exception:
+                pass
         if self._pending:
             now_mono = time.monotonic_ns()
             # Make sure tasks.parquet has an entry for this task name so the
@@ -529,6 +547,11 @@ class SessionManager:
             raise InvalidTransitionError(
                 f"episode_discard requires REVIEW, got {self.session.state}"
             )
+        if self._gopro_registry is not None:
+            try:
+                await self._gopro_registry.discard_episode(self._episode_index)
+            except Exception:
+                pass
         if self._pending:
             self._pending.discard()
             self._pending = None
@@ -1002,5 +1025,11 @@ class SessionManager:
         await self._robot.disconnect()
         if self._teleop:
             await self._teleop.disconnect()
+
+        if self._gopro_registry is not None:
+            try:
+                await self._gopro_registry.stop()
+            finally:
+                self._gopro_registry = None
 
         self.session.state = SessionState.IDLE

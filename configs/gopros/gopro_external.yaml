@@ -1,0 +1,7 @@
+_target_: mimicrec.gopro.device.GoProDevice
+name: gopro_external
+usb_serial: "C3471327153141"   # Phase 0 verification confirmed this serial
+width: 1280
+height: 720
+fps: 30
+aspect_mode: crop
