@@ -66,3 +66,39 @@ async def test_ws_session_receives_state_change(tmp_path: Path):
                 http_transport = HttpTransport(app=app)
                 async with AsyncClient(transport=http_transport, base_url="http://test") as ac:
                     await ac.post("/api/session/end")
+
+
+def test_ws_state_payload_includes_gopros():
+    """Regression: ``_build_ws_state`` must emit ``gopros`` so the frontend's
+    5Hz WS-driven session-store update doesn't overwrite ``store.gopros``
+    with ``[]`` and unmount the GoPro CameraPreview tile within 200ms of
+    session start.
+
+    Tests the builder directly to avoid coupling to the real-arm session
+    start path (which loads ``configs/rebotarm/idle_pose.yaml`` and the
+    GoPro UDP preview port — both unavailable in CI).
+    """
+    from types import SimpleNamespace
+    from mimicrec.api.ws.session_hub import _build_ws_state
+    from mimicrec.types import SessionMode, SessionState
+
+    app = SimpleNamespace(state=SimpleNamespace(
+        session_manager=SimpleNamespace(session=SimpleNamespace(
+            state=SessionState.READY, sub_state=None, mode=SessionMode.TELEOP,
+        )),
+        session_meta={
+            "dataset": "d", "task": "t", "robot": "mock", "teleop": "mock_leader",
+            "mapper": "identity", "cameras": ["wrist"], "gopros": ["gopro_external"],
+            "fps": 30,
+        },
+    ))
+
+    payload = _build_ws_state(app)
+    assert "gopros" in payload, (
+        f"WS session_state payload is missing 'gopros' key — frontend "
+        f"will overwrite store.gopros with [] and unmount preview tile. "
+        f"Got keys: {sorted(payload.keys())}"
+    )
+    assert payload["gopros"] == ["gopro_external"]
+    # Sanity: the existing ``cameras`` field is still emitted.
+    assert payload["cameras"] == ["wrist"]
