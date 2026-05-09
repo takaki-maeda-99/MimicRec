@@ -3,7 +3,9 @@ import asyncio
 import io
 import json
 import logging
+import shutil
 import tempfile
+import threading
 import time
 import zipfile
 from pathlib import Path
@@ -17,12 +19,14 @@ from omegaconf import OmegaConf
 from fastapi.responses import StreamingResponse, FileResponse
 from pydantic import BaseModel as _BaseModel
 
+from mimicrec.annotator.subtask import annotate_episode, save_annotations
 from mimicrec.api.deps import get_datasets_root, get_configs_root, get_vla_dest_root
 from mimicrec.api.schemas import (
     CreateDatasetRequest, CreateTaskRequest, DatasetSummary,
     EpisodeSummary, ExportFormat, ExportRequest, ExportResponse, TaskSummary,
     DEFAULT_INSTRUCTION_TEMPLATE,
 )
+from mimicrec.api.util import safe_dataset_path, UnsafePathError
 from mimicrec.datasets.archive import build_archive_stream
 from mimicrec.datasets.exporters.errors import DestinationExistsError
 from mimicrec.datasets.exporters.orchestrator import export_dataset_to_local, ExportOverride
@@ -55,8 +59,6 @@ async def list_datasets(request: Request):
 
 @router.delete("/datasets/{ds}", status_code=204)
 async def delete_dataset(request: Request, ds: str):
-    import shutil
-    from mimicrec.api.util import safe_dataset_path, UnsafePathError
     root = get_datasets_root(request.app)
     try:
         ds_root = safe_dataset_path(root, ds)
@@ -332,9 +334,6 @@ async def annotate_episode_subtasks(
     body: AnnotateRequest = AnnotateRequest(),
 ):
     """Annotate an episode with subtask labels using Gemma 4 VLM."""
-    import asyncio
-    from mimicrec.annotator.subtask import annotate_episode, save_annotations
-
     root = get_datasets_root(request.app)
     ds_root = root / ds
     if not ds_root.exists():
@@ -380,9 +379,6 @@ async def annotate_all_episodes(
     body: BatchAnnotateRequest = BatchAnnotateRequest(),
 ):
     """Start batch annotation. Returns immediately, progress via GET."""
-    from mimicrec.annotator.subtask import annotate_episode, save_annotations
-    import threading
-
     root = get_datasets_root(request.app)
     ds_root = root / ds
     if not ds_root.exists():
