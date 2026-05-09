@@ -91,8 +91,13 @@ class GoProDevice:
         state = await self._must_ok(
             self._client.http_command.get_camera_state(), "get_camera_state",
         )
-        # state.data is keyed by Status ID string. "54" = SD remaining in KB.
-        remaining_kb = int(state.data.get("54", 0))
+        # state.data is keyed by StatusId enum. SD_CARD_REMAINING (54) = KB remaining.
+        # Fall back to integer key 54 for forward-compat if SDK changes key type.
+        from open_gopro.models.constants import StatusId  # type: ignore
+        remaining_kb = int(
+            state.data.get(StatusId.SD_CARD_REMAINING,
+                           state.data.get(54, state.data.get("54", 0)))
+        )
         if remaining_kb < _STORAGE_MIN_KB:
             raise HardwareError(
                 f"GoPro {self._name} storage too low: {remaining_kb} KB remaining")
@@ -126,7 +131,14 @@ class GoProDevice:
         out: list[MediaItem] = []
         for f in r.data.files:
             mtime_ns = int(getattr(f, "creation_timestamp", 0)) * 1_000_000_000
-            out.append(MediaItem(filename=f.filename, size=int(f.size), mtime_ns=mtime_ns))
+            # open_gopro MediaItem has no top-level 'size'; use lrv/low_res as proxy or 0.
+            size = int(
+                getattr(f, "size", None)
+                or getattr(f, "low_res_video_size", None)
+                or getattr(f, "lrv_file_size", None)
+                or 0
+            )
+            out.append(MediaItem(filename=f.filename, size=size, mtime_ns=mtime_ns))
         return out
 
     async def start_preview(self, port: int) -> None:
@@ -154,7 +166,10 @@ class GoProDevice:
     async def get_storage_remaining(self) -> int:
         if self._disabled or self._client is None: return 0
         r = await self._must_ok(self._client.http_command.get_camera_state(), "get_camera_state")
-        return int(r.data.get("54", 0)) * 1024   # KB → bytes
+        from open_gopro.models.constants import StatusId  # type: ignore
+        kb = int(r.data.get(StatusId.SD_CARD_REMAINING,
+                            r.data.get(54, r.data.get("54", 0))))
+        return kb * 1024   # KB → bytes
 
     def disable(self, reason: str) -> None:
         if self._disabled: return
