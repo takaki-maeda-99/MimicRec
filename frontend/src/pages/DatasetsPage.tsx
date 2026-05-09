@@ -285,18 +285,19 @@ function DatasetCard({
     hub?.progress.status === "uploading" || hub?.progress.status === "queued";
 
   return (
-    <div className="rounded-lg border border-hairline bg-canvas p-lg hover:border-stone transition-colors">
-      <div className="flex items-start justify-between gap-md mb-sm">
-        <div className="flex items-center gap-sm flex-wrap">
-          <Link
-            to={`/datasets/${ds.name}/episodes`}
-            className="text-heading-5 text-ink hover:underline"
-          >
-            {ds.name}
-          </Link>
-          <HubStatusBadge hub={hub} />
-        </div>
-      </div>
+    <div className="rounded-lg border border-hairline bg-canvas hover:border-stone transition-colors overflow-hidden">
+      <Link
+        to={`/datasets/${ds.name}/episodes`}
+        className="flex items-center gap-sm flex-wrap px-lg py-md bg-surface/40 hover:bg-surface transition-colors border-b border-hairline-soft group"
+        title={`Open episodes for ${ds.name}`}
+      >
+        <span className="text-heading-5 text-ink group-hover:underline">
+          {ds.name}
+        </span>
+        <span className="text-stone group-hover:text-ink transition-colors">→</span>
+        <HubStatusBadge hub={hub} />
+      </Link>
+      <div className="p-lg">
 
       <div className="text-body-sm text-slate mb-md flex flex-wrap items-center gap-sm">
         <span>
@@ -440,6 +441,7 @@ function DatasetCard({
           )}
         </div>
       )}
+      </div>
     </div>
   );
 }
