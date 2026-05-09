@@ -17,6 +17,7 @@ from mimicrec.errors import (
 from mimicrec.recording.pending import PendingEpisode
 from mimicrec.session.control_loop import run_handteach_control_loop, run_teleop_control_loop
 from mimicrec.session.dispatcher import run_command_dispatcher
+from mimicrec.session.idle import move_to_idle
 from mimicrec.session.replay_safety import ReplaySafetyConfig
 from mimicrec.session.state import Session
 from mimicrec.recording.writer import run_writer
@@ -115,6 +116,11 @@ class SessionManager:
         self._writer_task: asyncio.Task | None = None
         self._replay_task: asyncio.Task | None = None
         self._error_handler_task: asyncio.Task | None = None
+        # Background idle-pose return spawned by episode_stop so the
+        # REVIEW UI can render immediately while the arm moves. Awaited
+        # by episode_save / episode_discard before flipping to READY, so
+        # the next episode is guaranteed to start from idle.
+        self._idle_move_task: asyncio.Task | None = None
 
         # Episode tracking
         self._episode_index = 0
@@ -267,6 +273,51 @@ class SessionManager:
                 logger.warning("transient HardwareError (recording continues): %s", evt)
 
     # ------------------------------------------------------------------
+    # Idle-pose return helpers
+    # ------------------------------------------------------------------
+
+    async def _move_to_idle_for_session(self) -> None:
+        """Smoothly return the arm to the configured idle pose, leaving
+        it in the mode appropriate for the current session.
+
+        HAND_TEACH ends in GRAVITY_COMP (so the operator can hand-teach
+        the next episode). All other recording modes end in POSITION
+        (idle held rigid). INFERENCE is skipped — that flow has its own
+        lifecycle and doesn't share the data-collection idle behavior.
+
+        Skipped silently if the idle yaml hasn't been captured yet.
+        """
+        if self.session.mode == SessionMode.INFERENCE:
+            return
+        after = (
+            RobotMode.GRAVITY_COMP
+            if self.session.mode == SessionMode.HAND_TEACH
+            else RobotMode.POSITION
+        )
+        try:
+            await move_to_idle(self._robot, after_mode=after)
+        except FileNotFoundError:
+            logger.warning(
+                "idle pose yaml missing; skipping move_to_idle",
+            )
+
+    async def _await_pending_idle_move(self) -> None:
+        """If episode_stop spawned a background idle return, wait for it
+        to finish. Called from episode_save / episode_discard before the
+        REVIEW→READY transition so the next episode is guaranteed to
+        start from idle.
+        """
+        task, self._idle_move_task = self._idle_move_task, None
+        if task is None:
+            return
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.warning("idle move from episode_stop failed: %s", e)
+
+    # ------------------------------------------------------------------
     # State transitions
     # ------------------------------------------------------------------
 
@@ -315,6 +366,11 @@ class SessionManager:
                 "robot adapter %r refused set_mode(%s); proceeding",
                 self._robot.name, target_mode,
             )
+
+        # Move smoothly to the captured idle pose so each data-collection
+        # session starts from a known posture. Synchronous here — the
+        # readers/dispatcher must not spawn until the arm is settled.
+        await self._move_to_idle_for_session()
 
         # Set current_pending to None initially
         self._current_pending.set(None, t_mono_ns=0)
@@ -454,6 +510,16 @@ class SessionManager:
             except Exception:
                 pass
 
+        # Kick off the idle return as a background task so the REVIEW UI
+        # is usable immediately. The user's success/fail/discard decision
+        # time overlaps with the arm motion. episode_save / episode_discard
+        # awaits this task before transitioning back to READY, so the
+        # next episode is guaranteed to start from idle.
+        if self.session.mode != SessionMode.INFERENCE:
+            self._idle_move_task = asyncio.create_task(
+                self._move_to_idle_for_session()
+            )
+
     async def episode_save(self, success: bool | None = None, comment: str | None = None) -> None:
         """REVIEW -> READY. Save pending episode with metadata."""
         if self.session.state != SessionState.REVIEW:
@@ -516,6 +582,11 @@ class SessionManager:
             })
             self._pending = None
             self._episode_index += 1
+        # Make sure the background idle return spawned by episode_stop
+        # has finished before flipping to READY — otherwise the next
+        # episode_start (or autoCycle's automatic restart) could fire
+        # while the arm is still ramping into idle.
+        await self._await_pending_idle_move()
         self.session.state = SessionState.READY
         if self.session.mode == SessionMode.INFERENCE:
             self.resume_producer()
@@ -538,6 +609,7 @@ class SessionManager:
         if self._pending:
             self._pending.discard()
             self._pending = None
+        await self._await_pending_idle_move()
         self.session.state = SessionState.READY
         if self.session.mode == SessionMode.INFERENCE:
             self.resume_producer()
@@ -979,6 +1051,16 @@ class SessionManager:
                 await self._replay_task
             except (asyncio.CancelledError, Exception):
                 pass
+
+        # Cancel a background idle return spawned by episode_stop, in
+        # case end() is called while still in REVIEW.
+        if self._idle_move_task and not self._idle_move_task.done():
+            self._idle_move_task.cancel()
+            try:
+                await self._idle_move_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        self._idle_move_task = None
 
         # Discard any pending episode
         if self._pending:
