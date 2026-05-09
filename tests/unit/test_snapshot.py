@@ -113,3 +113,20 @@ def test_detect_symlinks_skips_ignored_dirs(tmp_path: Path):
     (pending / "link").symlink_to(target)
     syms = detect_symlinks(ds)
     assert syms == []
+
+
+def test_make_snapshot_cleans_up_on_strip_failure(tmp_path: Path, monkeypatch):
+    """If _strip_tombstoned fails, the partial snapshot dir is removed."""
+    ds = _seed_dataset(tmp_path)
+
+    from mimicrec.cloud import snapshot as snap_mod
+    def boom(snapshot):
+        raise RuntimeError("simulated mid-snapshot crash")
+    monkeypatch.setattr(snap_mod, "_strip_tombstoned", boom)
+
+    with pytest.raises(RuntimeError):
+        make_push_snapshot(ds)
+
+    # No partial snapshot dirs left
+    snaps = [p for p in ds.parent.iterdir() if p.name.startswith(".push-snapshot-")]
+    assert snaps == [], f"unexpected leftover snapshots: {snaps}"

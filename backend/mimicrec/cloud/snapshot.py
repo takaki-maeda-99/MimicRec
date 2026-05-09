@@ -33,7 +33,8 @@ def detect_symlinks(ds_root: Path) -> list[Path]:
 
 def make_push_snapshot(ds_root: Path) -> Path:
     """Hardlink-copy ds_root to a sibling dir, then strip tombstoned episodes.
-    Caller MUST hold the save_lock for ds_root.name during this call."""
+    Caller MUST hold the save_lock for ds_root.name during this call.
+    On failure, removes any partial snapshot dir before re-raising."""
     syms = detect_symlinks(ds_root)
     if syms:
         raise SnapshotError(
@@ -44,13 +45,17 @@ def make_push_snapshot(ds_root: Path) -> Path:
     def _ignore(_dir, names):
         return [n for n in names if n in SNAPSHOT_IGNORE]
 
-    shutil.copytree(
-        ds_root, snapshot,
-        copy_function=os.link, ignore=_ignore,
-        dirs_exist_ok=False, symlinks=False,
-    )
-    _strip_tombstoned(snapshot)
-    return snapshot
+    try:
+        shutil.copytree(
+            ds_root, snapshot,
+            copy_function=os.link, ignore=_ignore,
+            dirs_exist_ok=False, symlinks=False,
+        )
+        _strip_tombstoned(snapshot)
+        return snapshot
+    except BaseException:
+        shutil.rmtree(snapshot, ignore_errors=True)
+        raise
 
 
 def _strip_tombstoned(snapshot: Path) -> None:
