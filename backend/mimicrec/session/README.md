@@ -43,10 +43,10 @@ async def move_to_idle(
 | `episode_save()` / `episode_discard()` (REVIEW → READY) | 背景 task を **await**（READY 時点で idle 到達を保証） | — |
 | `end()` (任意 → IDLE) | 背景 task を cancel | — |
 
-`session.mode` 別の `after_mode`:
+`session.mode` 別の挙動:
 
-- `HAND_TEACH` → `GRAVITY_COMP`（次のエピソードを手で動かして教示）
-- `TELEOP` / その他 data-collection モード → `POSITION`（剛性保持）
+- `HAND_TEACH` → idle へ復帰し `GRAVITY_COMP` で終わる（次のエピソードを手で動かして教示）
+- `TELEOP` → **idle 復帰しない**（リーダーアームが read-only で同期できず、EE-delta マッパが REVIEW 中に保持する anchor が古いまま再開すると follower が snap するため、復帰自体を廃止）
 - `INFERENCE` → スキップ（別ライフサイクル）
 
 これにより autoCycle（連続自動収集）でも:
@@ -62,7 +62,10 @@ auto-save / auto-discard ─ await idle move ─ READY ─ next episode_start
 
 ## idle 姿勢のキャプチャ／更新
 
-現状は ZMQ 経由のワンショットで `configs/rebotarm/idle_pose.yaml` に書き出している。
+HAND_TEACH セッション中なら RecordPage の "Set current pose as home" ボタンから capture できる。`POST /api/session/idle-pose/capture` が `read_state` → `save_idle_pose` を実行して `configs/rebotarm/idle_pose.yaml` を atomic に上書きする。
+
+CLI / ZMQ ワンショットの方法は以下に残しておく（HAND_TEACH を使えない場面用）:
+
 daemon を起動した状態で:
 
 ```bash
