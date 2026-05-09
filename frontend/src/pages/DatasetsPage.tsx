@@ -318,11 +318,16 @@ function DatasetCard({
 
       <div className="flex flex-wrap items-center gap-sm">
         <Link to={`/datasets/${ds.name}/episodes`}>
-          <Button variant="primary">Episodes →</Button>
+          <Button variant="primary" size="lg">Episodes →</Button>
         </Link>
 
         {!hubConfigured && (
-          <Button variant="secondary" onClick={() => setEditing(true)}>
+          <Button
+            variant="secondary"
+            size="lg"
+            className="!bg-surface hover:!bg-hairline"
+            onClick={() => setEditing(true)}
+          >
             ☁ Configure Hub
           </Button>
         )}
@@ -330,26 +335,39 @@ function DatasetCard({
           <>
             <Button
               variant="secondary"
+              size="lg"
+              className="!bg-surface hover:!bg-hairline"
               onClick={onPush}
               disabled={!auth?.authenticated || isPushing}
               title={!auth?.authenticated ? "Run huggingface-cli login first" : undefined}
             >
               {isPushing ? "Pushing…" : "↑ Push to Hub"}
             </Button>
-            <Button variant="secondary" onClick={() => setEditing(true)}>
+            <Button
+              variant="secondary"
+              size="lg"
+              className="!bg-surface hover:!bg-hairline"
+              onClick={() => setEditing(true)}
+            >
               Edit Hub
             </Button>
           </>
         )}
 
-        <Button variant="secondary" onClick={onExport}>
+        <Button
+          variant="secondary"
+          size="lg"
+          className="!bg-surface hover:!bg-hairline"
+          onClick={onExport}
+        >
           Export
         </Button>
         <Button
           variant="secondary"
+          size="lg"
           onClick={onAnnotate}
           disabled={annotatingAny}
-          className={isAnnotating ? "!text-brand-tag" : ""}
+          className={`!bg-surface hover:!bg-hairline ${isAnnotating ? "!text-brand-tag" : ""}`}
         >
           {isAnnotating && annotateProgress
             ? `Annotating ${annotateProgress.done}/${annotateProgress.total}`
@@ -360,8 +378,13 @@ function DatasetCard({
 
         <div className="grow" />
 
-        <Button variant="destructive" onClick={onDelete}>
-          Delete
+        <Button
+          variant="secondary"
+          size="lg"
+          className="!bg-brand-error/10 !text-brand-error hover:!bg-brand-error/20"
+          onClick={onDelete}
+        >
+          🗑 Delete
         </Button>
       </div>
 
