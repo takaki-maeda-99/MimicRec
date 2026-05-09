@@ -8,6 +8,7 @@ import RecordingControls from "../components/RecordingControls.tsx";
 import KeyboardTeleop from "../components/KeyboardTeleop.tsx";
 import EEMonitor from "../components/EEMonitor.tsx";
 import EStopButton from "../components/EStopButton.tsx";
+import IdlePoseCaptureButton from "../components/IdlePoseCaptureButton.tsx";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { CodeInline } from "../components/ui/code-inline";
@@ -142,6 +143,10 @@ export default function RecordPage() {
           <EStopButton />
         </div>
       )}
+
+      <div className="mb-md">
+        <IdlePoseCaptureButton />
+      </div>
 
       <RecordingControls />
     </div>
