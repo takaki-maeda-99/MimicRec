@@ -214,6 +214,37 @@ async def test_delete_dataset_409_when_push_in_flight(client_and_root, monkeypat
 
 
 @pytest.mark.asyncio
+async def test_two_datasets_can_push_simultaneously(client_and_root, monkeypatch):
+    """spec non-goal: 異なる ds の同時 push は許容"""
+    client, root, app = client_and_root
+    init_dataset(root / "ds1", fps=30, joint_names=["j0"], camera_names=[])
+    init_dataset(root / "ds2", fps=30, joint_names=["j0"], camera_names=[])
+    write_hub_meta(root / "ds1", HubMeta(repo_id="u/d1"))
+    write_hub_meta(root / "ds2", HubMeta(repo_id="u/d2"))
+
+    import asyncio as _a
+    started = []
+    release = _a.Event()
+
+    async def hanging_task(app, ds_name, ds_root):
+        started.append(ds_name)
+        await release.wait()
+
+    monkeypatch.setattr("mimicrec.api.routes.cloud._run_push_with_release", hanging_task)
+    with patch("mimicrec.api.routes.cloud.get_token", return_value="hf_xxx"):
+        async with client as ac:
+            r1, r2 = await _a.gather(
+                ac.post("/api/datasets/ds1/hub/push"),
+                ac.post("/api/datasets/ds2/hub/push"),
+            )
+    assert r1.status_code == 202
+    assert r2.status_code == 202
+    await _a.wait_for(_a.sleep(0.05), timeout=1.0)
+    assert sorted(started) == ["ds1", "ds2"]
+    release.set()
+
+
+@pytest.mark.asyncio
 async def test_progress_error_cleared_on_subsequent_success(client_and_root, monkeypatch):
     """Failed push leaves progress.error; next successful push clears it."""
     client, root, app = client_and_root
