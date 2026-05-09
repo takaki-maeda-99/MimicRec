@@ -12,7 +12,7 @@ dependencies = [
   "fastapi>=0.115",
   "uvicorn[standard]>=0.30",
   "scipy>=1.15.3",
-  "huggingface_hub>=0.34",
+  "huggingface_hub>=0.34,<2.0",
 ]
 
 [project.optional-dependencies]
