@@ -1,55 +1,61 @@
 import { Link } from "react-router-dom";
 import { SAMPLE_DATASETS, MOCK_USER, type MockDataset } from "./sample-data";
 
-// "Editorial Workshop — clean type" revision.
-// Same airy editorial layout as the original B (narrow sidebar, big asymmetric
-// main column, numbered article-style entries, generous whitespace) but with
-// neutral sans-serif throughout. No serifs, no italics — hierarchy comes
-// from size, weight, tracking and color instead.
+// "Editorial Workshop — lime/white revision".
+// Same airy editorial layout (narrow sidebar, asymmetric main column,
+// numbered articles, generous whitespace) but the palette is now
+// white + greys + a bold lime accent. No cream paper, no serifs, no
+// italics — modern product-tool look in the spirit of Linear/Vercel
+// with the brand color doing the work.
 
 export default function MockEditorial() {
   return (
     <div
       className="min-h-screen text-[14px] leading-relaxed"
       style={{
-        ["--ed-bg" as string]: "#f7f1e6",
-        ["--ed-paper" as string]: "#fcf8f0",
-        ["--ed-ink" as string]: "#1d1a14",
-        ["--ed-soft" as string]: "#5b5448",
-        ["--ed-rule" as string]: "#d8cdb8",
-        ["--ed-rule-soft" as string]: "#e8dfcb",
-        // Fluorescent lime accent + soft tint
-        ["--ed-accent" as string]: "#5a8516", // readable lime for text/borders
-        ["--ed-accent-bright" as string]: "#c2e84f", // highlighter pop
-        ["--ed-accent-soft" as string]: "rgba(194,232,79,0.32)",
-        // Dedicated danger (kept terracotta)
-        ["--ed-danger" as string]: "#a23a2c",
-        ["--ed-danger-soft" as string]: "rgba(162,58,44,0.1)",
-        ["--ed-pos" as string]: "#3a6b3c",
-        background: "var(--ed-bg)",
-        color: "var(--ed-ink)",
+        // Surface scale
+        ["--bg" as string]: "#ffffff",
+        ["--surface" as string]: "#f7f7f8",
+        ["--surface-2" as string]: "#eeeef0",
+        ["--rule" as string]: "#e5e5e7",
+        ["--rule-soft" as string]: "#efeff1",
+        // Ink scale
+        ["--ink" as string]: "#0a0a0a",
+        ["--charcoal" as string]: "#1f1f22",
+        ["--slate" as string]: "#3f3f46",
+        ["--steel" as string]: "#6b7280",
+        ["--stone" as string]: "#9ca3af",
+        // Lime brand
+        ["--lime" as string]: "#84cc16", // lime-500
+        ["--lime-bright" as string]: "#a3e635", // lime-400 (highlighter)
+        ["--lime-deep" as string]: "#4d7c0f", // lime-700 (readable text)
+        ["--lime-soft" as string]: "rgba(132,204,22,0.14)",
+        // States
+        ["--danger" as string]: "#dc2626",
+        ["--danger-soft" as string]: "rgba(220,38,38,0.1)",
+        ["--warn" as string]: "#b45309",
+        background: "var(--bg)",
+        color: "var(--ink)",
         fontFamily:
           "Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
       }}
     >
       <div className="flex min-h-screen">
-        {/* Slim sidebar */}
+        {/* Sidebar */}
         <aside
-          className="w-[180px] flex flex-col px-5 py-6 border-r"
-          style={{ borderColor: "var(--ed-rule)" }}
+          className="w-[200px] flex flex-col px-5 py-6 border-r"
+          style={{ borderColor: "var(--rule)", background: "var(--bg)" }}
         >
-          <div className="mb-10">
+          <div className="mb-10 flex items-center gap-2.5">
+            <span
+              className="inline-block w-3 h-3 rounded-sm"
+              style={{ background: "var(--lime)" }}
+            />
             <div
-              className="text-[34px] leading-[1] tracking-[-0.04em]"
-              style={{ fontWeight: 700, color: "var(--ed-ink)" }}
+              className="text-[20px] leading-[1] tracking-[-0.025em]"
+              style={{ fontWeight: 700, color: "var(--ink)" }}
             >
               MimicRec
-            </div>
-            <div
-              className="mt-2 text-[10px] tracking-[0.4em] uppercase"
-              style={{ color: "var(--ed-soft)" }}
-            >
-              v 0.42
             </div>
           </div>
 
@@ -61,81 +67,89 @@ export default function MockEditorial() {
           </nav>
 
           <div
-            className="text-[11px] mt-auto pt-4 border-t flex flex-col gap-1"
-            style={{ borderColor: "var(--ed-rule-soft)", color: "var(--ed-soft)" }}
+            className="text-[12px] mt-auto pt-4 border-t flex flex-col gap-1.5"
+            style={{ borderColor: "var(--rule)", color: "var(--steel)" }}
           >
-            <div className="text-[10px] tracking-[0.3em] uppercase">Operator</div>
+            <div
+              className="text-[10px] tracking-[0.2em] uppercase"
+              style={{ color: "var(--stone)", fontWeight: 500 }}
+            >
+              Operator
+            </div>
             <div
               className="text-[14px]"
-              style={{ color: "var(--ed-ink)", fontWeight: 500 }}
+              style={{ color: "var(--ink)", fontWeight: 600 }}
             >
               {MOCK_USER}
             </div>
-            <div className="flex items-center gap-1.5 mt-2">
+            <div className="flex items-center gap-1.5 mt-2 text-[11px]">
               <span
-                className="w-1.5 h-1.5 rounded-full"
-                style={{ background: "var(--ed-pos)" }}
+                className="w-2 h-2 rounded-full"
+                style={{ background: "var(--lime)" }}
               />
-              <span>Hub authenticated</span>
+              <span style={{ color: "var(--slate)" }}>Hub authenticated</span>
             </div>
           </div>
         </aside>
 
-        {/* Main reading column */}
+        {/* Main */}
         <main className="flex-1">
           <div className="max-w-[1100px] mx-auto px-12 py-12">
             <div className="flex items-end justify-between gap-6 mb-10">
               <div>
                 <div
-                  className="text-[11px] tracking-[0.4em] uppercase mb-3"
-                  style={{ color: "var(--ed-soft)" }}
+                  className="inline-flex items-center gap-2 mb-3 text-[10px] tracking-[0.3em] uppercase"
+                  style={{ color: "var(--lime-deep)", fontWeight: 600 }}
                 >
-                  Issue 42 · Datasets
+                  <span
+                    className="w-2 h-2 rounded-full"
+                    style={{ background: "var(--lime)" }}
+                  />
+                  Datasets · 2026 Q2
                 </div>
                 <h1
-                  className="text-[72px] leading-[0.95] tracking-[-0.035em]"
-                  style={{ fontWeight: 700, color: "var(--ed-ink)" }}
+                  className="text-[68px] leading-[0.96] tracking-[-0.035em]"
+                  style={{ fontWeight: 700, color: "var(--ink)" }}
                 >
                   The catalogue
-                  <span style={{ color: "var(--ed-accent)" }}>.</span>
+                  <span style={{ color: "var(--lime)" }}>.</span>
                 </h1>
               </div>
               <button
-                className="text-[12px] tracking-[0.18em] uppercase px-6 py-3 self-end"
+                className="text-[12px] tracking-[0.05em] px-5 py-3 self-end transition-colors"
                 style={{
-                  background: "var(--ed-ink)",
-                  color: "var(--ed-paper)",
+                  background: "var(--lime)",
+                  color: "var(--ink)",
                   borderRadius: 999,
-                  fontWeight: 500,
+                  fontWeight: 600,
                 }}
               >
-                + new dataset
+                + New dataset
               </button>
             </div>
 
-            <div className="h-px mb-6" style={{ background: "var(--ed-rule)" }} />
+            <div className="h-px mb-6" style={{ background: "var(--rule)" }} />
 
             <div className="flex items-center justify-between text-[12px] mb-12">
-              <div className="flex gap-8" style={{ color: "var(--ed-soft)" }}>
-                <span>
-                  <strong style={{ color: "var(--ed-ink)" }}>{SAMPLE_DATASETS.length}</strong>{" "}
-                  datasets
-                </span>
-                <span>
-                  <strong style={{ color: "var(--ed-ink)" }}>
-                    {SAMPLE_DATASETS.reduce((s, d) => s + d.episodes, 0)}
-                  </strong>{" "}
-                  episodes
-                </span>
-                <span>
-                  <strong style={{ color: "var(--ed-ink)" }}>
-                    {SAMPLE_DATASETS.reduce((s, d) => s + d.frames, 0).toLocaleString()}
-                  </strong>{" "}
-                  frames
-                </span>
+              <div className="flex gap-8" style={{ color: "var(--steel)" }}>
+                <Stat
+                  count={SAMPLE_DATASETS.length}
+                  label="datasets"
+                />
+                <Stat
+                  count={SAMPLE_DATASETS.reduce((s, d) => s + d.episodes, 0)}
+                  label="episodes"
+                />
+                <Stat
+                  count={SAMPLE_DATASETS.reduce(
+                    (s, d) => s + d.frames,
+                    0,
+                  ).toLocaleString()}
+                  label="frames"
+                />
               </div>
-              <span style={{ color: "var(--ed-soft)" }}>
-                last updated · 2 minutes ago
+              <span style={{ color: "var(--steel)" }}>
+                last updated · 2 min ago
               </span>
             </div>
 
@@ -146,12 +160,14 @@ export default function MockEditorial() {
             </div>
 
             <footer
-              className="mt-20 pt-6 border-t flex items-baseline justify-between"
-              style={{ borderColor: "var(--ed-rule)", color: "var(--ed-soft)" }}
+              className="mt-20 pt-6 border-t flex items-baseline justify-between text-[12px]"
+              style={{ borderColor: "var(--rule)", color: "var(--steel)" }}
             >
-              <span className="text-[11px] tracking-[0.3em] uppercase">end</span>
-              <span className="text-[12px]">
-                MimicRec — printed at {new Date().toLocaleDateString()}
+              <span className="text-[10px] tracking-[0.3em] uppercase">
+                end
+              </span>
+              <span>
+                MimicRec · {new Date().toLocaleDateString()}
               </span>
             </footer>
           </div>
@@ -162,15 +178,24 @@ export default function MockEditorial() {
         to="/mocks"
         className="fixed bottom-4 left-4 px-3 py-1.5 text-[11px] uppercase tracking-[0.3em]"
         style={{
-          background: "var(--ed-paper)",
-          border: "1px solid var(--ed-rule)",
-          color: "var(--ed-soft)",
+          background: "var(--bg)",
+          border: "1px solid var(--rule)",
+          color: "var(--steel)",
           borderRadius: 999,
         }}
       >
         ← mocks
       </Link>
     </div>
+  );
+}
+
+function Stat({ count, label }: { count: number | string; label: string }) {
+  return (
+    <span>
+      <strong style={{ color: "var(--ink)", fontWeight: 700 }}>{count}</strong>{" "}
+      {label}
+    </span>
   );
 }
 
@@ -184,16 +209,17 @@ function NavLink({
   return (
     <a
       href="#"
-      className="group flex items-center gap-2 text-[14px] py-1.5 transition-colors"
+      className="group flex items-center gap-2.5 text-[14px] py-1.5 px-2 rounded-md transition-colors"
       style={{
-        color: active ? "var(--ed-ink)" : "var(--ed-soft)",
-        fontWeight: active ? 600 : 400,
+        color: active ? "var(--ink)" : "var(--steel)",
+        fontWeight: active ? 600 : 500,
+        background: active ? "var(--lime-soft)" : "transparent",
       }}
     >
       <span
-        className="w-3 h-px transition-all"
+        className="w-1 h-4 rounded-sm transition-all"
         style={{
-          background: active ? "var(--ed-accent)" : "var(--ed-rule)",
+          background: active ? "var(--lime)" : "transparent",
         }}
       />
       {children}
@@ -206,10 +232,10 @@ function Article({ d, index }: { d: MockDataset; index: number }) {
     <article className="grid grid-cols-12 gap-8 group">
       <div className="col-span-1 flex flex-col items-end">
         <span
-          className="text-[40px] leading-none tracking-[-0.02em]"
+          className="text-[44px] leading-none tracking-[-0.03em]"
           style={{
-            fontWeight: 600,
-            color: "var(--ed-rule)",
+            fontWeight: 700,
+            color: "var(--rule)",
           }}
         >
           {String(index).padStart(2, "0")}
@@ -219,48 +245,45 @@ function Article({ d, index }: { d: MockDataset; index: number }) {
       <div className="col-span-7 flex flex-col">
         <div
           className="inline-flex items-center gap-2 text-[10px] tracking-[0.3em] uppercase mb-2"
-          style={{ color: "var(--ed-accent)", fontWeight: 600 }}
+          style={{ color: "var(--lime-deep)", fontWeight: 600 }}
         >
           <span
-            className="inline-block w-2 h-2 rounded-full"
-            style={{ background: "var(--ed-accent-bright)" }}
+            className="inline-block w-1.5 h-1.5 rounded-full"
+            style={{ background: "var(--lime)" }}
           />
           {d.robot} · {d.cameras.join(" + ")}
         </div>
         <h2
-          className="text-[34px] leading-[1.05] mb-2 tracking-[-0.02em]"
-          style={{ fontWeight: 600, color: "var(--ed-ink)" }}
+          className="text-[32px] leading-[1.05] mb-2 tracking-[-0.02em]"
+          style={{ fontWeight: 700, color: "var(--ink)" }}
         >
           {d.name}
         </h2>
-        <p
-          className="text-[15px] leading-[1.5]"
-          style={{ color: "var(--ed-soft)" }}
-        >
+        <p className="text-[15px] leading-[1.5]" style={{ color: "var(--steel)" }}>
           {d.taskHint}
         </p>
 
         <div className="flex items-center gap-2 mt-5 flex-wrap">
-          <PrimaryLink>Open episodes →</PrimaryLink>
-          <SecondaryLink>Push to Hub</SecondaryLink>
-          <SecondaryLink>Export</SecondaryLink>
-          <SecondaryLink>Annotate</SecondaryLink>
+          <PrimaryBtn>Open episodes →</PrimaryBtn>
+          <SecondaryBtn>Push to Hub</SecondaryBtn>
+          <SecondaryBtn>Export</SecondaryBtn>
+          <SecondaryBtn>Annotate</SecondaryBtn>
           <span className="grow" />
-          <SecondaryLink danger>Discard</SecondaryLink>
+          <SecondaryBtn danger>Discard</SecondaryBtn>
         </div>
       </div>
 
       <div className="col-span-4 flex flex-col gap-3 text-[13px]">
-        <Stat label="Episodes" value={d.episodes.toString()} />
-        <Stat label="Frames" value={d.frames.toLocaleString()} />
-        <Stat label="Duration" value={`${d.durationMin.toFixed(1)} min`} />
-        <Stat
+        <Fact label="Episodes" value={d.episodes.toString()} />
+        <Fact label="Frames" value={d.frames.toLocaleString()} />
+        <Fact label="Duration" value={`${d.durationMin.toFixed(1)} min`} />
+        <Fact
           label="Hugging Face"
           value={<HubLine state={d.hubState} repo={d.hubRepo} />}
         />
         <div
           className="text-[10px] tracking-[0.3em] uppercase pt-2"
-          style={{ color: "var(--ed-soft)" }}
+          style={{ color: "var(--stone)", fontWeight: 500 }}
         >
           last touched · {d.lastTouched}
         </div>
@@ -269,21 +292,21 @@ function Article({ d, index }: { d: MockDataset; index: number }) {
   );
 }
 
-function Stat({ label, value }: { label: string; value: React.ReactNode }) {
+function Fact({ label, value }: { label: string; value: React.ReactNode }) {
   return (
     <div
       className="flex items-baseline justify-between gap-3 border-b pb-1.5"
-      style={{ borderColor: "var(--ed-rule-soft)" }}
+      style={{ borderColor: "var(--rule-soft)" }}
     >
       <span
         className="text-[10px] tracking-[0.3em] uppercase"
-        style={{ color: "var(--ed-soft)", fontWeight: 500 }}
+        style={{ color: "var(--steel)", fontWeight: 600 }}
       >
         {label}
       </span>
       <span
-        className="text-[16px] tracking-[-0.01em]"
-        style={{ color: "var(--ed-ink)", fontWeight: 600 }}
+        className="text-[15px] tracking-[-0.01em]"
+        style={{ color: "var(--ink)", fontWeight: 600 }}
       >
         {value}
       </span>
@@ -307,29 +330,41 @@ function HubLine({
     error: "Failed",
   };
   const colors: Record<MockDataset["hubState"], string> = {
-    synced: "var(--ed-pos)",
-    stale: "#9b6a18",
-    pushing: "var(--ed-accent)",
-    "not-pushed": "var(--ed-soft)",
-    "not-configured": "var(--ed-soft)",
-    error: "var(--ed-danger)",
+    synced: "var(--lime-deep)",
+    stale: "var(--warn)",
+    pushing: "var(--lime-deep)",
+    "not-pushed": "var(--steel)",
+    "not-configured": "var(--steel)",
+    error: "var(--danger)",
+  };
+  const dots: Record<MockDataset["hubState"], string> = {
+    synced: "var(--lime)",
+    stale: "var(--warn)",
+    pushing: "var(--lime)",
+    "not-pushed": "var(--stone)",
+    "not-configured": "var(--rule)",
+    error: "var(--danger)",
   };
   return (
     <span
       style={{
         color: colors[state],
         display: "inline-flex",
-        alignItems: "baseline",
+        alignItems: "center",
         gap: 6,
       }}
     >
+      <span
+        className="w-1.5 h-1.5 rounded-full"
+        style={{ background: dots[state] }}
+      />
       <span style={{ fontWeight: 600 }}>{labels[state]}</span>
       {repo && (
         <span
           className="text-[11px]"
           style={{
-            fontFamily: "'JetBrains Mono', ui-monospace, monospace",
-            color: "var(--ed-soft)",
+            fontFamily: "'Geist Mono', 'JetBrains Mono', ui-monospace, monospace",
+            color: "var(--stone)",
             fontWeight: 400,
           }}
         >
@@ -340,15 +375,15 @@ function HubLine({
   );
 }
 
-function PrimaryLink({ children }: { children: React.ReactNode }) {
+function PrimaryBtn({ children }: { children: React.ReactNode }) {
   return (
     <button
-      className="px-5 py-2 text-[12px] tracking-[0.05em]"
+      className="px-5 py-2 text-[12px] tracking-[0.02em]"
       style={{
-        background: "var(--ed-ink)",
-        color: "var(--ed-paper)",
+        background: "var(--lime)",
+        color: "var(--ink)",
         borderRadius: 999,
-        fontWeight: 500,
+        fontWeight: 600,
       }}
     >
       {children}
@@ -356,7 +391,7 @@ function PrimaryLink({ children }: { children: React.ReactNode }) {
   );
 }
 
-function SecondaryLink({
+function SecondaryBtn({
   children,
   danger,
 }: {
@@ -365,13 +400,13 @@ function SecondaryLink({
 }) {
   return (
     <button
-      className="px-4 py-2 text-[12px] tracking-[0.05em] transition-colors"
+      className="px-4 py-2 text-[12px] tracking-[0.02em] transition-colors"
       style={{
-        background: danger ? "var(--ed-danger-soft)" : "var(--ed-paper)",
-        color: danger ? "var(--ed-danger)" : "var(--ed-ink)",
-        border: "1px solid " + (danger ? "var(--ed-danger)" : "var(--ed-rule)"),
+        background: danger ? "var(--danger-soft)" : "var(--surface)",
+        color: danger ? "var(--danger)" : "var(--ink)",
+        border: "1px solid " + (danger ? "var(--danger)" : "var(--rule)"),
         borderRadius: 999,
-        fontWeight: 500,
+        fontWeight: 600,
       }}
     >
       {children}
