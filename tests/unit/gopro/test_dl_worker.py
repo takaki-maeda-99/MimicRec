@@ -136,23 +136,23 @@ async def test_dl_with_discard_pending_skips_dl(paths):
 
 
 @pytest.mark.asyncio
-async def test_commit_pending_set_during_staging_window_is_not_overwritten(paths):
-    """Race regression: if registry.commit_episode flips state pending_dl →
-    commit_pending AFTER the DLWorker's pre-stage read but BEFORE its
-    update_sidecar(staged) write, the worker must NOT clobber the
-    commit_pending state with staged.
+async def test_concurrent_commit_episode_and_dlworker_serialize_via_lock(paths):
+    """Race regression #2: both registry.commit_episode and the DLWorker's
+    post-ffmpeg block do read-decide-write on the same sidecar. Without
+    a per-job lock around the transaction they can interleave at file-IO
+    granularity (DLQueue.update_sidecar uses asyncio.to_thread, which
+    yields the event loop). The result is one party's write overwriting
+    the other's, leaving state="staged" with the mp4 orphaned in
+    pending_staged and never committed.
 
-    Symptom (the bug this fix targets): the staged mp4 sits in
-    .pending/gopro_staged/ forever and the dataset's
-    videos/.../episode_NNNNNN.mp4 never appears. /api/session/gopro_pending
-    keeps reporting nonzero.
-
-    Simulation: patch read_sidecar so the FIRST call (line 143 of
-    _process_one) returns the on-disk pending_dl value but ALSO writes
-    commit_pending to disk as a side effect. This models the asyncio
-    interleaving where commit_episode lands its update during the
-    yield in read_sidecar.
+    Test: set state=pending_dl, then concurrently fire (a) the DLWorker
+    post-ffmpeg block via real worker.run() and (b) commit_episode-style
+    transition that flips pending_dl → commit_pending. Order isn't
+    important — under proper locking the FINAL outcome must always be
+    "file lives in dataset, sidecar gone".
     """
+    from mimicrec.gopro.registry import GoProDeviceRegistry
+
     d = MockGoProDevice(name="g1", usb_serial="S1", fixture_mp4=FIXTURE)
     await d.connect()
     queue = DLQueue(paths.pending_dir / "gopro_dl")
@@ -161,44 +161,36 @@ async def test_commit_pending_set_during_staging_window_is_not_overwritten(paths
 
     await d.shutter_on(); await d.shutter_off()
     files = await d.media_list()
-    job = _job(job_id="j_race")
+    job = _job(job_id="j_concurrent", episode_index=7)
     job.sd_filename = files[0].filename
     await queue.enqueue(job)
 
-    # Race injector: replace read_sidecar so that on its FIRST invocation,
-    # after returning the cached pending_dl object, it commits a
-    # commit_pending state to disk before the worker can write staged.
-    real_read = queue.read_sidecar
-    real_update = queue.update_sidecar
-    race_fired = {"v": False}
+    # Build a real registry whose commit_episode owns the job's sidecar
+    # and would race with the DLWorker for the state transition.
+    registry = GoProDeviceRegistry.__new__(GoProDeviceRegistry)
+    registry._queue = queue
+    registry._paths = paths
+    registry._errors = errors
+    registry._recorders = {}
 
-    async def racing_read(job_id):
-        result = await real_read(job_id)
-        if not race_fired["v"] and result is not None and result.state == "pending_dl":
-            race_fired["v"] = True
-            flipped = GoProDLJob(**{**result.to_json(), "state": "commit_pending"})
-            await real_update(flipped)
-        return result
-
-    queue.read_sidecar = racing_read  # type: ignore[assignment]
-
-    task = asyncio.create_task(worker.run())
+    # Fire both concurrently so the asyncio scheduler interleaves their
+    # read/write awaits at file-IO granularity.
+    worker_task = asyncio.create_task(worker.run())
+    commit_task = asyncio.create_task(registry.commit_episode(7))
     await asyncio.sleep(0.5)
     await worker.stop()
-    try: await asyncio.wait_for(task, timeout=2.0)
+    try: await asyncio.wait_for(worker_task, timeout=2.0)
     except asyncio.CancelledError: pass
+    await asyncio.wait_for(commit_task, timeout=2.0)
 
-    # Invariant: the race-flipped commit_pending must result in a
-    # committed dataset video, NOT an orphaned staged file.
-    assert paths.episode_video(0, "g1", 0).exists(), (
-        "DLWorker overwrote commit_pending with staged — staged mp4 is "
-        "now stuck in pending dir and dataset video is missing"
+    # Invariant: regardless of who won the race, ep 7's mp4 must end up
+    # in the dataset, sidecar must be cleaned up, and pending_staged
+    # must not contain an orphan.
+    assert paths.episode_video(0, "g1", 7).exists(), (
+        "concurrent commit/DL race left mp4 orphaned in pending_staged"
     )
-    assert not (paths.pending_dir / "gopro_dl" / "j_race.json").exists(), (
-        "Sidecar should be marked done after commit"
-    )
-    # Staged file should be gone (moved into dataset).
-    assert not (paths.pending_dir / "gopro_staged" / "j_race.mp4").exists()
+    assert not (paths.pending_dir / "gopro_dl" / "j_concurrent.json").exists()
+    assert not (paths.pending_dir / "gopro_staged" / "j_concurrent.mp4").exists()
 
 
 @pytest.mark.asyncio

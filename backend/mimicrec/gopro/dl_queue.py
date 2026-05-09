@@ -68,6 +68,26 @@ class DLQueue:
         self._dir = pending_dir
         self._dir.mkdir(parents=True, exist_ok=True)
         self._q: asyncio.Queue[GoProDLJob] = asyncio.Queue()
+        # Per-job lock guarding read-decide-write transactions on a sidecar.
+        # Both DLWorker (post-ffmpeg state decision) and registry
+        # (commit_episode/discard_episode) take this around their
+        # read+write blocks; without it, DLQueue.update_sidecar runs in
+        # asyncio.to_thread and can race at OS-level with another caller's
+        # update_sidecar, losing the state transition (the staged mp4
+        # ends up orphaned in pending_staged forever).
+        self._sidecar_locks: dict[str, asyncio.Lock] = {}
+
+    def lock_for(self, job_id: str) -> asyncio.Lock:
+        """Async lock serializing all read-modify-write transactions on
+        ``job_id``'s sidecar. Caller must wrap their entire
+        ``read_sidecar → decide → update_sidecar/mark_done`` block in
+        ``async with queue.lock_for(job_id):``.
+        """
+        lock = self._sidecar_locks.get(job_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._sidecar_locks[job_id] = lock
+        return lock
 
     async def enqueue(self, job: GoProDLJob) -> None:
         path = self._dir / f"{job.job_id}.json"

@@ -139,60 +139,31 @@ class GoProDLWorker:
         except Exception:
             pass
 
-        # Re-read sidecar: registry may have requested commit/discard during DL.
-        fresh = await self._queue.read_sidecar(job.job_id)
-        if fresh is None:
-            # Sidecar disappeared (registry already committed/discarded?).
-            staged.unlink(missing_ok=True)
-            return
-
-        if fresh.state == "commit_pending":
-            await self._commit_to_dataset(job, staged)
-            await self._queue.mark_done(job.job_id)
-            return
-        if fresh.state == "discard_pending":
-            staged.unlink(missing_ok=True)
-            await self._queue.mark_done(job.job_id)
-            return
-
-        # Re-read RIGHT before writing 'staged'. Without this, a registry
-        # update_sidecar(commit_pending|discard_pending) that landed during
-        # any prior await (download, ffmpeg, the read above — all yield via
-        # asyncio.to_thread) would be silently overwritten by our staged
-        # write, leaving the mp4 orphaned in pending_staged forever and
-        # the dataset's episode video file missing.
-        fresh = await self._queue.read_sidecar(job.job_id)
-        if fresh is None:
-            staged.unlink(missing_ok=True)
-            return
-        if fresh.state == "commit_pending":
-            await self._commit_to_dataset(fresh, staged)
-            await self._queue.mark_done(job.job_id)
-            return
-        if fresh.state == "discard_pending":
-            staged.unlink(missing_ok=True)
-            await self._queue.mark_done(job.job_id)
-            return
-
-        # Still pending_dl on disk: mark as staged, await registry's commit/discard.
-        fresh.state = "staged"
-        fresh.staged_path = str(staged)
-        await self._queue.update_sidecar(fresh)
-
-        # Even after the just-before-write re-read, registry could have
-        # written commit_pending/discard_pending while update_sidecar was
-        # awaiting the to_thread fsync. Re-read once more.
-        after = await self._queue.read_sidecar(job.job_id)
-        if after is None:
-            staged.unlink(missing_ok=True)
-            return
-        if after.state == "commit_pending":
-            await self._commit_to_dataset(after, staged)
-            await self._queue.mark_done(job.job_id)
-        elif after.state == "discard_pending":
-            staged.unlink(missing_ok=True)
-            await self._queue.mark_done(job.job_id)
-        # else: state="staged" persisted — registry will commit/discard later.
+        # Acquire the per-job lock so registry.commit_episode /
+        # discard_episode (which also do read-decide-write on this same
+        # sidecar via asyncio.to_thread) can't interleave between our
+        # read and write. Without serialization the file-IO threads race
+        # and one party's write overwrites the other's, orphaning the
+        # staged mp4. Heavy work (download, ffmpeg) ran above OUTSIDE the
+        # lock so commit_episode is never blocked on a multi-second await.
+        async with self._queue.lock_for(job.job_id):
+            fresh = await self._queue.read_sidecar(job.job_id)
+            if fresh is None:
+                staged.unlink(missing_ok=True)
+                return
+            if fresh.state == "commit_pending":
+                await self._commit_to_dataset(fresh, staged)
+                await self._queue.mark_done(job.job_id)
+                return
+            if fresh.state == "discard_pending":
+                staged.unlink(missing_ok=True)
+                await self._queue.mark_done(job.job_id)
+                return
+            # Still pending_dl on disk: mark as staged. Registry will
+            # commit/discard via its own locked transaction later.
+            fresh.state = "staged"
+            fresh.staged_path = str(staged)
+            await self._queue.update_sidecar(fresh)
 
     async def _commit_to_dataset(self, job, staged: Path) -> None:
         """Move staged MP4 into the dataset, patch info.json codec."""

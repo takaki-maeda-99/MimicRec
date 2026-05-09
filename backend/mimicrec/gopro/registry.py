@@ -111,42 +111,55 @@ class GoProDeviceRegistry:
     async def commit_episode(self, episode_index: int) -> None:
         """Called from SessionManager.episode_save. For each sidecar matching
         episode_index: if staged, move to dataset; if pending_dl, flip to
-        commit_pending so DLWorker handles it after staging completes."""
+        commit_pending so DLWorker handles it after staging completes.
+
+        Each per-sidecar transaction is wrapped in queue.lock_for(job_id)
+        to serialize against DLWorker's concurrent state-decision write
+        (see DLQueue.lock_for docstring)."""
         if self._queue is None:
             return
         from mimicrec.gopro.ffmpeg_pass import update_info_json_codec
         import shutil as _sh
         jobs = await self._queue.find_jobs_for_episode(episode_index)
         for job in jobs:
-            if job.state == "staged" and job.staged_path:
-                src = Path(job.staged_path)
-                dest = self._paths.episode_video(job.chunk_index, job.cam_name, job.episode_index)
-                try:
-                    dest.parent.mkdir(parents=True, exist_ok=True)
-                    _sh.move(str(src), str(dest))
-                    await update_info_json_codec(self._paths, job.cam_name)
-                    await self._queue.mark_done(job.job_id)
-                except Exception as e:
-                    await self._errors.publish(HardwareError(
-                        f"commit_episode {job.episode_index} ({job.cam_name}) failed: {e}"))
-            elif job.state == "pending_dl":
-                job.state = "commit_pending"
-                await self._queue.update_sidecar(job)
-            # else (commit_pending / discard_pending / staged-but-no-path): skip
+            async with self._queue.lock_for(job.job_id):
+                fresh = await self._queue.read_sidecar(job.job_id)
+                if fresh is None:
+                    continue  # already finalized
+                if fresh.state == "staged" and fresh.staged_path:
+                    src = Path(fresh.staged_path)
+                    dest = self._paths.episode_video(fresh.chunk_index, fresh.cam_name, fresh.episode_index)
+                    try:
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        _sh.move(str(src), str(dest))
+                        await update_info_json_codec(self._paths, fresh.cam_name)
+                        await self._queue.mark_done(fresh.job_id)
+                    except Exception as e:
+                        await self._errors.publish(HardwareError(
+                            f"commit_episode {fresh.episode_index} ({fresh.cam_name}) failed: {e}"))
+                elif fresh.state == "pending_dl":
+                    fresh.state = "commit_pending"
+                    await self._queue.update_sidecar(fresh)
+                # else (commit_pending / discard_pending / staged-but-no-path): skip
 
     async def discard_episode(self, episode_index: int) -> None:
         """Called from SessionManager.episode_discard. Symmetric to commit:
-        delete staged files / flip pending_dl → discard_pending."""
+        delete staged files / flip pending_dl → discard_pending. Same
+        per-sidecar locking discipline as commit_episode."""
         if self._queue is None:
             return
         jobs = await self._queue.find_jobs_for_episode(episode_index)
         for job in jobs:
-            if job.state == "staged" and job.staged_path:
-                Path(job.staged_path).unlink(missing_ok=True)
-                await self._queue.mark_done(job.job_id)
-            elif job.state == "pending_dl":
-                job.state = "discard_pending"
-                await self._queue.update_sidecar(job)
+            async with self._queue.lock_for(job.job_id):
+                fresh = await self._queue.read_sidecar(job.job_id)
+                if fresh is None:
+                    continue
+                if fresh.state == "staged" and fresh.staged_path:
+                    Path(fresh.staged_path).unlink(missing_ok=True)
+                    await self._queue.mark_done(fresh.job_id)
+                elif fresh.state == "pending_dl":
+                    fresh.state = "discard_pending"
+                    await self._queue.update_sidecar(fresh)
 
     def preview_sources(self) -> dict[str, GoProPreviewSource]:
         return dict(self._previews)
