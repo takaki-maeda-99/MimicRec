@@ -1,9 +1,11 @@
 import { Link } from "react-router-dom";
 import { SAMPLE_DATASETS, MOCK_USER, type MockDataset } from "./sample-data";
 
-// "Editorial Workshop" — refined, type-driven, magazine-grade.
-// Cream paper, Fraunces display, generous whitespace, asymmetric column.
-// The sidebar deliberately stays narrow so the typography can breathe.
+// "Editorial Workshop — clean type" revision.
+// Same airy editorial layout as the original B (narrow sidebar, big asymmetric
+// main column, numbered article-style entries, generous whitespace) but with
+// neutral sans-serif throughout. No serifs, no italics — hierarchy comes
+// from size, weight, tracking and color instead.
 
 export default function MockEditorial() {
   return (
@@ -26,34 +28,27 @@ export default function MockEditorial() {
       }}
     >
       <div className="flex min-h-screen">
-        {/* Slim sidebar — vertical wordmark + condensed nav */}
+        {/* Slim sidebar */}
         <aside
           className="w-[180px] flex flex-col px-5 py-6 border-r"
           style={{ borderColor: "var(--ed-rule)" }}
         >
           <div className="mb-10">
             <div
-              className="text-[44px] leading-[0.9]"
-              style={{
-                fontFamily: "Fraunces, ui-serif, Georgia, serif",
-                fontWeight: 350,
-                fontVariationSettings: "'opsz' 144, 'SOFT' 100",
-                color: "var(--ed-ink)",
-              }}
+              className="text-[34px] leading-[1] tracking-[-0.04em]"
+              style={{ fontWeight: 700, color: "var(--ed-ink)" }}
             >
-              Mimic
-              <br />
-              Rec.
+              MimicRec
             </div>
             <div
               className="mt-2 text-[10px] tracking-[0.4em] uppercase"
               style={{ color: "var(--ed-soft)" }}
             >
-              vol. 0042
+              v 0.42
             </div>
           </div>
 
-          <nav className="flex flex-col gap-2 mb-10">
+          <nav className="flex flex-col gap-1 mb-10">
             <NavLink active>Datasets</NavLink>
             <NavLink>Record</NavLink>
             <NavLink>Inference</NavLink>
@@ -61,17 +56,13 @@ export default function MockEditorial() {
           </nav>
 
           <div
-            className="text-[11px] mt-auto pt-4 border-t flex flex-col gap-2"
+            className="text-[11px] mt-auto pt-4 border-t flex flex-col gap-1"
             style={{ borderColor: "var(--ed-rule-soft)", color: "var(--ed-soft)" }}
           >
-            <div>Operator</div>
+            <div className="text-[10px] tracking-[0.3em] uppercase">Operator</div>
             <div
               className="text-[14px]"
-              style={{
-                fontFamily: "Fraunces, serif",
-                fontStyle: "italic",
-                color: "var(--ed-ink)",
-              }}
+              style={{ color: "var(--ed-ink)", fontWeight: 500 }}
             >
               {MOCK_USER}
             </div>
@@ -88,8 +79,7 @@ export default function MockEditorial() {
         {/* Main reading column */}
         <main className="flex-1">
           <div className="max-w-[1100px] mx-auto px-12 py-12">
-            {/* Big editorial header */}
-            <div className="flex items-end justify-between gap-6 mb-12">
+            <div className="flex items-end justify-between gap-6 mb-10">
               <div>
                 <div
                   className="text-[11px] tracking-[0.4em] uppercase mb-3"
@@ -98,24 +88,10 @@ export default function MockEditorial() {
                   Issue 42 · Datasets
                 </div>
                 <h1
-                  className="text-[88px] leading-[0.92]"
-                  style={{
-                    fontFamily: "Fraunces, serif",
-                    fontWeight: 320,
-                    fontVariationSettings: "'opsz' 144, 'SOFT' 100, 'WONK' 1",
-                    letterSpacing: "-0.025em",
-                  }}
+                  className="text-[72px] leading-[0.95] tracking-[-0.035em]"
+                  style={{ fontWeight: 700, color: "var(--ed-ink)" }}
                 >
-                  The catalogue
-                  <span
-                    style={{
-                      fontStyle: "italic",
-                      fontFamily: "'Instrument Serif', Fraunces, serif",
-                      fontWeight: 400,
-                    }}
-                  >
-                    , today.
-                  </span>
+                  The catalogue.
                 </h1>
               </div>
               <button
@@ -124,16 +100,14 @@ export default function MockEditorial() {
                   background: "var(--ed-ink)",
                   color: "var(--ed-paper)",
                   borderRadius: 999,
+                  fontWeight: 500,
                 }}
               >
                 + new dataset
               </button>
             </div>
 
-            <div
-              className="h-px mb-6"
-              style={{ background: "var(--ed-rule)" }}
-            />
+            <div className="h-px mb-6" style={{ background: "var(--ed-rule)" }} />
 
             <div className="flex items-center justify-between text-[12px] mb-12">
               <div className="flex gap-8" style={{ color: "var(--ed-soft)" }}>
@@ -145,22 +119,16 @@ export default function MockEditorial() {
                   <strong style={{ color: "var(--ed-ink)" }}>
                     {SAMPLE_DATASETS.reduce((s, d) => s + d.episodes, 0)}
                   </strong>{" "}
-                  episodes recorded
+                  episodes
                 </span>
                 <span>
                   <strong style={{ color: "var(--ed-ink)" }}>
                     {SAMPLE_DATASETS.reduce((s, d) => s + d.frames, 0).toLocaleString()}
                   </strong>{" "}
-                  frames archived
+                  frames
                 </span>
               </div>
-              <span
-                style={{
-                  fontFamily: "Fraunces, serif",
-                  fontStyle: "italic",
-                  color: "var(--ed-soft)",
-                }}
-              >
+              <span style={{ color: "var(--ed-soft)" }}>
                 last updated · 2 minutes ago
               </span>
             </div>
@@ -175,16 +143,9 @@ export default function MockEditorial() {
               className="mt-20 pt-6 border-t flex items-baseline justify-between"
               style={{ borderColor: "var(--ed-rule)", color: "var(--ed-soft)" }}
             >
-              <span
-                className="text-[11px] tracking-[0.3em] uppercase"
-              >
-                fin.
-              </span>
-              <span
-                className="text-[14px]"
-                style={{ fontFamily: "Fraunces, serif", fontStyle: "italic" }}
-              >
-                MimicRec, no.42 · printed at {new Date().toLocaleDateString()}
+              <span className="text-[11px] tracking-[0.3em] uppercase">end</span>
+              <span className="text-[12px]">
+                MimicRec — printed at {new Date().toLocaleDateString()}
               </span>
             </footer>
           </div>
@@ -217,11 +178,10 @@ function NavLink({
   return (
     <a
       href="#"
-      className="group flex items-center gap-2 text-[14px] py-1"
+      className="group flex items-center gap-2 text-[14px] py-1.5 transition-colors"
       style={{
         color: active ? "var(--ed-ink)" : "var(--ed-soft)",
-        fontFamily: active ? "Fraunces, serif" : "inherit",
-        fontStyle: active ? "italic" : "normal",
+        fontWeight: active ? 600 : 400,
       }}
     >
       <span
@@ -237,15 +197,12 @@ function NavLink({
 
 function Article({ d, index }: { d: MockDataset; index: number }) {
   return (
-    <article
-      className="grid grid-cols-12 gap-8 group"
-    >
+    <article className="grid grid-cols-12 gap-8 group">
       <div className="col-span-1 flex flex-col items-end">
         <span
-          className="text-[44px] leading-none"
+          className="text-[40px] leading-none tracking-[-0.02em]"
           style={{
-            fontFamily: "Fraunces, serif",
-            fontWeight: 300,
+            fontWeight: 600,
             color: "var(--ed-rule)",
           }}
         >
@@ -255,36 +212,26 @@ function Article({ d, index }: { d: MockDataset; index: number }) {
 
       <div className="col-span-7 flex flex-col">
         <div
-          className="text-[11px] tracking-[0.3em] uppercase mb-2"
-          style={{ color: "var(--ed-accent)" }}
+          className="text-[10px] tracking-[0.3em] uppercase mb-2"
+          style={{ color: "var(--ed-accent)", fontWeight: 600 }}
         >
           {d.robot} · {d.cameras.join(" + ")}
         </div>
         <h2
-          className="text-[40px] leading-[1.05] mb-3"
-          style={{
-            fontFamily: "Fraunces, serif",
-            fontWeight: 380,
-            fontVariationSettings: "'opsz' 144, 'SOFT' 80",
-            letterSpacing: "-0.015em",
-          }}
+          className="text-[34px] leading-[1.05] mb-2 tracking-[-0.02em]"
+          style={{ fontWeight: 600, color: "var(--ed-ink)" }}
         >
           {d.name}
         </h2>
         <p
-          className="text-[16px]"
-          style={{
-            fontFamily: "Fraunces, serif",
-            fontStyle: "italic",
-            color: "var(--ed-soft)",
-            fontWeight: 350,
-          }}
+          className="text-[15px] leading-[1.5]"
+          style={{ color: "var(--ed-soft)" }}
         >
-          “{d.taskHint}”
+          {d.taskHint}
         </p>
 
-        <div className="flex items-center gap-3 mt-5">
-          <PrimaryLink>Read episodes →</PrimaryLink>
+        <div className="flex items-center gap-2 mt-5 flex-wrap">
+          <PrimaryLink>Open episodes →</PrimaryLink>
           <SecondaryLink>Push to Hub</SecondaryLink>
           <SecondaryLink>Export</SecondaryLink>
           <SecondaryLink>Annotate</SecondaryLink>
@@ -295,54 +242,38 @@ function Article({ d, index }: { d: MockDataset; index: number }) {
 
       <div className="col-span-4 flex flex-col gap-3 text-[13px]">
         <Stat label="Episodes" value={d.episodes.toString()} />
-        <Stat
-          label="Frames"
-          value={d.frames.toLocaleString()}
-        />
+        <Stat label="Frames" value={d.frames.toLocaleString()} />
         <Stat label="Duration" value={`${d.durationMin.toFixed(1)} min`} />
         <Stat
-          label="HuggingFace"
-          value={
-            <HubLine
-              state={d.hubState}
-              repo={d.hubRepo}
-            />
-          }
+          label="Hugging Face"
+          value={<HubLine state={d.hubState} repo={d.hubRepo} />}
         />
         <div
-          className="text-[11px] tracking-[0.18em] uppercase pt-2"
+          className="text-[10px] tracking-[0.3em] uppercase pt-2"
           style={{ color: "var(--ed-soft)" }}
         >
-          Last touched · {d.lastTouched}
+          last touched · {d.lastTouched}
         </div>
       </div>
     </article>
   );
 }
 
-function Stat({
-  label,
-  value,
-}: {
-  label: string;
-  value: React.ReactNode;
-}) {
+function Stat({ label, value }: { label: string; value: React.ReactNode }) {
   return (
-    <div className="flex items-baseline justify-between gap-3 border-b pb-1.5"
-      style={{ borderColor: "var(--ed-rule-soft)" }}>
+    <div
+      className="flex items-baseline justify-between gap-3 border-b pb-1.5"
+      style={{ borderColor: "var(--ed-rule-soft)" }}
+    >
       <span
         className="text-[10px] tracking-[0.3em] uppercase"
-        style={{ color: "var(--ed-soft)" }}
+        style={{ color: "var(--ed-soft)", fontWeight: 500 }}
       >
         {label}
       </span>
       <span
-        className="text-[18px]"
-        style={{
-          fontFamily: "Fraunces, serif",
-          fontWeight: 360,
-          color: "var(--ed-ink)",
-        }}
+        className="text-[16px] tracking-[-0.01em]"
+        style={{ color: "var(--ed-ink)", fontWeight: 600 }}
       >
         {value}
       </span>
@@ -374,22 +305,22 @@ function HubLine({
     error: "var(--ed-accent)",
   };
   return (
-    <span style={{ color: colors[state], display: "inline-flex", alignItems: "baseline", gap: 6 }}>
-      <span
-        style={{
-          fontFamily: "Fraunces, serif",
-          fontStyle: "italic",
-          fontSize: 16,
-        }}
-      >
-        {labels[state]}
-      </span>
+    <span
+      style={{
+        color: colors[state],
+        display: "inline-flex",
+        alignItems: "baseline",
+        gap: 6,
+      }}
+    >
+      <span style={{ fontWeight: 600 }}>{labels[state]}</span>
       {repo && (
         <span
           className="text-[11px]"
           style={{
             fontFamily: "'JetBrains Mono', ui-monospace, monospace",
             color: "var(--ed-soft)",
+            fontWeight: 400,
           }}
         >
           {repo}
@@ -402,7 +333,7 @@ function HubLine({
 function PrimaryLink({ children }: { children: React.ReactNode }) {
   return (
     <button
-      className="px-5 py-2 text-[12px] tracking-[0.1em]"
+      className="px-5 py-2 text-[12px] tracking-[0.05em]"
       style={{
         background: "var(--ed-ink)",
         color: "var(--ed-paper)",
