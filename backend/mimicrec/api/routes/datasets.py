@@ -56,11 +56,26 @@ async def list_datasets(request: Request):
 @router.delete("/datasets/{ds}", status_code=204)
 async def delete_dataset(request: Request, ds: str):
     import shutil
+    from mimicrec.api.util import safe_dataset_path, UnsafePathError
     root = get_datasets_root(request.app)
-    ds_root = root / ds
+    try:
+        ds_root = safe_dataset_path(root, ds)
+    except UnsafePathError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     if not ds_root.exists():
-        raise FileNotFoundError(f"dataset '{ds}' not found")
-    shutil.rmtree(ds_root)
+        raise HTTPException(status_code=404, detail=f"dataset '{ds}' not found")
+    coord = request.app.state.push_coordinator
+    # Atomic check-and-reserve: blocks concurrent push
+    if not coord.try_reserve_delete(ds):
+        raise HTTPException(status_code=409, detail="cannot delete: push in flight")
+    try:
+        save_lock = coord.get_save_lock(ds)
+        with save_lock:
+            shutil.rmtree(ds_root)
+            coord.drop_dataset(ds)
+    except BaseException:
+        coord.release(ds)
+        raise
 
 
 @router.post("/datasets")
@@ -68,7 +83,7 @@ async def create_dataset(request: Request, body: CreateDatasetRequest):
     root = get_datasets_root(request.app)
     ds_root = root / body.name
     if ds_root.exists():
-        raise ValueError(f"dataset '{body.name}' already exists")
+        raise HTTPException(status_code=409, detail=f"dataset '{body.name}' already exists")
     configs_root = get_configs_root(request.app)
     camera_resolutions: dict[str, tuple[int, int]] = {}
     for cam_name in body.camera_names:
@@ -88,13 +103,16 @@ async def create_dataset(request: Request, body: CreateDatasetRequest):
                 int(cam_cfg.get("width", 640)),
                 int(cam_cfg.get("height", 480)),
             )
-    init_dataset(
-        ds_root,
-        fps=body.fps,
-        joint_names=body.joint_names,
-        camera_names=body.camera_names,
-        camera_resolutions=camera_resolutions,
-    )
+    try:
+        init_dataset(
+            ds_root,
+            fps=body.fps,
+            joint_names=body.joint_names,
+            camera_names=body.camera_names,
+            camera_resolutions=camera_resolutions,
+        )
+    except FileExistsError:
+        raise HTTPException(status_code=409, detail=f"dataset '{body.name}' already exists")
     info = read_dataset_info(ds_root)
     return DatasetSummary(name=body.name, num_episodes=0, total_frames=0)
 
@@ -154,7 +172,8 @@ async def delete_episode(request: Request, ds: str, idx: int):
     ds_root = root / ds
     if not ds_root.exists():
         raise FileNotFoundError(f"dataset '{ds}' not found")
-    tombstone_episode(ds_root / "meta", idx, deleted_at_unix=int(time.time()))
+    coord = request.app.state.push_coordinator
+    tombstone_episode(ds_root / "meta", idx, deleted_at_unix=int(time.time()), coordinator=coord, ds_name=ds)
 
 
 @router.get("/datasets/{ds}/tasks")
@@ -181,7 +200,8 @@ async def create_task(request: Request, ds: str, body: CreateTaskRequest):
     ds_root = root / ds
     if not ds_root.exists():
         raise FileNotFoundError(f"dataset '{ds}' not found")
-    upsert_task(ds_root / "meta", body.name, body.instruction)
+    coord = request.app.state.push_coordinator
+    upsert_task(ds_root / "meta", body.name, body.instruction, coordinator=coord, ds_name=ds)
     # Re-read to get task_index
     tasks_path = ds_root / "meta" / "tasks.parquet"
     table = pq.read_table(tasks_path)
@@ -337,7 +357,7 @@ async def annotate_episode_subtasks(
         body.sample_fps, "auto", body.prompt,
     )
 
-    save_annotations(ds_root, idx, segments)
+    save_annotations(ds_root, idx, segments, coordinator=request.app.state.push_coordinator, ds_name=ds)
 
     return {
         "episode_index": idx,
@@ -381,6 +401,8 @@ async def annotate_all_episodes(
     }
     request.app.state.annotate_progress = progress
 
+    coord = request.app.state.push_coordinator
+
     def run():
         for ep in episodes:
             ep_idx = ep.get("episode_index", 0)
@@ -394,7 +416,7 @@ async def annotate_all_episodes(
                     ds_root, ep_idx, cam, body.model,
                     body.sample_fps, "auto", body.prompt,
                 )
-                save_annotations(ds_root, ep_idx, segments)
+                save_annotations(ds_root, ep_idx, segments, coordinator=coord, ds_name=ds)
                 progress["results"].append({
                     "episode_index": ep_idx, "status": "ok",
                     "num_subtasks": len(segments),

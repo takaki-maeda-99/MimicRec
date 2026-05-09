@@ -82,6 +82,10 @@ class SessionManager:
         fk=None,  # FKService | None — adds EE columns to recordings when set
         task: str = "default",
         instruction: str = "",
+        *,
+        coordinator=None,
+        ds_name=None,
+        app=None,
     ):
         self.session = Session(mode=mode, state=SessionState.IDLE)
         self._dataset_root = dataset_root
@@ -97,6 +101,13 @@ class SessionManager:
         self._instruction = instruction
         self._fk = fk
         self._metrics = Metrics()
+        self._coordinator = coordinator
+        self._ds_name = ds_name
+        self._app = app
+        try:
+            self._app_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self._app_loop = None
 
         # Slots
         self._robot_state_slot: LatestValue[RobotState] = LatestValue()
@@ -369,7 +380,13 @@ class SessionManager:
     async def episode_start(self) -> None:
         """READY -> RECORDING. Create PendingEpisode, open video writers."""
         assert_can_start_episode(self.session)
-        self._pending = PendingEpisode.open(self._dataset_root, self._episode_index)
+        self._pending = PendingEpisode.open(
+            self._dataset_root, self._episode_index,
+            coordinator=self._coordinator,
+            ds_name=self._ds_name,
+            app_loop=self._app_loop,
+            app=self._app,
+        )
         # Open video writers for cameras that have produced a frame
         cam_sizes: dict[str, tuple[int, int]] = {}
         for name in self._cameras._cameras:

@@ -187,6 +187,15 @@ Isaac Sim なしでテストしたい場合:
 .venv/bin/python scripts/sim_bridge_dummy.py  # ダミーシム on :5556
 ```
 
+### 7. Hugging Face Hub に push する
+
+`huggingface-cli login` でトークンを設定後、Datasets タブの「▸ Hub」を展開し
+「Configure Hub」から `<user-or-org>/<dataset-name>` を入力（private がデフォルト）。
+「Push to HF Hub」で push、Auto-push を ON にすると 1 episode save ごとに自動 push。
+
+LeRobot v3 native 形式でアップロードされ、別マシンから
+`LeRobotDataset.from_pretrained("<user>/<dataset-name>")` で読み込める。
+
 ### 4. reBotArm (任意)
 
 `reBotArm_control_py` は Python 3.10 必須で、3.12 のバックエンド venv とは

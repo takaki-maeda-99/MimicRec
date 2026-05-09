@@ -210,6 +210,16 @@ For testing without Isaac Sim:
 .venv/bin/python scripts/sim_bridge_dummy.py  # Fake sim on :5556
 ```
 
+### 7. Push to Hugging Face Hub
+
+After `huggingface-cli login`, open the Datasets tab and click "▸ Hub" to expand the
+Hub section. Click "Configure Hub" and enter `<user-or-org>/<dataset-name>` (private
+by default). Click "Push to HF Hub" to upload. Toggle "Auto-push" to push automatically
+after each episode is saved.
+
+The dataset is uploaded in LeRobot v3 native format and can be loaded as
+`LeRobotDataset.from_pretrained("<user>/<dataset-name>")` from any other machine.
+
 ### 4. reBotArm (optional)
 
 `reBotArm_control_py` requires Python 3.10 (cannot share the 3.12

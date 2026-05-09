@@ -216,5 +216,8 @@ async def create_session_from_request(app, req) -> SessionManager:
         fk=fk,
         task=req.task or "default",
         instruction=getattr(req, "instruction", "") or "",
+        coordinator=getattr(app.state, "push_coordinator", None),
+        ds_name=req.dataset,
+        app=app,
     )
     return sm

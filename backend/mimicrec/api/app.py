@@ -1,14 +1,22 @@
 from __future__ import annotations
 from contextlib import asynccontextmanager
+from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from mimicrec.api.routes import configs, datasets, episode, inference, replay, session, settings
+from mimicrec.api.routes import configs, cloud, datasets, episode, inference, replay, session, settings
 from mimicrec.api.ws import session_hub, state_hub, camera_hub, teleop_hub, inference_hub
 from mimicrec.api.errors import register_exception_handlers
+from mimicrec.cloud.push_state import PushCoordinator
+from mimicrec.cloud.snapshot import cleanup_orphan_snapshots, recover_interrupted_push
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    from mimicrec.api.deps import get_datasets_root
+    root = Path(get_datasets_root(app))
+    if root.exists():
+        recover_interrupted_push(root)
+        cleanup_orphan_snapshots(root)
     yield
     sm = getattr(app.state, "session_manager", None)
     if sm:
@@ -32,6 +40,8 @@ def create_app() -> FastAPI:
     app.state.configs_root = None
     app.state.datasets_root = None
     app.state.vla_dest_root = None
+    app.state.push_coordinator = PushCoordinator()
+    app.state.auth_cache = None
     app.include_router(session.router, prefix="/api")
     app.include_router(episode.router, prefix="/api")
     app.include_router(replay.router, prefix="/api")
@@ -39,6 +49,7 @@ def create_app() -> FastAPI:
     app.include_router(datasets.router, prefix="/api")
     app.include_router(configs.router, prefix="/api")
     app.include_router(settings.router, prefix="/api")
+    app.include_router(cloud.router, prefix="/api")
     app.include_router(session_hub.router)
     app.include_router(state_hub.router)
     app.include_router(camera_hub.router)
