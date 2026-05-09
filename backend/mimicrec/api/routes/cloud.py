@@ -209,6 +209,7 @@ async def _push_task(app, ds_name: str, ds_root: Path):
                     )
                     current.last_push_error = None
                     coord.progress[ds_name].status = "done"
+                    coord.progress[ds_name].error = None
                     coord.progress[ds_name].last_pushed_commit_sha = result.commit_sha
                 coord.progress[ds_name].ended_at = _iso_now()
                 write_hub_meta(ds_root, current)

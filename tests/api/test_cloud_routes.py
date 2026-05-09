@@ -201,6 +201,39 @@ async def test_delete_dataset_409_when_push_in_flight(client_and_root, monkeypat
 
 
 @pytest.mark.asyncio
+async def test_progress_error_cleared_on_subsequent_success(client_and_root, monkeypatch):
+    """Failed push leaves progress.error; next successful push clears it."""
+    client, root, app = client_and_root
+    init_dataset(root / "ds", fps=30, joint_names=["j0"], camera_names=[])
+    write_hub_meta(root / "ds", HubMeta(repo_id="u/d"))
+    coord = app.state.push_coordinator
+
+    # Pre-populate progress with a stale error
+    coord.progress["ds"] = PushProgress(status="error", error="prior failure")
+
+    # Mock _run_push_with_release to succeed (skip real upload)
+    async def fake_run(app, ds_name, ds_root):
+        # Simulate success: write hub_meta + set progress
+        from mimicrec.cloud.hub_meta import read_hub_meta, write_hub_meta as wh
+        meta = read_hub_meta(ds_root)
+        meta.last_pushed_commit_sha = "abc123"
+        meta.last_push_error = None
+        wh(ds_root, meta)
+        coord.progress[ds_name].status = "done"
+        coord.progress[ds_name].error = None  # behavior under test
+
+    monkeypatch.setattr("mimicrec.api.routes.cloud._run_push_with_release", fake_run)
+    with patch("mimicrec.api.routes.cloud.get_token", return_value="hf_xxx"):
+        async with client as ac:
+            r = await ac.post("/api/datasets/ds/hub/push")
+    assert r.status_code == 202
+    # Wait for fake task to run
+    import asyncio as _a
+    await _a.sleep(0.05)
+    assert coord.progress["ds"].error is None
+
+
+@pytest.mark.asyncio
 async def test_delete_dataset_drops_coordinator_state(client_and_root):
     client, root, app = client_and_root
     init_dataset(root / "ds", fps=30, joint_names=["j0"], camera_names=[])
