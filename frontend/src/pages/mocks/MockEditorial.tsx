@@ -43,7 +43,7 @@ export default function MockEditorial() {
       <div className="flex min-h-screen">
         {/* Sidebar */}
         <aside
-          className="w-[200px] flex flex-col px-5 py-6 border-r"
+          className="w-[232px] flex flex-col px-6 py-7 border-r"
           style={{ borderColor: "var(--rule)", background: "var(--bg)" }}
         >
           <div className="mb-10 flex items-center gap-2.5">
