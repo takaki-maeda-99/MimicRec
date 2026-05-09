@@ -59,15 +59,18 @@ async def auth_status(request: Request, refresh: int = 0) -> AuthStatus:
         return AuthStatus(**cache["value"])
 
     token = get_token()
+    authenticated = False
     username: str | None = None
     if token:
         try:
             who = HfApi().whoami(token=token)
             username = who.get("name") if isinstance(who, dict) else getattr(who, "name", None)
+            # Only consider authenticated if whoami succeeded
+            authenticated = username is not None
         except Exception:
-            username = None
+            authenticated = False
     value = {
-        "authenticated": bool(token),
+        "authenticated": authenticated,
         "username": username,
         "checked_at": _iso_now(),
     }

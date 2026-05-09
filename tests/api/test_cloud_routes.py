@@ -50,6 +50,19 @@ async def test_auth_status_with_token(client_and_root):
 
 
 @pytest.mark.asyncio
+async def test_auth_status_token_present_but_whoami_fails(client_and_root):
+    client, _, _ = client_and_root
+    with patch("mimicrec.api.routes.cloud.get_token", return_value="hf_invalid"), \
+         patch("mimicrec.api.routes.cloud.HfApi") as MockApi:
+        MockApi.return_value.whoami.side_effect = RuntimeError("token rejected")
+        async with client as ac:
+            r = await ac.get("/api/cloud/auth-status")
+    assert r.status_code == 200
+    assert r.json()["authenticated"] is False
+    assert r.json()["username"] is None
+
+
+@pytest.mark.asyncio
 async def test_get_hub_returns_null_when_unconfigured(client_and_root):
     client, root, app = client_and_root
     init_dataset(root / "ds", fps=30, joint_names=["j0"], camera_names=[])
