@@ -96,12 +96,6 @@ export default function ReplayPage() {
         </div>
       </Card>
 
-      {/* Subtask timeline */}
-      <Card className="mb-md">
-        <h3 className="text-heading-5 text-ink mb-md">Subtask Timeline</h3>
-        <SubtaskTimeline ds={ds} idx={episodeIdx} />
-      </Card>
-
       {/* Joint angle plot */}
       <Card className="mb-md">
         <h3 className="text-heading-5 text-ink mb-md">Joint trajectory</h3>
@@ -112,6 +106,12 @@ export default function ReplayPage() {
       <Card className="mb-md">
         <h3 className="text-heading-5 text-ink mb-md">End-Effector</h3>
         <EndEffectorPlot ds={ds} idx={episodeIdx} />
+      </Card>
+
+      {/* Subtask timeline */}
+      <Card className="mb-md">
+        <h3 className="text-heading-5 text-ink mb-md">Subtask Timeline</h3>
+        <SubtaskTimeline ds={ds} idx={episodeIdx} />
       </Card>
 
       {/* Subtask annotation */}
