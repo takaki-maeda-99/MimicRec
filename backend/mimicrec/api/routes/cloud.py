@@ -1,6 +1,5 @@
 from __future__ import annotations
 import asyncio
-import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,12 +19,11 @@ from mimicrec.cloud.snapshot import (
 
 router = APIRouter()
 
-_REPO_ID_RE = re.compile(r"^[\w][\w.-]*\/[\w][\w.-]*$")
 _AUTH_TTL_SEC = 60.0
 
 
 class HubConfig(BaseModel):
-    repo_id: str = Field(..., min_length=3)
+    repo_id: str = Field(..., min_length=3, pattern=r"^[\w][\w.-]*\/[\w][\w.-]*$")
     private: bool = True
     auto_push: bool = False
 
@@ -110,8 +108,6 @@ async def get_hub(request: Request, ds: str):
 @router.put("/datasets/{ds}/hub")
 async def put_hub(request: Request, ds: str, body: HubConfig):
     ds_root = _resolve_ds(request, ds)
-    if not _REPO_ID_RE.match(body.repo_id):
-        raise HTTPException(status_code=400, detail=f"invalid repo_id: {body.repo_id!r}")
     existing = read_hub_meta(ds_root)
     new = HubMeta(
         repo_id=body.repo_id,

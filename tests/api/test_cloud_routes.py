@@ -100,7 +100,7 @@ async def test_put_hub_rejects_invalid_repo_id(client_and_root):
     init_dataset(root / "ds", fps=30, joint_names=["j0"], camera_names=[])
     async with client as ac:
         r = await ac.put("/api/datasets/ds/hub", json={"repo_id": "no-slash"})
-    assert r.status_code == 400
+    assert r.status_code in (400, 422)
 
 
 @pytest.mark.asyncio
