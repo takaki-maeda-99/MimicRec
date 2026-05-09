@@ -164,19 +164,33 @@ function HubAuthPill({
   loading: boolean;
   onRefresh: () => void;
 }) {
+  const base =
+    "inline-flex items-center gap-1 h-9 px-md rounded-full text-button-md transition-colors cursor-pointer";
   if (loading) {
-    return <Badge variant="outline">HF: checking…</Badge>;
+    return (
+      <span className={`${base} border border-hairline text-steel`}>
+        HF: checking…
+      </span>
+    );
   }
   if (auth?.authenticated) {
     return (
-      <button onClick={onRefresh} title="Click to refresh" className="cursor-pointer">
-        <Badge variant="success">HF: @{auth.username ?? "(unknown)"}</Badge>
+      <button
+        onClick={onRefresh}
+        title="Click to refresh"
+        className={`${base} bg-brand-green text-primary hover:opacity-90`}
+      >
+        HF: @{auth.username ?? "(unknown)"}
       </button>
     );
   }
   return (
-    <button onClick={onRefresh} title="Click to refresh" className="cursor-pointer">
-      <Badge variant="warning">HF: not logged in — run <CodeInline>huggingface-cli login</CodeInline></Badge>
+    <button
+      onClick={onRefresh}
+      title="Click to refresh"
+      className={`${base} bg-brand-warn/15 text-brand-warn hover:bg-brand-warn/25`}
+    >
+      HF: not logged in — run&nbsp;<CodeInline>huggingface-cli login</CodeInline>
     </button>
   );
 }
@@ -304,11 +318,11 @@ function DatasetCard({
 
       <div className="flex flex-wrap items-center gap-sm">
         <Link to={`/datasets/${ds.name}/episodes`}>
-          <Button variant="primary" size="sm">Episodes →</Button>
+          <Button variant="primary">Episodes →</Button>
         </Link>
 
         {!hubConfigured && (
-          <Button variant="secondary" size="sm" onClick={() => setEditing(true)}>
+          <Button variant="secondary" onClick={() => setEditing(true)}>
             ☁ Configure Hub
           </Button>
         )}
@@ -316,25 +330,23 @@ function DatasetCard({
           <>
             <Button
               variant="secondary"
-              size="sm"
               onClick={onPush}
               disabled={!auth?.authenticated || isPushing}
               title={!auth?.authenticated ? "Run huggingface-cli login first" : undefined}
             >
               {isPushing ? "Pushing…" : "↑ Push to Hub"}
             </Button>
-            <Button variant="ghost" size="sm" onClick={() => setEditing(true)}>
+            <Button variant="secondary" onClick={() => setEditing(true)}>
               Edit Hub
             </Button>
           </>
         )}
 
-        <Button variant="ghost" size="sm" onClick={onExport}>
+        <Button variant="secondary" onClick={onExport}>
           Export
         </Button>
         <Button
-          variant="ghost"
-          size="sm"
+          variant="secondary"
           onClick={onAnnotate}
           disabled={annotatingAny}
           className={isAnnotating ? "!text-brand-tag" : ""}
@@ -348,7 +360,7 @@ function DatasetCard({
 
         <div className="grow" />
 
-        <Button variant="destructive" size="sm" onClick={onDelete}>
+        <Button variant="destructive" onClick={onDelete}>
           Delete
         </Button>
       </div>
