@@ -18,8 +18,13 @@ export default function MockEditorial() {
         ["--ed-soft" as string]: "#5b5448",
         ["--ed-rule" as string]: "#d8cdb8",
         ["--ed-rule-soft" as string]: "#e8dfcb",
-        ["--ed-accent" as string]: "#a23a2c",
-        ["--ed-accent-soft" as string]: "rgba(162,58,44,0.1)",
+        // Fluorescent lime accent + soft tint
+        ["--ed-accent" as string]: "#5a8516", // readable lime for text/borders
+        ["--ed-accent-bright" as string]: "#c2e84f", // highlighter pop
+        ["--ed-accent-soft" as string]: "rgba(194,232,79,0.32)",
+        // Dedicated danger (kept terracotta)
+        ["--ed-danger" as string]: "#a23a2c",
+        ["--ed-danger-soft" as string]: "rgba(162,58,44,0.1)",
         ["--ed-pos" as string]: "#3a6b3c",
         background: "var(--ed-bg)",
         color: "var(--ed-ink)",
@@ -91,7 +96,8 @@ export default function MockEditorial() {
                   className="text-[72px] leading-[0.95] tracking-[-0.035em]"
                   style={{ fontWeight: 700, color: "var(--ed-ink)" }}
                 >
-                  The catalogue.
+                  The catalogue
+                  <span style={{ color: "var(--ed-accent)" }}>.</span>
                 </h1>
               </div>
               <button
@@ -212,9 +218,13 @@ function Article({ d, index }: { d: MockDataset; index: number }) {
 
       <div className="col-span-7 flex flex-col">
         <div
-          className="text-[10px] tracking-[0.3em] uppercase mb-2"
+          className="inline-flex items-center gap-2 text-[10px] tracking-[0.3em] uppercase mb-2"
           style={{ color: "var(--ed-accent)", fontWeight: 600 }}
         >
+          <span
+            className="inline-block w-2 h-2 rounded-full"
+            style={{ background: "var(--ed-accent-bright)" }}
+          />
           {d.robot} · {d.cameras.join(" + ")}
         </div>
         <h2
@@ -302,7 +312,7 @@ function HubLine({
     pushing: "var(--ed-accent)",
     "not-pushed": "var(--ed-soft)",
     "not-configured": "var(--ed-soft)",
-    error: "var(--ed-accent)",
+    error: "var(--ed-danger)",
   };
   return (
     <span
@@ -357,9 +367,9 @@ function SecondaryLink({
     <button
       className="px-4 py-2 text-[12px] tracking-[0.05em] transition-colors"
       style={{
-        background: danger ? "var(--ed-accent-soft)" : "var(--ed-paper)",
-        color: danger ? "var(--ed-accent)" : "var(--ed-ink)",
-        border: "1px solid " + (danger ? "var(--ed-accent)" : "var(--ed-rule)"),
+        background: danger ? "var(--ed-danger-soft)" : "var(--ed-paper)",
+        color: danger ? "var(--ed-danger)" : "var(--ed-ink)",
+        border: "1px solid " + (danger ? "var(--ed-danger)" : "var(--ed-rule)"),
         borderRadius: 999,
         fontWeight: 500,
       }}
