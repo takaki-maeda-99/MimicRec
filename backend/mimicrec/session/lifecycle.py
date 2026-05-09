@@ -291,22 +291,20 @@ class SessionManager:
         """Smoothly return the arm to the configured idle pose, leaving
         it in the mode appropriate for the current session.
 
-        HAND_TEACH ends in GRAVITY_COMP (so the operator can hand-teach
-        the next episode). All other recording modes end in POSITION
-        (idle held rigid). INFERENCE is skipped — that flow has its own
-        lifecycle and doesn't share the data-collection idle behavior.
+        Only HAND_TEACH triggers idle return — that mode benefits from a
+        consistent starting pose between episodes and ends in
+        GRAVITY_COMP for the next hand demonstration. TELEOP and
+        INFERENCE skip this entirely (TELEOP because the leader arm is
+        read-only and resuming from idle without a leader-side reset
+        causes the mapper to snap on the next tick; INFERENCE has its
+        own lifecycle).
 
         Skipped silently if the idle yaml hasn't been captured yet.
         """
-        if self.session.mode == SessionMode.INFERENCE:
+        if self.session.mode != SessionMode.HAND_TEACH:
             return
-        after = (
-            RobotMode.GRAVITY_COMP
-            if self.session.mode == SessionMode.HAND_TEACH
-            else RobotMode.POSITION
-        )
         try:
-            await move_to_idle(self._robot, after_mode=after)
+            await move_to_idle(self._robot, after_mode=RobotMode.GRAVITY_COMP)
         except FileNotFoundError:
             logger.warning(
                 "idle pose yaml missing; skipping move_to_idle",
