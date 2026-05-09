@@ -24,99 +24,77 @@ export default function ReplayPage() {
 
   return (
     <div>
-      <header className="flex items-center justify-between pb-sm mb-lg border-b border-hairline">
+      <header className="flex items-center justify-between pb-sm mb-md border-b border-hairline">
         <div>
           <Link to={`/datasets/${ds}/episodes`} className="text-caption text-stone hover:text-ink">
             &larr; Episodes — {ds}
           </Link>
           <h2 className="mt-1 text-heading-3 text-ink">Episode {idx}</h2>
         </div>
-      </header>
-
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-lg mb-md">
-        {/* Metadata panel */}
-        <Card>
-          <h3 className="text-heading-5 text-ink mb-md">Metadata</h3>
-          {episode ? (
-            <dl className="space-y-2 text-body-sm">
-              <div className="flex justify-between">
-                <dt className="text-steel">Task</dt>
-                <dd className="text-ink font-medium">{episode.task}</dd>
-              </div>
-              <div className="flex justify-between">
-                <dt className="text-steel">Duration</dt>
-                <dd className="text-ink font-medium">{episode.duration_sec.toFixed(1)}s</dd>
-              </div>
-              <div className="flex justify-between">
-                <dt className="text-steel">Frames</dt>
-                <dd className="text-ink font-medium">{episode.num_frames}</dd>
-              </div>
-              <div className="flex justify-between">
-                <dt className="text-steel">Success</dt>
-                <dd className="text-ink font-medium">
-                  {episode.success === true ? "Yes" : episode.success === false ? "No" : "—"}
-                </dd>
-              </div>
-              <div className="flex justify-between">
-                <dt className="text-steel">Mode</dt>
-                <dd className="text-ink font-medium">{episode.mode}</dd>
-              </div>
-              <div className="flex justify-between">
-                <dt className="text-steel">Robot</dt>
-                <dd className="text-ink font-medium">{episode.robot}</dd>
-              </div>
-            </dl>
-          ) : (
-            <p className="text-stone">Loading...</p>
-          )}
-        </Card>
-
-        {/* Video + replay controls */}
-        <div className="lg:col-span-2 space-y-xl">
-          {/* Video players */}
-          <Card>
-            <h3 className="text-heading-5 text-ink mb-md">Video</h3>
-            <div className="space-y-md">
-              {(episode?.cameras || ["front"]).map((cam: string) => (
-                <VideoPlayer key={cam} ds={ds} idx={episodeIdx} cam={cam} />
-              ))}
-            </div>
-          </Card>
-
-          {/* Replay controls */}
-          <div className="flex items-center gap-md">
-            {subState === "replaying" ? (
-              <>
-                <Button
-                  className="!bg-brand-error !text-on-dark hover:!bg-brand-error/90"
-                  onClick={() => replayStop.mutate()}
-                >
-                  Stop Replay
-                </Button>
-                {replayProgress && (
-                  <span className="text-body-sm text-slate">
-                    Frame {replayProgress.frame_index} / {replayProgress.total_frames}
-                  </span>
-                )}
-              </>
-            ) : (
+        <div className="flex items-center gap-md">
+          {subState === "replaying" ? (
+            <>
               <Button
-                onClick={() => replayStart.mutate({ dataset: ds, episode_idx: episodeIdx })}
-                disabled={sessionState !== "ready" || replayStart.isPending}
+                className="!bg-brand-error !text-on-dark hover:!bg-brand-error/90"
+                onClick={() => replayStop.mutate()}
               >
-                {sessionState !== "ready"
-                  ? "Start a session first"
-                  : replayStart.isPending
-                  ? "Starting..."
-                  : "Replay on Robot"}
+                Stop Replay
               </Button>
-            )}
-          </div>
-          {replayStart.isError && (
-            <p className="text-brand-error text-body-sm">{(replayStart.error as Error).message}</p>
+              {replayProgress && (
+                <span className="text-body-sm text-slate">
+                  Frame {replayProgress.frame_index} / {replayProgress.total_frames}
+                </span>
+              )}
+            </>
+          ) : (
+            <Button
+              onClick={() => replayStart.mutate({ dataset: ds, episode_idx: episodeIdx })}
+              disabled={sessionState !== "ready" || replayStart.isPending}
+            >
+              {sessionState !== "ready"
+                ? "Start a session first"
+                : replayStart.isPending
+                ? "Starting..."
+                : "▶ Replay on Robot"}
+            </Button>
           )}
         </div>
-      </div>
+      </header>
+
+      {/* Metadata strip — horizontal header */}
+      {episode && (
+        <div className="flex flex-wrap items-center gap-x-lg gap-y-xs mb-lg pb-md border-b border-hairline-soft text-body-sm">
+          <MetaItem label="Task" value={episode.task} />
+          <MetaItem label="Duration" value={`${episode.duration_sec.toFixed(1)}s`} />
+          <MetaItem label="Frames" value={String(episode.num_frames)} />
+          <MetaItem
+            label="Success"
+            value={episode.success === true ? "Yes" : episode.success === false ? "No" : "—"}
+            color={
+              episode.success === true ? "text-brand-green-deep" :
+              episode.success === false ? "text-brand-error" : "text-stone"
+            }
+          />
+          <MetaItem label="Mode" value={episode.mode} />
+          <MetaItem label="Robot" value={episode.robot} />
+        </div>
+      )}
+
+      {replayStart.isError && (
+        <p className="text-brand-error text-body-sm mb-md">
+          {(replayStart.error as Error).message}
+        </p>
+      )}
+
+      {/* Video grid — fixed square thumbnails */}
+      <Card className="mb-md">
+        <h3 className="text-heading-5 text-ink mb-md">Video</h3>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-md max-w-4xl">
+          {(episode?.cameras || ["front"]).map((cam: string) => (
+            <VideoPlayer key={cam} ds={ds} idx={episodeIdx} cam={cam} />
+          ))}
+        </div>
+      </Card>
 
       {/* Subtask timeline */}
       <Card className="mb-md">
@@ -141,6 +119,23 @@ export default function ReplayPage() {
         <h3 className="text-heading-5 text-ink mb-md">Subtask Annotation</h3>
         <SubtaskAnnotator ds={ds} idx={episodeIdx} cameras={episode?.cameras || ["front"]} />
       </Card>
+    </div>
+  );
+}
+
+function MetaItem({
+  label,
+  value,
+  color = "text-ink",
+}: {
+  label: string;
+  value: string;
+  color?: string;
+}) {
+  return (
+    <div className="flex items-baseline gap-1">
+      <span className="text-caption-bold text-steel uppercase tracking-[0.5px]">{label}</span>
+      <span className={`text-body-sm-medium ${color}`}>{value}</span>
     </div>
   );
 }
