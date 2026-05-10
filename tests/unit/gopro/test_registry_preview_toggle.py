@@ -1,3 +1,5 @@
+import time
+
 import pytest
 
 from mimicrec.gopro.mock import MockGoProDevice
@@ -58,5 +60,31 @@ async def test_registry_default_preview_enabled_is_true(paths):
     await reg.start()
     try:
         assert "g1" in reg.preview_sources()
+    finally:
+        await reg.stop()
+
+
+@pytest.mark.asyncio
+async def test_registry_preview_disabled_episode_lifecycle_still_works(paths):
+    """episode_start and episode_stop complete without errors when preview is disabled.
+
+    Spec item (d): the recording path (shutter_on/off via GoProRecorder) is
+    independent of the preview pipeline; disabling preview must not break it.
+    """
+    a = MockGoProDevice(name="g1", usb_serial="S1")
+    errs = ErrorBus()
+    sub = errs.subscribe()
+    reg = GoProDeviceRegistry(
+        devices=[a], paths=paths, errors=errs, preview_enabled=False,
+    )
+    await reg.start()
+    try:
+        await reg.episode_start(0, t_host_mono_ns=time.monotonic_ns())
+        await reg.episode_stop(0)
+        # No hardware errors should have been emitted by start/stop.
+        errors_seen: list = []
+        while not sub.empty():
+            errors_seen.append(sub.get_nowait())
+        assert errors_seen == [], f"Unexpected errors during episode lifecycle: {errors_seen}"
     finally:
         await reg.stop()
