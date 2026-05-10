@@ -84,11 +84,26 @@ class GoProRecorder:
         if state is None or state.episode_index != episode_index:
             return
 
-        try:
-            files = await self._device.media_list()
-        except Exception:
-            files = []
-        new_files = [f for f in files if f.filename not in self._known_files]
+        # The HERO11 takes a moment to flush moov + close the SD file
+        # after shutter_off. Polling once gives the camera a 0-second budget
+        # and races finalization for short clips, so media_list returns the
+        # OLD list, we declare 'no new file detected', and never enqueue a
+        # DL job. With no sidecar, Bug B's pending-count gate cannot block
+        # the next shutter, so the operator triggers a new recording while
+        # the previous mp4 is still being written. Poll a few times before
+        # giving up — typical finalization for a 30s 1080p clip is under
+        # 1s; the 0.3s × 8 = 2.4s budget covers slower cases without making
+        # truly-empty stops feel sluggish.
+        new_files: list = []
+        for attempt in range(8):
+            try:
+                files = await self._device.media_list()
+            except Exception:
+                files = []
+            new_files = [f for f in files if f.filename not in self._known_files]
+            if new_files:
+                break
+            await asyncio.sleep(0.3)
         # Always remember every new filename so the next episode's diff
         # is clean even when we ignore non-video sidecars below.
         self._known_files |= {f.filename for f in new_files}
