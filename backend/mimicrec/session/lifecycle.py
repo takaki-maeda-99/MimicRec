@@ -56,13 +56,26 @@ def precheck_start(req: StartSessionRequestDomain) -> None:
         )
 
 
-def assert_can_start_episode(session: Session) -> None:
+def assert_can_start_episode(session: Session, gopro_registry: object | None = None) -> None:
     if session.state != SessionState.READY:
         raise InvalidTransitionError(
             f"episode/start requires READY, got {session.state}"
         )
     if session.replay_active:
         raise InvalidTransitionError("episode/start blocked while replay is active")
+    # Block the next shutter while a previous episode's mp4 is still being
+    # downloaded/processed. Starting a new GoPro shutter mid-DL produces the
+    # USB-bandwidth contention that caused sporadic DL/ffmpeg failures.
+    # Auto-cycle handles this by polling /api/session/gopro_pending and
+    # retrying once the queue drains.
+    if gopro_registry is not None:
+        pending = getattr(gopro_registry, "pending_count", 0)
+        if pending > 0:
+            raise InvalidTransitionError(
+                f"episode/start blocked: GoPro download still in flight "
+                f"({pending} pending). Wait for the previous episode's mp4 "
+                f"to finish transferring."
+            )
 
 
 def _episode_image_sources(cameras: CameraManager, gopro_registry: object | None) -> list[str]:
@@ -454,7 +467,7 @@ class SessionManager:
 
     async def episode_start(self) -> None:
         """READY -> RECORDING. Create PendingEpisode, open video writers."""
-        assert_can_start_episode(self.session)
+        assert_can_start_episode(self.session, gopro_registry=self._gopro_registry)
         self._pending = PendingEpisode.open(
             self._dataset_root, self._episode_index,
             coordinator=self._coordinator,

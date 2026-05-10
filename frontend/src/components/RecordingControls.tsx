@@ -1,5 +1,5 @@
 import { useEffect, useCallback, useState, useRef } from "react";
-import { useEpisodeStart, useEpisodeStop, useEpisodeSave, useEpisodeDiscard } from "../api/queries.ts";
+import { useEpisodeStart, useEpisodeStop, useEpisodeSave, useEpisodeDiscard, getGoProPending } from "../api/queries.ts";
 import { useSessionStore } from "../state/session-store.ts";
 import { useRecordFormStore } from "../state/record-form-store.ts";
 import { Button } from "./ui/button";
@@ -21,6 +21,31 @@ export default function RecordingControls() {
   // to start with autoCycle ON, cleared on Esc / End Session / errors.
   const [cycleActive, setCycleActive] = useState(false);
   const [cycleCountdown, setCycleCountdown] = useState<number | null>(null);
+  // GoPro DL queue depth. Backend refuses episode/start while > 0 to prevent
+  // USB-bandwidth contention with an in-flight download from the previous
+  // episode. Auto-cycle waits on this; manual record button is disabled.
+  const [goproPending, setGoproPending] = useState(0);
+
+  // Poll pending count whenever the user is between episodes, so both auto-
+  // cycle and the manual button stay responsive.
+  useEffect(() => {
+    if (sessionState !== "ready" && sessionState !== "review") return;
+    let alive = true;
+    const tick = async () => {
+      try {
+        const n = await getGoProPending();
+        if (alive) setGoproPending(n);
+      } catch {
+        /* swallow polling errors */
+      }
+    };
+    tick();
+    const id = window.setInterval(tick, 500);
+    return () => {
+      alive = false;
+      window.clearInterval(id);
+    };
+  }, [sessionState]);
 
   // Default label = success when entering review, so plain Space saves the
   // common case without an extra keypress.
@@ -99,7 +124,16 @@ export default function RecordingControls() {
         setCycleCountdown(remaining);
       }, 250);
     } else if (sessionState === "ready") {
-      // Returning from save → start the next episode
+      // Returning from save → start the next episode, but wait for any GoPro
+      // DL to fully drain first. The backend refuses episode/start with 409
+      // while pending > 0; without this gate auto-cycle would loop on errors
+      // and (worse) trigger the very USB contention it's trying to avoid.
+      if (goproPending > 0) {
+        setCycleCountdown(null);
+        // The polling effect updates goproPending; this useEffect re-runs
+        // and retries the check until it reaches zero.
+        return clearTimers;
+      }
       setCycleCountdown(null);
       episodeStart.mutate();
     }
@@ -107,7 +141,7 @@ export default function RecordingControls() {
     return clearTimers;
   // episodeStart/Stop/Save are stable mutation hooks; safe to omit
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cycleActive, sessionState, autoDurationSec, autoReviewSec]);
+  }, [cycleActive, sessionState, autoDurationSec, autoReviewSec, goproPending]);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -134,18 +168,28 @@ export default function RecordingControls() {
   );
 
   if (sessionState === "ready") {
+    const blocked = goproPending > 0;
     return (
       <div className="flex flex-col gap-sm">
         {cycleBadge}
+        {blocked && cycleActive && (
+          <Badge variant="warning" className="gap-2">
+            GoPro 転送中... 残 {goproPending}
+          </Badge>
+        )}
         <Button
           size="lg"
-          className="!bg-brand-error !text-on-dark hover:!bg-brand-error/90"
+          className="!bg-brand-error !text-on-dark hover:!bg-brand-error/90 disabled:!opacity-60"
+          disabled={blocked}
+          title={blocked ? "GoPro mp4 を転送中。完了後に再度押してください。" : undefined}
           onClick={() => {
             if (autoCycle) setCycleActive(true);
             episodeStart.mutate();
           }}
         >
-          Start Recording (Space){autoCycle ? " · cycle ON" : ""}
+          {blocked
+            ? `GoPro 転送中... 残 ${goproPending}`
+            : `Start Recording (Space)${autoCycle ? " · cycle ON" : ""}`}
         </Button>
       </div>
     );

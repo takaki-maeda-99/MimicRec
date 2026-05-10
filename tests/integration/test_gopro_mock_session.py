@@ -69,7 +69,24 @@ async def test_three_episodes_with_mock_gopro(tmp_path: Path):
         assert r.json()["gopros"] == ["mock_gopro"]
 
         # ── 2. Three episode cycles ───────────────────────────────────────────
+        async def _wait_for_pending_zero(timeout: float = 10.0) -> None:
+            """Mirror the frontend's auto-cycle behavior: poll gopro_pending
+            until the previous episode's DL has fully drained before starting
+            the next shutter. Required since SessionManager.episode_start
+            now refuses while pending > 0 (Bug B fix)."""
+            deadline = timeout
+            elapsed = 0.0
+            while elapsed < deadline:
+                r = await ac.get("/api/session/gopro_pending")
+                assert r.status_code == 200
+                if r.json()["pending"] == 0:
+                    return
+                await asyncio.sleep(0.1)
+                elapsed += 0.1
+            pytest.fail(f"gopro_pending stuck > 0 after {timeout}s")
+
         for ep_i in range(3):
+            await _wait_for_pending_zero()
             r = await ac.post("/api/episode/start")
             assert r.status_code == 200, f"ep {ep_i} start: {r.text}"
             assert r.json()["state"] == "recording"
