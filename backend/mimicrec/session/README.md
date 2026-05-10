@@ -45,9 +45,18 @@ async def move_to_idle(
 
 `session.mode` 別の挙動:
 
-- `HAND_TEACH` → idle へ復帰し `GRAVITY_COMP` で終わる（次のエピソードを手で動かして教示）
-- `TELEOP` → **idle 復帰しない**（リーダーアームが read-only で同期できず、EE-delta マッパが REVIEW 中に保持する anchor が古いまま再開すると follower が snap するため、復帰自体を廃止）
-- `INFERENCE` → スキップ（別ライフサイクル）
+| mode | `start()` (セッション開始) | `episode_stop()` (エピソード間) | `after_mode` |
+|---|---|---|---|
+| `HAND_TEACH` | ✅ 復帰 | ✅ 復帰 | `GRAVITY_COMP`（次のエピソードを手で動かして教示） |
+| `TELEOP` | ✅ 復帰 | ❌ スキップ | `POSITION`（idle 姿勢を保持したままリーダー → 制御ループへ） |
+| `INFERENCE` | ❌ スキップ | ❌ スキップ | — |
+
+`TELEOP` の振る舞いが分かれている理由:
+
+- **セッション開始時は安全に復帰できる**: 制御ループ／マッパはまだ spawn されていないので、idle へ動かしてもマッパの anchor 計算に巻き込まれない。`after_mode=POSITION` で抜けるとそのまま剛性で姿勢を保ち、続いて起動する `run_teleop_control_loop` が現在のリーダー姿勢を初回 anchor として取り込むため snap しない。
+- **エピソード間は依然スキップ**: REVIEW フェーズでも制御ループは生きており、リーダーアームは read-only で同期できない。idle へ復帰すると EE-delta マッパが古い anchor を抱えたまま次の tick で follower が snap するため、ここは復帰しない方針を維持。
+
+実装は `lifecycle.py` の `_move_to_idle_for_session(at_session_start: bool = False)` に集約。`start()` からは `at_session_start=True`、`episode_stop()` からは（背景タスクで）`at_session_start=False` で呼ぶことで上表の dispatch を実現している。
 
 これにより autoCycle（連続自動収集）でも:
 
