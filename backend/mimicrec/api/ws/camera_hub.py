@@ -2,6 +2,8 @@ from __future__ import annotations
 import asyncio
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from mimicrec.errors import PreviewDisabledError
+
 router = APIRouter()
 
 
@@ -14,6 +16,9 @@ async def ws_camera(websocket: WebSocket, cam_name: str):
         return
     try:
         q = cm.subscribe_preview(cam_name)
+    except PreviewDisabledError:
+        await websocket.close(code=1008, reason="preview disabled this session")
+        return
     except KeyError:
         await websocket.close(code=1008, reason=f"camera '{cam_name}' not found")
         return

@@ -12,6 +12,7 @@ class _BaseSessionRequest(BaseModel):
     cameras: list[str]
     fps: int = 30
     gopros: list[str] = Field(default_factory=list)
+    preview_enabled: bool = True
 
 
 class TeleopSessionRequest(_BaseSessionRequest):
@@ -65,6 +66,7 @@ class SessionStatePayload(BaseModel):
     cameras: list[str] = []
     fps: int | None = None
     gopros: list[str] = Field(default_factory=list)
+    preview_enabled: bool = True
 
 
 class DatasetSummary(BaseModel):

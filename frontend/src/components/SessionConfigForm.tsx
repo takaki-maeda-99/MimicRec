@@ -23,7 +23,7 @@ export default function SessionConfigForm({ onStarted }: Props) {
   const clearError = useSessionStore((s) => s.clearError);
 
   const form = useRecordFormStore();
-  const { mode, robot, teleop, mapper, selectedCams, selectedGopros, dataset, task, fps } = form;
+  const { mode, robot, teleop, mapper, selectedCams, selectedGopros, dataset, task, fps, previewEnabled } = form;
 
   const datasetExists = !!datasets?.some(d => d.name === dataset);
   const { data: tasks } = useTasks(datasetExists ? dataset : "");
@@ -35,6 +35,7 @@ export default function SessionConfigForm({ onStarted }: Props) {
     clearError();
     const body: Record<string, unknown> = {
       mode, dataset, task, robot, cameras: selectedCams, gopros: selectedGopros, fps,
+      preview_enabled: previewEnabled,
     };
     if (mode === "teleop") {
       body.teleop = teleop;
@@ -224,6 +225,14 @@ export default function SessionConfigForm({ onStarted }: Props) {
             During review window, press <kbd>F</kbd> to save as failure, <kbd>D</kbd> to discard, <kbd>Esc</kbd> to stop the cycle.
           </p>
         )}
+        <label className="flex items-center gap-2 text-sm font-medium text-charcoal">
+          <input
+            type="checkbox"
+            checked={previewEnabled}
+            onChange={e => form.set({ previewEnabled: e.target.checked })}
+          />
+          ライブプレビュー表示（OFF で USB 帯域・CPU を解放）
+        </label>
       </div>
       <Button
         onClick={handleStart}

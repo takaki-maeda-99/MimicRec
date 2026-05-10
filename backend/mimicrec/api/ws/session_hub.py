@@ -28,6 +28,7 @@ def _build_ws_state(app) -> dict:
         # of session start.
         "gopros": meta.get("gopros", []),
         "fps": meta.get("fps"),
+        "preview_enabled": meta.get("preview_enabled", True),
     }
 
 

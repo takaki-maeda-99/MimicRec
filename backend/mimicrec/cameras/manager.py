@@ -4,25 +4,35 @@ import time
 from typing import Mapping
 
 from mimicrec.cameras.preview import downscale, encode_jpeg
-from mimicrec.errors import HardwareError
+from mimicrec.errors import HardwareError, PreviewDisabledError
 from mimicrec.types import Frame
 from mimicrec.util.error_bus import ErrorBus
 from mimicrec.util.latest_value import LatestValue
 
 
 class CameraManager:
-    def __init__(self, cameras: Mapping[str, object], error_bus: ErrorBus) -> None:
+    def __init__(
+        self,
+        cameras: Mapping[str, object],
+        error_bus: ErrorBus,
+        preview_enabled: bool = True,
+    ) -> None:
         self._cameras = dict(cameras)
         self._errors = error_bus
         self._latest: dict[str, LatestValue[Frame]] = {n: LatestValue() for n in cameras}
         self._preview_subs: dict[str, list[asyncio.Queue]] = {n: [] for n in cameras}
         self._tasks: list[asyncio.Task] = []
         self._stopped = asyncio.Event()
+        self._preview_enabled = preview_enabled
 
     def latest(self, name: str) -> LatestValue[Frame]:
         return self._latest[name]
 
     def subscribe_preview(self, name: str, maxsize: int = 2) -> asyncio.Queue:
+        if not self._preview_enabled:
+            raise PreviewDisabledError(
+                f"preview is disabled for this session (camera '{name}')"
+            )
         q: asyncio.Queue = asyncio.Queue(maxsize=maxsize)
         self._preview_subs[name].append(q)
         return q
@@ -85,6 +95,8 @@ class CameraManager:
             stamped_ns = time.monotonic_ns()
             frame.t_mono_ns = stamped_ns
             self._latest[name].set(frame, t_mono_ns=stamped_ns)
+            if not self._preview_enabled:
+                continue
             jpg: bytes | None = None
             for q in list(self._preview_subs[name]):
                 if q.full():

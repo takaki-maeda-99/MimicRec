@@ -42,7 +42,7 @@ Default `True` preserves all existing behavior. The flag can only be set at sess
 
 - Add `preview_enabled: bool = True` to `CameraManager.__init__`.
 - Gate the JPEG-encode + fan-out block (currently `manager.py:88-97`) behind `if self._preview_enabled:`. The `cam.read()` call and `LatestValue.set` MUST stay unconditional — recording, FK, and replay-safety all depend on `latest()`.
-- `subscribe_preview(name)` raises a new `PreviewDisabledError` (subclass of `RuntimeError`) when `preview_enabled=False`. Existing `KeyError` semantics for unknown camera names are preserved.
+- `subscribe_preview(name)` raises a new `PreviewDisabledError` (subclass of `MimicRecError`) when `preview_enabled=False`. Existing `KeyError` semantics for unknown camera names are preserved.
 
 ### `gopro/registry.py`
 
@@ -107,8 +107,8 @@ When `previewEnabled === false`, the tile component does not open `/ws/cameras/{
 | File | Cases |
 |---|---|
 | `tests/unit/cameras/test_manager_preview_toggle.py` (new) | (a) `preview_enabled=False` → `subscribe_preview` raises `PreviewDisabledError`. (b) `_run_camera` does not call `encode_jpeg` (spy). (c) `latest()` is still populated — recording is unaffected. |
-| `tests/unit/gopro/test_registry_preview_toggle.py` (new) | (a) `preview_enabled=False` → `MockGoProDevice.start_preview` is never called. (b) `preview_sources()` is `{}`. (c) `gopro_specs()` unchanged. (d) `episode_start/stop/commit/discard` still work. |
-| `tests/unit/api/test_schemas_preview_enabled.py` (new) | Default `True`; explicit `False` accepted; non-bool rejected with 422. |
+| `tests/unit/gopro/test_registry_preview_toggle.py` (new) | (a) `preview_enabled=False` → `MockGoProDevice.start_preview` is never called. (b) `preview_sources()` is `{}`. (c) `gopro_specs()` unchanged. (d) `episode_start`/`episode_stop` still succeed without errors — confirmed by `test_registry_preview_disabled_episode_lifecycle_still_works`. |
+| `tests/unit/api/test_schemas_preview_enabled.py` (new) | Default `True`; explicit `False` accepted. Non-bool coercion (e.g. `"yes"` → `True`) is intentionally accepted: `preview_enabled` uses plain `bool` (lax Pydantic v2 mode) for consistency with `success` and `force` fields across the codebase — the strict-rejection test was removed in commit `1322b26`. |
 
 ### Backend integration
 
