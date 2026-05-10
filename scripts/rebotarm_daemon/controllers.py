@@ -60,7 +60,20 @@ class GravityCompController:
         # sign(qdot) gated by per-joint deadband — zero inside
         # [-deadband[i], +deadband[i]] so we don't chatter at standstill.
         sign = np.where(np.abs(qdot) > deadband, np.sign(qdot), 0.0)
-        tau = tau_g + friction_tau * sign
+        # Velocity taper on the Coulomb comp. Without it, friction comp
+        # keeps pushing in the motion direction at any speed and the arm
+        # settles at a runaway terminal velocity friction_tau/kd before
+        # damping can stop it. With the linear taper, comp is full at
+        # low |qdot| (initial push stays light) and decays to zero as
+        # |qdot| -> v_taper, after which only -kd*qdot brakes the joint.
+        # v_taper=0 (default) replaces the divisor with +inf so taper=1
+        # everywhere — preserves pre-taper behavior on un-tuned joints.
+        v_taper = np.asarray(
+            self._params.friction_vel_taper_rad_s, dtype=float,
+        )
+        v_taper_safe = np.where(v_taper > 0.0, v_taper, np.inf)
+        taper = np.maximum(0.0, 1.0 - np.abs(qdot) / v_taper_safe)
+        tau = tau_g + friction_tau * sign * taper
         if self._safety is not None:
             tau = self._safety.clamp_torque(tau)
         arm.mit(
