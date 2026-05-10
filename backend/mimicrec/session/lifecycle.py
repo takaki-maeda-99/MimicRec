@@ -65,6 +65,25 @@ def assert_can_start_episode(session: Session) -> None:
         raise InvalidTransitionError("episode/start blocked while replay is active")
 
 
+def _episode_image_sources(cameras: CameraManager, gopro_registry: object | None) -> list[str]:
+    """Return the list of image sources (cameras + GoPros) that produced
+    video for this episode.
+
+    GoPro names are normally merged into ``CameraManager._cameras`` via the
+    preview source, but when a session is started with ``preview_enabled=False``
+    the GoPro source is intentionally not attached — yet recording still
+    happens through the GoPro device, and the resulting mp4 lands in the
+    dataset. The Replay UI iterates this list to render playback tiles, so
+    GoPro names must always be present even when their preview is disabled.
+    """
+    names = list(cameras._cameras.keys())
+    if gopro_registry is not None:
+        for g in gopro_registry.gopro_specs().keys():
+            if g not in names:
+                names.append(g)
+    return names
+
+
 class SessionManager:
     """Domain-level lifecycle: wires together all subsystems for one session."""
 
@@ -577,7 +596,7 @@ class SessionManager:
                 "robot": self._robot.name,
                 "teleop": self._teleop.name if self._teleop else None,
                 "mapper": "identity",
-                "cameras": list(self._cameras._cameras.keys()),
+                "cameras": _episode_image_sources(self._cameras, self._gopro_registry),
                 "mode": self.session.mode.value,
                 "fps": self._fps,
                 "success": success,
