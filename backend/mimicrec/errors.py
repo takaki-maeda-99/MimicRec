@@ -30,3 +30,10 @@ class RecorderError(MimicRecError):
 
 class ReplaySafetyError(MimicRecError):
     """Raised by the replay watchdog on violated safety parameters."""
+
+
+class PreviewDisabledError(MimicRecError):
+    """Raised by CameraManager.subscribe_preview when the session was
+    started with preview_enabled=False. The WS layer maps this to a 1008
+    close with reason 'preview disabled this session' so clients can
+    distinguish 'preview off by design' from 'no such camera'."""
