@@ -146,6 +146,7 @@ async def create_session_from_request(app, req) -> SessionManager:
         try:
             gopro_registry = GoProDeviceRegistry(
                 devices=gopro_devices, paths=_paths, errors=error_bus,
+                preview_enabled=req.preview_enabled,
             )
         except ValueError as e:
             raise HTTPException(status_code=400,
@@ -155,7 +156,11 @@ async def create_session_from_request(app, req) -> SessionManager:
         for name, src in gopro_registry.preview_sources().items():
             cams[name] = src
 
-    cm = CameraManager(cameras=cams, error_bus=error_bus)
+    cm = CameraManager(
+        cameras=cams,
+        error_bus=error_bus,
+        preview_enabled=req.preview_enabled,
+    )
 
     # Replay safety
     replay_safety = None
@@ -307,6 +312,7 @@ async def create_session_from_request(app, req) -> SessionManager:
         "cameras": list(req.cameras),
         "gopros": list(getattr(req, "gopros", [])),
         "fps": req.fps,
+        "preview_enabled": bool(req.preview_enabled),
     }
 
     mode = SessionMode(req.mode)
