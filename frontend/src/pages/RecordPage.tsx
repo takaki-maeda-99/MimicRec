@@ -20,6 +20,7 @@ export default function RecordPage() {
   const subState = useSessionStore((s) => s.subState);
   const cameras = useSessionStore((s) => s.cameras);
   const gopros = useSessionStore((s) => s.gopros);
+  const previewEnabled = useSessionStore((s) => s.previewEnabled);
   const dataset = useSessionStore((s) => s.dataset);
   const robot = useSessionStore((s) => s.robot);
   const teleop = useSessionStore((s) => s.teleop);
@@ -121,11 +122,17 @@ export default function RecordPage() {
       </Card>
 
       {(cameras.length > 0 || gopros.length > 0) && sessionState !== "review" && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-md mb-md">
-          {[...cameras, ...gopros].map((cam) => (
-            <CameraPreview key={cam} camName={cam} />
-          ))}
-        </div>
+        previewEnabled ? (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-md mb-md">
+            {[...cameras, ...gopros].map((cam) => (
+              <CameraPreview key={cam} camName={cam} />
+            ))}
+          </div>
+        ) : (
+          <Card className="mb-md text-stone text-body-sm text-center py-md">
+            ライブプレビューはこのセッションでは無効化されています
+          </Card>
+        )
       )}
 
       {teleop === "web_keyboard" && (
