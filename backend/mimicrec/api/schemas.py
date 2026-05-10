@@ -1,7 +1,7 @@
 from __future__ import annotations
 from enum import Enum
 from typing import Annotated, Literal
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, Strict
 from mimicrec.types import SessionMode, SessionState, SubState
 
 
@@ -12,6 +12,7 @@ class _BaseSessionRequest(BaseModel):
     cameras: list[str]
     fps: int = 30
     gopros: list[str] = Field(default_factory=list)
+    preview_enabled: Annotated[bool, Strict()] = True
 
 
 class TeleopSessionRequest(_BaseSessionRequest):
@@ -65,6 +66,7 @@ class SessionStatePayload(BaseModel):
     cameras: list[str] = []
     fps: int | None = None
     gopros: list[str] = Field(default_factory=list)
+    preview_enabled: Annotated[bool, Strict()] = True
 
 
 class DatasetSummary(BaseModel):
