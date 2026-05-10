@@ -42,12 +42,22 @@ class GoProRecorder:
         except Exception as e:
             log.warning("media_list snapshot failed for %s: %s", self._device.name, e)
 
-        try:
-            await self._device.shutter_on()
-        except Exception as e:
-            await self._errors.publish(HardwareError(f"GoPro {self._device.name} shutter_on failed: {e}"))
-            self._state = None
-            return
+        # HERO11 occasionally returns transient HTTP 500 on set_shutter
+        # (USB-CDC-NCM hiccup, mid-finalization of a previous mp4, or HTTP
+        # queue contention with media_list/preview). shutter_off retries
+        # below — keep the same discipline here so a single transient
+        # error does not silently lose a whole episode of GoPro footage.
+        for attempt in range(3):
+            try:
+                await self._device.shutter_on()
+                break
+            except Exception as e:
+                if attempt == 2:
+                    await self._errors.publish(HardwareError(
+                        f"GoPro {self._device.name} shutter_on retries exhausted: {e}"))
+                    self._state = None
+                    return
+                await asyncio.sleep(0.2)
 
         self._state = _EpisodeState(
             episode_index=episode_index,
@@ -79,20 +89,40 @@ class GoProRecorder:
         except Exception:
             files = []
         new_files = [f for f in files if f.filename not in self._known_files]
+        # Always remember every new filename so the next episode's diff
+        # is clean even when we ignore non-video sidecars below.
+        self._known_files |= {f.filename for f in new_files}
         if not new_files:
             await self._errors.publish(HardwareError(
                 f"GoPro {self._device.name} ep {episode_index}: no new file detected — orphan or no recording"))
             return
 
-        # Chapter detection: group new files by (quality, id).
-        groups: dict[tuple[str, str], list] = defaultdict(list)
+        # Split into video chapters vs sidecar files. The GoPro can drop
+        # a .JPG photo (accidental shutter / QuikCapture), .LRV proxy,
+        # or .THM thumbnail into media_list alongside the chapter; if we
+        # let one through, the group sort below picks it (the previous
+        # ``("?", filename)`` fallback sorted before any quality letter
+        # because ``"?" < "G"`` in ASCII), DLWorker downloads it as
+        # ``..._raw.mp4``, and ffmpeg fails to demux a still image.
+        video_chapters = []
+        sidecars = []
         for f in new_files:
             try:
-                q, ch, eid = parse_chapter_filename(f.filename)
+                parse_chapter_filename(f.filename)
+                video_chapters.append(f)
             except ValueError:
-                # Unknown filename pattern — treat as its own group.
-                groups[("?", f.filename)].append((99, f))
-                continue
+                sidecars.append(f)
+
+        if not video_chapters:
+            await self._errors.publish(HardwareError(
+                f"GoPro {self._device.name} ep {episode_index}: no video chapter in new files "
+                f"(saw non-video: {[f.filename for f in sidecars]})"))
+            return
+
+        # Chapter detection: group video chapters by (quality, id).
+        groups: dict[tuple[str, str], list] = defaultdict(list)
+        for f in video_chapters:
+            q, ch, eid = parse_chapter_filename(f.filename)
             groups[(q, eid)].append((ch, f))
 
         # Pick the first chapter (lowest ch) of the first group.
@@ -100,10 +130,11 @@ class GoProRecorder:
         items = sorted(groups[first_group_key], key=lambda t: t[0])
         chosen = items[0][1]
 
-        # All other new files are orphan; remember them.
-        all_new_filenames = {f.filename for f in new_files}
-        self._known_files |= all_new_filenames
-        if len(all_new_filenames) > 1:
+        if sidecars:
+            await self._errors.publish(HardwareError(
+                f"GoPro {self._device.name} ep {episode_index}: ignored non-video sidecar files "
+                f"{[f.filename for f in sidecars]} (chapter {chosen.filename} downloaded)"))
+        if len(video_chapters) > 1:
             await self._errors.publish(HardwareError(
                 f"GoPro {self._device.name} ep {episode_index}: chapter split detected — "
                 f"only first chapter saved ({chosen.filename}), rest left on SD"))
