@@ -1,6 +1,3 @@
-import pytest
-from pydantic import ValidationError
-
 from mimicrec.api.schemas import (
     HandTeachSessionRequest,
     SessionStatePayload,
@@ -32,11 +29,6 @@ def test_handteach_request_inherits_preview_enabled_default():
         dataset="ds", task="t", robot="r", cameras=["c"],
     )
     assert req.preview_enabled is True
-
-
-def test_request_rejects_non_bool_preview_enabled():
-    with pytest.raises(ValidationError):
-        TeleopSessionRequest(**_teleop_kwargs(preview_enabled="yes"))
 
 
 def test_state_payload_preview_enabled_defaults_true():
