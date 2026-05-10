@@ -13,6 +13,7 @@ interface SessionStore {
   cameras: string[];
   gopros: string[];
   fps: number | null;
+  previewEnabled: boolean;
   episodeProgress: EpisodeProgress | null;
   replayProgress: ReplayProgress | null;
   lastError: { error: string; message: string } | null;
@@ -36,6 +37,7 @@ export const useSessionStore = create<SessionStore>((set) => ({
   cameras: [],
   gopros: [],
   fps: null,
+  previewEnabled: true,
   episodeProgress: null,
   replayProgress: null,
   lastError: null,
@@ -53,6 +55,7 @@ export const useSessionStore = create<SessionStore>((set) => ({
       cameras: (data.cameras as string[]) ?? [],
       gopros: (data.gopros as string[]) ?? [],
       fps: (data.fps as number) ?? null,
+      previewEnabled: (data.preview_enabled as boolean | undefined) ?? true,
     }),
 
   setEpisodeProgress: (data) => set({ episodeProgress: data }),

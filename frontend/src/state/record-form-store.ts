@@ -14,6 +14,7 @@ export interface RecordFormDraft {
   autoCycle: boolean;
   autoDurationSec: number;
   autoReviewSec: number;
+  previewEnabled: boolean;
 }
 
 interface RecordFormStore extends RecordFormDraft {
@@ -34,6 +35,7 @@ const DEFAULTS: RecordFormDraft = {
   autoCycle: false,
   autoDurationSec: 10,
   autoReviewSec: 3,
+  previewEnabled: true,
 };
 
 export const useRecordFormStore = create<RecordFormStore>()(
