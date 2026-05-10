@@ -16,7 +16,13 @@ log = logging.getLogger(__name__)
 
 
 class GoProDeviceRegistry:
-    def __init__(self, devices: list, paths: DatasetPaths, errors: ErrorBus) -> None:
+    def __init__(
+        self,
+        devices: list,
+        paths: DatasetPaths,
+        errors: ErrorBus,
+        preview_enabled: bool = True,
+    ) -> None:
         names = [d.name for d in devices]
         serials = [d.usb_serial for d in devices]
         if len(set(names)) != len(names):
@@ -26,6 +32,7 @@ class GoProDeviceRegistry:
         self._devices = devices
         self._paths = paths
         self._errors = errors
+        self._preview_enabled = preview_enabled
         self._queue: DLQueue | None = None
         self._worker: GoProDLWorker | None = None
         self._worker_task: asyncio.Task | None = None
@@ -52,16 +59,16 @@ class GoProDeviceRegistry:
                 name, exc = r
                 await self._errors.publish(HardwareError(f"GoPro {name} connect failed: {exc}"))
 
-        # 2. Restore queue, build recorders + preview sources.
+        # 2. Restore queue, build recorders + (optionally) preview sources.
         self._queue = DLQueue.restore(self._paths.pending_dir / "gopro_dl")
         for d in self._devices:
             self._recorders[d.name] = GoProRecorder(d, self._queue, self._paths, self._errors)
-            # The device knows which UDP port the camera will actually emit
-            # to: HERO9–11 firmware ignores the port arg and forces 8554,
-            # so the device must claim it via ``udp_preview_port`` and the
-            # preview source binds the same. Multi-camera HERO12+ setups
-            # override the port per device in yaml.
-            self._previews[d.name] = GoProPreviewSource(d, udp_port=d.udp_preview_port)
+            if self._preview_enabled:
+                # The device knows which UDP port the camera will actually
+                # emit to: HERO9–11 firmware ignores the port arg and forces
+                # 8554, so the device must claim it via udp_preview_port and
+                # the preview source binds the same.
+                self._previews[d.name] = GoProPreviewSource(d, udp_port=d.udp_preview_port)
 
         # 3. Start the DL worker.
         devices_by_serial = {d.usb_serial: d for d in self._devices}
