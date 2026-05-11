@@ -25,6 +25,19 @@ The operator wants to record a dataset where the `front` view is taken by a GoPr
 
 Adapter identity and dataset slot are deliberately separated. `kwargs["name"] = slot` was rejected during design review because `SimCamera` (`backend/mimicrec/cameras/sim_camera.py:35`) reads `name` to pick a ZMQ topic; overriding it would silently break sim inputs.
 
+For OpenCV cameras the separation is mechanical: `CameraManager._cameras` is a `dict[name, adapter]` and the key is already the only thing that flows into dataset paths and preview WS. Passing the slot as the dict key (`cams[slot] = adapter`) is the entire change; the adapter keeps its yaml-defined `name`.
+
+For GoPros the separation needs explicit plumbing. `GoProDeviceRegistry` currently keys `_recorders` / `_previews` / `gopro_specs()` by `d.name`, and `GoProRecorder.stop_episode` writes `cam_name=self._device.name` into the DL sidecar (`backend/mimicrec/gopro/recorder.py:177`). Those are the values that DLWorker uses to compute the on-disk video path. The registry constructor therefore takes a list of `(slot, device)` pairs:
+
+```python
+class GoProDeviceRegistry:
+    def __init__(self, devices: list[tuple[str, GoProDevice]], ...):
+        # tuple is (slot, device). slot is the dataset key; device.name
+        # stays the physical adapter identity used for logging and USB.
+```
+
+`GoProRecorder` takes the slot as a separate field and writes it as `cam_name` on the sidecar. `gopro_specs()` is keyed by slot. The result: every value that DLWorker / commit_episode / pending dir touches uses the slot, while `device.name` and `device.usb_serial` continue to identify the physical hardware in logs and USB ops.
+
 ### Global slot vocabulary
 
 `configs/camera_roles.yaml`:
@@ -107,13 +120,16 @@ In `deps.create_session_from_request`, after loading the dataset path and before
 3. Reject duplicate slot names (HTTP 400).
 4. For each slot, reject if `slot` fails the path-safe regex OR is in neither `declared_roles` nor `existing_image_keys` (HTTP 400).
 5. For each device:
+   - Reject if the same device basename is assigned to two different slots in the same request (HTTP 400). Physical-ID uniqueness in step 6 catches OpenCV `device_id` and GoPro `usb_serial` collisions, but does not catch yamls without a physical ID (mocks, sim cameras), so the basename check is a strict superset.
    - Reject if the basename exists in both `cameras/` and `gopros/` (HTTP 400, ambiguous).
    - Reject if it exists in neither (HTTP 400, not found).
-   - Load the yaml; do NOT override `name`. The slot is the dict key in `cams` / GoPro registry; the yaml's `name` stays on the adapter.
+   - Load the yaml; do NOT override `name`. The slot is the dict key in `cams` and the slot/device pair fed to `GoProDeviceRegistry`; the yaml's `name` stays on the adapter.
 6. **Physical-ID uniqueness across resolved devices** (HTTP 400 each):
    - OpenCV cameras: `device_id` must be unique.
    - GoPros: `usb_serial` must be unique. (This duplicates `GoProDeviceRegistry`'s existing check at `gopro/registry.py:30` deliberately — the early check yields a friendlier error before the registry is built.)
-7. **Orphan GoPro sidecar check**: list `*.json` under `paths.pending_dir/gopro_dl/`. For each sidecar whose `cam_name` is not in the requested slot set, **reject with HTTP 409**: `orphan GoPro sidecar <file> (cam_name=<x>) does not match this session's slots <list>`. The operator must end the previous session cleanly or move the file aside. Automatic discard was considered and rejected: silently throwing away a downloaded mp4 because the next session picked different slots is too easy to do by mistake.
+7. **Orphan GoPro sidecar check**: list `*.json` under `paths.pending_dir/gopro_dl/`. For each sidecar:
+   - If the file cannot be parsed as JSON or as `GoProDLJob`, reject with HTTP 409. A corrupt sidecar may reference any cam_name; refusing to start until the operator inspects it is safer than guessing.
+   - If `cam_name` is not in the requested slot set, reject with HTTP 409: `orphan GoPro sidecar <file> (cam_name=<x>) does not match this session's slots <list>`. The operator must end the previous session cleanly or move the file aside. Automatic discard was considered and rejected: silently throwing away a downloaded mp4 because the next session picked different slots is too easy to do by mistake.
 8. Build the resolved tuple list `[(slot, kind, cfg, adapter), ...]`.
 9. `init_dataset` arguments are derived from the resolved list:
    - `camera_names = [s for s,k,_,_ in resolved if k == "camera"]`
@@ -123,6 +139,23 @@ In `deps.create_session_from_request`, after loading the dataset path and before
 10. Persist into `app.state.session_meta`:
     - `slot_assignments: [{"slot": s, "device": a.device, "kind": k} for ...]` — for state payloads.
     - `cameras` / `gopros` mirror filled with slot names by kind.
+
+### State payload builders
+
+`backend/mimicrec/api/routes/session.py::build_state_payload` and `backend/mimicrec/api/ws/session_hub.py::_build_ws_state` both read from `app.state.session_meta` to build their state dicts. Both need the same update: read `session_meta["slot_assignments"]` and emit it under the new `image_sources` key of the payload. Both keep emitting the deprecated `cameras` / `gopros` mirror straight from `session_meta` so old clients continue to work.
+
+```python
+# routes/session.py (and the same shape in ws/session_hub.py)
+return SessionStatePayload(
+    ...
+    cameras=meta.get("cameras", []),    # slot names with kind=camera
+    gopros=meta.get("gopros", []),      # slot names with kind=gopro
+    image_sources=meta.get("slot_assignments", []),  # NEW
+    ...
+)
+```
+
+The integration tests below pin both REST and WS responses to include `image_sources` with the correct shape.
 11. Persist into `app.state.resolved_config["slot_assignments"]`: the full list including each device's yaml snapshot, so an episode's `meta/info.json` records exactly what hardware produced it. The adapter object itself is not serialized; only the cfg dict from yaml.
 
 ## Frontend
@@ -205,8 +238,10 @@ export function useDatasetSchema(dataset: string | undefined) {
 |---|---|
 | `tests/unit/test_schemas_slot_assignments.py` | `SlotAssignment` parses, `_BaseSessionRequest.slot_assignments` accepts a list, legacy `cameras`/`gopros` still accepted by the schema. |
 | `tests/unit/test_camera_roles_loader.py` | Loader returns the role list; `_SLOT_NAME_RE` accepts `front`/`wrist_2`/`top-1`, rejects `foo/bar`/`foo.bar`/empty. |
-| `tests/unit/test_deps_slot_validation.py` | (a) legacy `cameras`/`gopros` shim normalizes to `slot_assignments`; (b) duplicate slot → 400; (c) slot not in roles+image_keys → 400; (d) missing device → 400; (e) device ambiguous (both cameras/ and gopros/) → 400; (f) duplicate OpenCV `device_id` → 400; (g) duplicate GoPro `usb_serial` → 400; (h) path-unsafe slot name → 400. |
-| `tests/unit/test_deps_orphan_sidecar.py` | A sidecar with `cam_name="ghost"` makes session start 409 when slots are `{front, wrist}`; same sidecar passes when slots are `{ghost, front}`. |
+| `tests/unit/test_deps_slot_validation.py` | (a) legacy `cameras`/`gopros` shim normalizes to `slot_assignments`; (b) duplicate slot → 400; (c) slot not in roles+image_keys → 400; (d) missing device → 400; (e) device ambiguous (both cameras/ and gopros/) → 400; (f) duplicate device basename across slots → 400 (catches mocks/SimCamera that have no physical ID); (g) duplicate OpenCV `device_id` → 400; (h) duplicate GoPro `usb_serial` → 400; (i) path-unsafe slot name → 400. |
+| `tests/unit/test_deps_orphan_sidecar.py` | A sidecar with `cam_name="ghost"` makes session start 409 when slots are `{front, wrist}`; same sidecar passes when slots are `{ghost, front}`. A corrupt (unparseable) sidecar makes session start 409 regardless of slot set. |
+| `tests/unit/test_gopro_registry_slot_aware.py` | Construct `GoProDeviceRegistry(devices=[(slot, device), ...])`. `_recorders`, `_previews`, `gopro_specs()` are all keyed by slot. `GoProRecorder.stop_episode` writes `cam_name=slot` (not `device.name`) into the sidecar. |
+| `tests/unit/test_state_payload_image_sources.py` | `build_state_payload` and `_build_ws_state` both include `image_sources: [{slot, device, kind}]`. Legacy `cameras` / `gopros` mirror contains the kind-filtered slot names. |
 | `tests/unit/test_deps_init_dataset_slot.py` | `init_dataset` receives `camera_names` containing only OpenCV slots; `gopro_specs` keyed by slot name; `camera_resolutions` keyed by slot name with values from the yaml. |
 | `tests/unit/test_deps_resolved_config.py` | `app.state.resolved_config["slot_assignments"]` contains each device's full yaml snapshot. |
 
