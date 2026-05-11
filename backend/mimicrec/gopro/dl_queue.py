@@ -149,5 +149,32 @@ class DLQueue:
 
     @property
     def pending_count(self) -> int:
-        """User-visible pending = sidecar count (includes staged awaiting commit)."""
+        """Raw sidecar count on disk (any state). Mostly useful for tests
+        and restoration logic. Operational gates should prefer
+        ``dl_in_flight_count`` so that already-staged jobs (DL done,
+        awaiting a commit that save() will perform synchronously) do not
+        block save."""
         return sum(1 for _ in self._dir.glob("*.json"))
+
+    @property
+    def dl_in_flight_count(self) -> int:
+        """Sidecars where the GoPro mp4 is NOT yet ready for commit —
+        i.e. state is ``pending_dl`` / ``commit_pending`` /
+        ``discard_pending``. ``staged`` sidecars are excluded because
+        their bytes are already on the host; ``commit_episode`` will
+        move them to the dataset atomically inside ``episode_save``.
+        Used as the gate for episode_save (block while DL still in
+        flight) and episode_start (same metric — same intent)."""
+        n = 0
+        for sidecar in self._dir.glob("*.json"):
+            try:
+                data = json.loads(sidecar.read_text())
+            except Exception:
+                # Unparseable sidecar — count as in-flight to be safe so
+                # operator notices something is wrong instead of saving
+                # a broken episode silently.
+                n += 1
+                continue
+            if data.get("state") != "staged":
+                n += 1
+        return n

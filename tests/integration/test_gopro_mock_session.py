@@ -97,6 +97,12 @@ async def test_three_episodes_with_mock_gopro(tmp_path: Path):
             assert r.status_code == 200, f"ep {ep_i} stop: {r.text}"
             assert r.json()["state"] == "review"
 
+            # Mirror the frontend's review-state behavior: the Save buttons
+            # stay disabled until the GoPro DL has drained, so this test
+            # waits before clicking save (the backend would return 409
+            # otherwise).
+            await _wait_for_pending_zero()
+
             r = await ac.post("/api/episode/save", json={"success": True, "comment": f"ep{ep_i}"})
             assert r.status_code == 200, f"ep {ep_i} save: {r.text}"
             assert r.json()["state"] == "ready"

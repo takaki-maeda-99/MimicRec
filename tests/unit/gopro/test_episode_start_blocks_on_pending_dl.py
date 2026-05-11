@@ -19,7 +19,11 @@ from mimicrec.types import SessionMode
 
 class _FakeRegistry:
     def __init__(self, pending_count: int) -> None:
+        # Gate now reads ``dl_in_flight_count`` (excludes staged
+        # sidecars). Tests model the simple case where both metrics
+        # match (no staged sidecars).
         self.pending_count = pending_count
+        self.dl_in_flight_count = pending_count
 
 
 def test_assert_can_start_episode_no_registry_passes():

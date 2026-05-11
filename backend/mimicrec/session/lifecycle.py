@@ -70,12 +70,39 @@ def assert_can_start_episode(session: Session, gopro_registry: object | None = N
     # Auto-cycle handles this by polling /api/session/gopro_pending and
     # retrying once the queue drains.
     if gopro_registry is not None:
-        pending = getattr(gopro_registry, "pending_count", 0)
+        pending = getattr(gopro_registry, "dl_in_flight_count", 0)
         if pending > 0:
             raise InvalidTransitionError(
                 f"episode/start blocked: GoPro download still in flight "
                 f"({pending} pending). Wait for the previous episode's mp4 "
                 f"to finish transferring."
+            )
+
+
+def assert_can_save_episode(session: Session, gopro_registry: object | None = None) -> None:
+    """Gate episode/save while a GoPro DL is still in flight.
+
+    Allowing the operator to commit success/failure before the mp4 has
+    landed in the dataset means the parquet metadata records an episode
+    whose video may never arrive (DL timeout, ffmpeg failure on a
+    truncated file). Blocking at this transition makes save atomic: by
+    the time it returns, the GoPro file is guaranteed to be either in
+    the dataset or permanently failed (in which case mark_done already
+    cleared the sidecar and pending_count is back to zero). Discard is
+    intentionally NOT gated — the operator should always be able to
+    throw away a bad take quickly.
+    """
+    if session.state != SessionState.REVIEW:
+        raise InvalidTransitionError(
+            f"episode/save requires REVIEW, got {session.state}"
+        )
+    if gopro_registry is not None:
+        pending = getattr(gopro_registry, "dl_in_flight_count", 0)
+        if pending > 0:
+            raise InvalidTransitionError(
+                f"episode/save blocked: GoPro video still transferring "
+                f"({pending} pending). Wait for the mp4 to land in the "
+                f"dataset before committing the episode."
             )
 
 
@@ -571,10 +598,7 @@ class SessionManager:
 
     async def episode_save(self, success: bool | None = None, comment: str | None = None) -> None:
         """REVIEW -> READY. Save pending episode with metadata."""
-        if self.session.state != SessionState.REVIEW:
-            raise InvalidTransitionError(
-                f"episode_save requires REVIEW, got {self.session.state}"
-            )
+        assert_can_save_episode(self.session, gopro_registry=self._gopro_registry)
         if self._gopro_registry is not None:
             try:
                 await self._gopro_registry.commit_episode(self._episode_index)

@@ -177,3 +177,9 @@ class GoProDeviceRegistry:
     @property
     def pending_count(self) -> int:
         return self._queue.pending_count if self._queue is not None else 0
+
+    @property
+    def dl_in_flight_count(self) -> int:
+        """Number of sidecars where the GoPro mp4 is NOT yet ready for
+        commit. Drives the episode_save / episode_start gates."""
+        return self._queue.dl_in_flight_count if self._queue is not None else 0

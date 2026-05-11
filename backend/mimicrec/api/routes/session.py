@@ -115,7 +115,10 @@ async def session_end(request: Request):
 @router.get("/session/gopro_pending")
 async def gopro_pending(request: Request) -> dict[str, int]:
     reg = getattr(request.app.state, "gopro_registry", None)
-    return {"pending": int(reg.pending_count) if reg is not None else 0}
+    # Reports DL-in-flight (excludes already-staged sidecars whose bytes
+    # are on the host and just await an instant commit inside save).
+    # This is the metric the frontend uses to disable save/start.
+    return {"pending": int(reg.dl_in_flight_count) if reg is not None else 0}
 
 
 @router.get("/session/state")

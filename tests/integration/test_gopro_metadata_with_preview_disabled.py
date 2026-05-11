@@ -63,6 +63,17 @@ async def test_episode_metadata_lists_gopro_when_preview_disabled(tmp_path: Path
         await asyncio.sleep(0.15)
         r = await ac.post("/api/episode/stop")
         assert r.status_code == 200, r.text
+
+        # Save now refuses while the GoPro DL is in flight (the FE
+        # disables the Save buttons until pending==0). Mirror that wait.
+        for _ in range(100):
+            pending = (await ac.get("/api/session/gopro_pending")).json()["pending"]
+            if pending == 0:
+                break
+            await asyncio.sleep(0.1)
+        else:
+            pytest.fail("gopro_pending never reached 0 within 10s")
+
         r = await ac.post("/api/episode/save", json={"success": True})
         assert r.status_code == 200, r.text
 

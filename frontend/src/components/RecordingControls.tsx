@@ -62,11 +62,15 @@ export default function RecordingControls() {
   }, [sessionState]);
 
   const saveWith = useCallback((success: boolean | null) => {
-    if (sessionState === "review") {
-      setSuccessLabel(success);
-      episodeSave.mutate({ success });
-    }
-  }, [sessionState, episodeSave]);
+    if (sessionState !== "review") return;
+    // Mirror the disabled-button behavior for keyboard shortcuts (Space/F):
+    // backend rejects with 409 when goproPending > 0, but silent mutation
+    // errors leave the user confused about why nothing happened. Surface
+    // the wait through the button label instead.
+    if (goproPending > 0) return;
+    setSuccessLabel(success);
+    episodeSave.mutate({ success });
+  }, [sessionState, episodeSave, goproPending]);
 
   const handleSpace = useCallback(() => {
     if (sessionState === "ready") {
@@ -114,7 +118,16 @@ export default function RecordingControls() {
         setCycleCountdown(remaining);
       }, 250);
     } else if (sessionState === "review") {
-      // Auto-save success after review window; user can override with F/D/Esc
+      // Auto-save success after review window; user can override with F/D/Esc.
+      // BUT: the backend rejects episode/save with 409 while the GoPro DL is
+      // still in flight, otherwise the parquet metadata commits an episode
+      // whose mp4 may never land in the dataset (DL timeout / ffmpeg failure
+      // on truncated file). Defer the timer until pending reaches 0; the
+      // polling effect re-runs this useEffect when goproPending changes.
+      if (goproPending > 0) {
+        setCycleCountdown(null);
+        return clearTimers;
+      }
       const ms = Math.max(0, autoReviewSec) * 1000;
       reviewTimerRef.current = window.setTimeout(() => episodeSave.mutate({ success: true }), ms);
       const start = Date.now();
@@ -219,11 +232,20 @@ export default function RecordingControls() {
   }
 
   if (sessionState === "review") {
+    const saveBlocked = goproPending > 0;
+    const saveTitle = saveBlocked
+      ? "GoPro mp4 を転送中。完了後に保存可能になります。"
+      : undefined;
     return (
       <div className="flex flex-col gap-md">
         <div className="flex items-center gap-sm">
           <div className="text-heading-5 text-charcoal">Review Episode</div>
           {cycleBadge}
+          {saveBlocked && (
+            <Badge variant="warning" className="gap-2">
+              GoPro 転送中... 残 {goproPending}
+            </Badge>
+          )}
         </div>
         <div className="flex gap-xs">
           <Button
@@ -252,11 +274,21 @@ export default function RecordingControls() {
           </Button>
         </div>
         <div className="flex gap-sm">
-          <Button className="!bg-brand-green !text-primary hover:!bg-brand-green-deep" onClick={() => saveWith(true)}>
-            Save Success (Space)
+          <Button
+            className="!bg-brand-green !text-primary hover:!bg-brand-green-deep disabled:!opacity-60"
+            disabled={saveBlocked}
+            title={saveTitle}
+            onClick={() => saveWith(true)}
+          >
+            {saveBlocked ? `GoPro 転送中... 残 ${goproPending}` : "Save Success (Space)"}
           </Button>
-          <Button className="!bg-brand-warn !text-on-dark" onClick={() => saveWith(false)}>
-            Save Failure (F)
+          <Button
+            className="!bg-brand-warn !text-on-dark disabled:!opacity-60"
+            disabled={saveBlocked}
+            title={saveTitle}
+            onClick={() => saveWith(false)}
+          >
+            {saveBlocked ? `GoPro 転送中... 残 ${goproPending}` : "Save Failure (F)"}
           </Button>
           <Button variant="secondary" onClick={handleDiscard}>
             Discard (D)
