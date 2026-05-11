@@ -1,5 +1,6 @@
-import { useConfigsWithContent, useDatasets, useStartSession, useTasks } from "../api/queries.ts";
+import { useCameraRoles, useConfigsWithContent, useDatasetSchema, useDatasets, useStartSession, useTasks } from "../api/queries.ts";
 import { useRecordFormStore } from "../state/record-form-store.ts";
+import type { SlotAssignmentDraft } from "../state/record-form-store.ts";
 import { useSessionStore } from "../state/session-store.ts";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
@@ -14,8 +15,6 @@ export default function SessionConfigForm({ onStarted }: Props) {
   const { data: robots } = useConfigsWithContent("robot");
   const { data: teleops } = useConfigsWithContent("teleop");
   const { data: mappers } = useConfigsWithContent("mapper");
-  const { data: cameras } = useConfigsWithContent("cameras");
-  const { data: gopros } = useConfigsWithContent("gopros", { optional: true });
   const { data: datasets } = useDatasets();
   const startSession = useStartSession();
 
@@ -23,10 +22,43 @@ export default function SessionConfigForm({ onStarted }: Props) {
   const clearError = useSessionStore((s) => s.clearError);
 
   const form = useRecordFormStore();
-  const { mode, robot, teleop, mapper, selectedCams, selectedGopros, dataset, task, fps, previewEnabled } = form;
+  const { mode, robot, teleop, mapper, dataset, task, fps, previewEnabled, slotAssignments } = form;
 
   const datasetExists = !!datasets?.some(d => d.name === dataset);
   const { data: tasks } = useTasks(datasetExists ? dataset : "");
+
+  const { data: roles } = useCameraRoles();
+  const { data: schema } = useDatasetSchema(datasetExists ? dataset : undefined);
+  const cameraConfigs = useConfigsWithContent("cameras").data ?? [];
+  const goproConfigs = useConfigsWithContent("gopros", { optional: true }).data ?? [];
+  const deviceOptions = [
+    ...cameraConfigs.map(c => ({ name: c.name, kind: "camera" as const })),
+    ...goproConfigs.map(g => ({ name: g.name, kind: "gopro" as const })),
+  ];
+  const datasetSlots = schema?.image_keys ?? [];
+  const formSlots = slotAssignments.map((a: SlotAssignmentDraft) => a.slot);
+  const allSlotsToShow = datasetExists
+    ? datasetSlots.map(slot => ({
+        slot,
+        device: slotAssignments.find((a: SlotAssignmentDraft) => a.slot === slot)?.device ?? "",
+        locked: true,
+      }))
+    : slotAssignments.map((a: SlotAssignmentDraft) => ({ ...a, locked: false }));
+  const setSlotDevice = (slot: string, device: string) => {
+    const next = slotAssignments.filter((a: SlotAssignmentDraft) => a.slot !== slot);
+    if (device) next.push({ slot, device });
+    form.set({ slotAssignments: next });
+  };
+  const addSlot = (slot: string) => {
+    if (slotAssignments.some((a: SlotAssignmentDraft) => a.slot === slot)) return;
+    form.set({ slotAssignments: [...slotAssignments, { slot, device: "" }] });
+  };
+  const removeSlot = (slot: string) => {
+    form.set({ slotAssignments: slotAssignments.filter((a: SlotAssignmentDraft) => a.slot !== slot) });
+  };
+  const usedDevices = new Set(slotAssignments.map((a: SlotAssignmentDraft) => a.device).filter(Boolean));
+  const availableRoles = (roles?.roles ?? []).filter(r => !formSlots.includes(r));
+  const legacySlots = datasetSlots.filter(s => !(roles?.roles ?? []).includes(s) && !formSlots.includes(s));
 
   const handleStart = () => {
     // Clear any error left over from a prior session that ended via
@@ -34,7 +66,8 @@ export default function SessionConfigForm({ onStarted }: Props) {
     // to the new attempt's spinner.
     clearError();
     const body: Record<string, unknown> = {
-      mode, dataset, task, robot, cameras: selectedCams, gopros: selectedGopros, fps,
+      mode, dataset, task, robot, fps,
+      slot_assignments: slotAssignments.map((a: SlotAssignmentDraft) => ({ slot: a.slot, device: a.device })),
       preview_enabled: previewEnabled,
     };
     if (mode === "teleop") {
@@ -139,50 +172,62 @@ export default function SessionConfigForm({ onStarted }: Props) {
       )}
       <div>
         <label className="block text-body-sm-medium text-charcoal mb-xs">
-          Cameras <span className="text-stone font-normal">(複数選択)</span>
+          Camera Assignments
         </label>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-          {cameras?.map(c => (
-            <ConfigCard
-              key={c.name}
-              config={c}
-              group="cameras"
-              multiSelect
-              selected={selectedCams.includes(c.name)}
-              onClick={() => {
-                const next = selectedCams.includes(c.name)
-                  ? selectedCams.filter(x => x !== c.name)
-                  : [...selectedCams, c.name];
-                form.set({ selectedCams: next });
-              }}
-            />
+        <div className="flex flex-col gap-2">
+          {allSlotsToShow.map(({ slot, device, locked }) => (
+            <div key={slot} className="flex items-center gap-2">
+              <select
+                disabled={locked}
+                value={slot}
+                className="border border-hairline rounded px-2 py-1 text-body-sm bg-canvas"
+                onChange={() => {}}
+              >
+                <option value={slot}>{slot}{legacySlots.includes(slot) ? " (legacy)" : ""}</option>
+              </select>
+              <select
+                value={device}
+                className="border border-hairline rounded px-2 py-1 text-body-sm bg-canvas flex-1"
+                onChange={e => setSlotDevice(slot, e.target.value)}
+              >
+                <option value="">— none —</option>
+                {deviceOptions.map(opt => (
+                  <option
+                    key={opt.name}
+                    value={opt.name}
+                    disabled={usedDevices.has(opt.name) && device !== opt.name}
+                  >
+                    {opt.name} ({opt.kind}){usedDevices.has(opt.name) && device !== opt.name ? " (in use)" : ""}
+                  </option>
+                ))}
+              </select>
+              {!locked && (
+                <button
+                  type="button"
+                  onClick={() => removeSlot(slot)}
+                  className="text-stone hover:text-brand-error px-2"
+                >
+                  ✕
+                </button>
+              )}
+            </div>
           ))}
+          {!datasetExists && (
+            <div className="flex items-center gap-2">
+              <select
+                value=""
+                className="border border-hairline rounded px-2 py-1 text-body-sm bg-canvas"
+                onChange={e => { if (e.target.value) addSlot(e.target.value); }}
+              >
+                <option value="">+ Add slot…</option>
+                {availableRoles.map(r => (
+                  <option key={r} value={r}>{r}</option>
+                ))}
+              </select>
+            </div>
+          )}
         </div>
       </div>
-      {gopros && gopros.length > 0 && (
-        <div>
-          <label className="block text-body-sm-medium text-charcoal mb-xs">
-            GoPros <span className="text-stone font-normal">(複数選択)</span>
-          </label>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-            {gopros.map(g => (
-              <ConfigCard
-                key={g.name}
-                config={g}
-                group="gopros"
-                multiSelect
-                selected={selectedGopros.includes(g.name)}
-                onClick={() => {
-                  const next = selectedGopros.includes(g.name)
-                    ? selectedGopros.filter(x => x !== g.name)
-                    : [...selectedGopros, g.name];
-                  form.set({ selectedGopros: next });
-                }}
-              />
-            ))}
-          </div>
-        </div>
-      )}
       <div>
         <label className="block text-sm font-medium text-charcoal mb-1">FPS</label>
         <Input type="number" className="w-20" value={fps} onChange={e => form.set({ fps: Number(e.target.value) })} />

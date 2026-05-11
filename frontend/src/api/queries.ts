@@ -75,6 +75,23 @@ export function useDeleteEpisode(ds: string) {
 
 // --------------- Configs ---------------
 
+export function useCameraRoles() {
+  return useQuery<{roles: string[]}>({
+    queryKey: ["camera-roles"],
+    queryFn: () => apiFetch<{roles: string[]}>("/api/configs/camera_roles"),
+  });
+}
+
+export function useDatasetSchema(dataset: string | undefined) {
+  return useQuery<{image_keys: string[]}>({
+    queryKey: ["dataset-schema", dataset],
+    queryFn: () => apiFetch<{image_keys: string[]}>(
+      `/api/datasets/${dataset}/schema`,
+    ),
+    enabled: !!dataset,
+  });
+}
+
 export function useConfigs(group: string) {
   return useQuery({
     queryKey: ["configs", group],

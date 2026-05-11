@@ -8,7 +8,10 @@ export interface SessionStatePayload {
   teleop: string | null;
   mapper: string | null;
   cameras: string[];
+  gopros: string[];
   fps: number | null;
+  preview_enabled?: boolean;
+  image_sources?: ImageSource[];
 }
 
 export interface DatasetSummary {
@@ -82,4 +85,10 @@ export interface ConfigEntry {
   name: string;
   file?: string;
   content: Record<string, unknown>;
+}
+
+export interface ImageSource {
+  slot: string;
+  device: string;
+  kind: "camera" | "gopro";
 }

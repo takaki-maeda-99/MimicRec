@@ -440,6 +440,26 @@ async def get_annotate_progress(request: Request, ds: str):
     return progress
 
 
+@router.get("/datasets/{ds}/schema")
+async def dataset_schema(request: Request, ds: str) -> dict:
+    """Returns the list of observation.images.* keys from this dataset's
+    info.json. The keys are the slot names; the frontend uses this to
+    pre-populate slot rows for existing datasets (works even when
+    episodes/ is empty)."""
+    root = get_datasets_root(request.app)
+    ds_root = root / ds
+    info_path = ds_root / "meta" / "info.json"
+    if not info_path.exists():
+        raise FileNotFoundError(f"dataset '{ds}' not found")
+    info = json.loads(info_path.read_text())
+    image_keys = sorted(
+        k.removeprefix("observation.images.")
+        for k in info.get("features", {})
+        if k.startswith("observation.images.")
+    )
+    return {"image_keys": image_keys}
+
+
 @router.post("/datasets/{ds}/export")
 async def export_dataset(request: Request, ds: str, body: ExportRequest) -> ExportResponse:
     root = get_datasets_root(request.app)

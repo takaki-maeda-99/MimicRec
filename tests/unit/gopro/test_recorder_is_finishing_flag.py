@@ -42,7 +42,7 @@ def queue(paths):
 async def test_is_finishing_false_before_stop(paths, queue):
     d = MockGoProDevice(name="g1", usb_serial="S1")
     await d.connect()
-    r = GoProRecorder(d, queue, paths, ErrorBus())
+    r = GoProRecorder(d, queue, paths, ErrorBus(), slot="g1")
     assert r.is_finishing is False
 
 
@@ -63,7 +63,7 @@ async def test_is_finishing_true_during_stop_episode(paths, queue):
         await real_off()
 
     d.shutter_off = slow_off  # type: ignore[assignment]
-    r = GoProRecorder(d, queue, paths, ErrorBus())
+    r = GoProRecorder(d, queue, paths, ErrorBus(), slot="g1")
 
     await r.start_episode(0, t_host_mono_ns=0)
     task = asyncio.create_task(r.stop_episode(0))
@@ -92,7 +92,7 @@ async def test_registry_dl_in_flight_counts_finishing_recorders(paths):
 
     d.shutter_off = slow_off  # type: ignore[assignment]
 
-    reg = GoProDeviceRegistry(devices=[d], paths=paths, errors=ErrorBus())
+    reg = GoProDeviceRegistry(devices=[(d.name, d)], paths=paths, errors=ErrorBus())
     await reg.start()
     try:
         await reg.episode_start(0, t_host_mono_ns=0)

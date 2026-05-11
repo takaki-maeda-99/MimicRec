@@ -24,8 +24,9 @@ class _EpisodeState:
 class GoProRecorder:
     """Control-plane view over a single GoProDevice."""
 
-    def __init__(self, device, queue: DLQueue, paths: DatasetPaths, errors: ErrorBus) -> None:
+    def __init__(self, device, queue: DLQueue, paths: DatasetPaths, errors: ErrorBus, slot: str) -> None:
         self._device = device
+        self._slot = slot
         self._queue = queue
         self._paths = paths
         self._errors = errors
@@ -180,7 +181,7 @@ class GoProRecorder:
             sd_filename=chosen.filename,
             episode_index=episode_index,
             chunk_index=chunk_index,
-            cam_name=self._device.name,
+            cam_name=self._slot,
             episode_start_mono_ns=state.episode_start_mono_ns,
             episode_stop_mono_ns=time.monotonic_ns(),
         )

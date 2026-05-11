@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { EpisodeProgress, ReplayProgress } from "../api/types.ts";
+import type { EpisodeProgress, ImageSource, ReplayProgress } from "../api/types.ts";
 
 interface SessionStore {
   state: "idle" | "ready" | "recording" | "review";
@@ -14,6 +14,7 @@ interface SessionStore {
   gopros: string[];
   fps: number | null;
   previewEnabled: boolean;
+  imageSources: ImageSource[];
   episodeProgress: EpisodeProgress | null;
   replayProgress: ReplayProgress | null;
   lastError: { error: string; message: string } | null;
@@ -38,6 +39,7 @@ export const useSessionStore = create<SessionStore>((set) => ({
   gopros: [],
   fps: null,
   previewEnabled: true,
+  imageSources: [],
   episodeProgress: null,
   replayProgress: null,
   lastError: null,
@@ -54,6 +56,7 @@ export const useSessionStore = create<SessionStore>((set) => ({
       mapper: (data.mapper as string) ?? null,
       cameras: (data.cameras as string[]) ?? [],
       gopros: (data.gopros as string[]) ?? [],
+      imageSources: (data.image_sources as ImageSource[] | undefined) ?? [],
       fps: (data.fps as number) ?? null,
       previewEnabled: (data.preview_enabled as boolean | undefined) ?? true,
     }),

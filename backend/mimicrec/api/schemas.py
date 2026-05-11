@@ -5,14 +5,26 @@ from pydantic import BaseModel, Field
 from mimicrec.types import SessionMode, SessionState, SubState
 
 
+class SlotAssignment(BaseModel):
+    slot: str
+    device: str
+
+
+class ImageSource(BaseModel):
+    slot: str
+    device: str
+    kind: Literal["camera", "gopro"]
+
+
 class _BaseSessionRequest(BaseModel):
     dataset: str
     task: str
     robot: str
-    cameras: list[str]
+    cameras: list[str] = Field(default_factory=list)
     fps: int = 30
     gopros: list[str] = Field(default_factory=list)
     preview_enabled: bool = True
+    slot_assignments: list[SlotAssignment] = Field(default_factory=list)
 
 
 class TeleopSessionRequest(_BaseSessionRequest):
@@ -67,6 +79,7 @@ class SessionStatePayload(BaseModel):
     fps: int | None = None
     gopros: list[str] = Field(default_factory=list)
     preview_enabled: bool = True
+    image_sources: list[ImageSource] = Field(default_factory=list)
 
 
 class DatasetSummary(BaseModel):
