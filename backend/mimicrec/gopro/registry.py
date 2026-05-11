@@ -181,5 +181,12 @@ class GoProDeviceRegistry:
     @property
     def dl_in_flight_count(self) -> int:
         """Number of sidecars where the GoPro mp4 is NOT yet ready for
-        commit. Drives the episode_save / episode_start gates."""
-        return self._queue.dl_in_flight_count if self._queue is not None else 0
+        commit, PLUS any recorders currently mid-``stop_episode``
+        (shutter_off + media_list polling window — the sidecar has not
+        appeared on disk yet but is imminent). Drives the
+        episode_save / episode_start gates."""
+        base = self._queue.dl_in_flight_count if self._queue is not None else 0
+        for rec in self._recorders.values():
+            if getattr(rec, "is_finishing", False):
+                base += 1
+        return base

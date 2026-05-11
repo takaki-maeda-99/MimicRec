@@ -31,6 +31,18 @@ class GoProRecorder:
         self._errors = errors
         self._known_files: set[str] = set()
         self._state: _EpisodeState | None = None
+        # True between the start of ``stop_episode`` and the moment a
+        # sidecar is on disk (or the no-new-file warning is published).
+        # Surfaces in ``GoProDeviceRegistry.dl_in_flight_count`` so the
+        # save gate stays armed during the shutter_off + media_list
+        # polling window. Without this, the SessionManager flips state
+        # to REVIEW before stop_episode runs and the operator can race
+        # the sidecar by hitting Space the instant they see REVIEW.
+        self._is_finishing: bool = False
+
+    @property
+    def is_finishing(self) -> bool:
+        return self._is_finishing
 
     async def start_episode(self, episode_index: int, t_host_mono_ns: int) -> None:
         if getattr(self._device, "is_disabled", False):
@@ -67,6 +79,13 @@ class GoProRecorder:
     async def stop_episode(self, episode_index: int) -> None:
         if getattr(self._device, "is_disabled", False):
             return
+        self._is_finishing = True
+        try:
+            await self._stop_episode_inner(episode_index)
+        finally:
+            self._is_finishing = False
+
+    async def _stop_episode_inner(self, episode_index: int) -> None:
         state = self._state
         self._state = None
 
