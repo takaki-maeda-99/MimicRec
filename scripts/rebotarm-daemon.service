@@ -1,0 +1,50 @@
+[Unit]
+Description=reBotArm safety daemon (ZMQ server on :5558)
+Documentation=file:///home/takaki/MimicRec/scripts/rebotarm_daemon/README.md
+# Wait for the network stack before binding ZMQ. The daemon binds to
+# tcp://*:5558, which only resolves once interfaces are up — without
+# this it can come up before eth0/wlan0 and bind only to loopback.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=takaki
+Group=takaki
+
+# Relative paths in configs/rebotarm_daemon.yaml (arm_config:
+# configs/rebotarm/arm.yaml etc.) are resolved against this directory.
+WorkingDirectory=/home/takaki/MimicRec
+
+# scripts/ holds the rebotarm_daemon package. The venv has the SDK
+# (reBotArm_control_py) installed but not our daemon module — wire it
+# in via PYTHONPATH instead of pip-installing, so editing the source
+# takes effect on the next restart with no re-install step.
+Environment=PYTHONPATH=/home/takaki/MimicRec/scripts
+Environment=PYTHONUNBUFFERED=1
+
+ExecStart=/home/takaki/MimicRec/.venv-rebotarm/bin/python \
+    -m rebotarm_daemon \
+    --config /home/takaki/MimicRec/configs/rebotarm_daemon.yaml
+
+# The daemon now has internal 2 s reconnect for hardware unplug, so
+# systemd shouldn't restart us for transient hardware issues. We
+# restart only on a hard crash. 5 s back-off prevents thrash if the
+# crash is deterministic (e.g., bad config file).
+Restart=on-failure
+RestartSec=5
+
+# Send SIGINT first so the KeyboardInterrupt handler in run_server
+# can do an orderly arm.disconnect() ramp-down. 10 s is enough for
+# the soft-stop in _ramp_disable (1 s) plus gripper/arm teardown.
+KillSignal=SIGINT
+TimeoutStopSec=10
+
+# Useful diagnostics — journalctl -u rebotarm-daemon will show every
+# print() the daemon emits (PYTHONUNBUFFERED above keeps lines fresh).
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=rebotarm-daemon
+
+[Install]
+WantedBy=multi-user.target

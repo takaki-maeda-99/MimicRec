@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Union
 
 import yaml
 
@@ -99,6 +99,55 @@ class GripperParams:
 
 
 @dataclass
+class EnableSwitchParams:
+    # Optional hardware enable / deadman switch wired to a GPIO line. When
+    # the line reads its "locked" state, the daemon holds the arm's
+    # current pose in POSITION mode and rejects motion commands
+    # (CMD_SEND_COMMAND, CMD_SEND_GRIPPER_COMMAND, CMD_SET_MODE). On
+    # release it drops to GRAVITY_COMP and waits for an explicit
+    # set_mode from the client — it never auto-resumes.
+    #
+    # libgpiod v2 is the backend, which works on both Raspberry Pi 5 and
+    # Jetson family. The same daemon binary moves between boards by only
+    # editing this YAML section.
+    #
+    # ``chip`` is the gpiochip device path (/dev/gpiochipN) or short name
+    # (gpiochip0). ``line`` is either an integer offset within the chip
+    # or a line name string from the board DTB. Examples:
+    #   - Raspberry Pi 5, BCM17: chip=gpiochip0, line=17
+    #   - Jetson Orin Nano, header pin 11 (PR.04): chip=gpiochip0, line=144
+    #     (verify per board — line offsets differ between Jetson variants)
+    #
+    # ``bias`` requests the internal pull resistor. Pi5 honours pull_up /
+    # pull_down on all header pins; on Jetson many pins ignore bias and
+    # need an external resistor — in that case set bias="disabled" and
+    # wire a physical pull-up.
+    #
+    # ``active_state`` picks which logical level means "locked". With a
+    # pull-up and a switch that closes to GND, "high" is the floating
+    # (no switch) state — i.e., the daemon is locked unless the operator
+    # is holding the deadman closed.
+    chip: str = "gpiochip0"
+    line: Union[int, str] = 17
+    bias: str = "pull_up"
+    active_state: str = "high"
+    poll_hz: float = 50.0
+    debounce_ms: float = 20.0
+
+    def __post_init__(self) -> None:
+        if self.bias not in ("pull_up", "pull_down", "disabled", "as_is"):
+            raise ValueError(
+                f"enable_switch.bias must be pull_up|pull_down|disabled|as_is, "
+                f"got {self.bias!r}"
+            )
+        if self.active_state not in ("high", "low"):
+            raise ValueError(
+                f"enable_switch.active_state must be 'high' or 'low', "
+                f"got {self.active_state!r}"
+            )
+
+
+@dataclass
 class DaemonConfig:
     arm_config: str = "configs/rebotarm/arm.yaml"
     zmq_address: str = "tcp://*:5558"
@@ -116,6 +165,21 @@ class DaemonConfig:
     gravity_comp: GravityCompParams = field(default_factory=GravityCompParams)
     position: PositionParams = field(default_factory=PositionParams)
     gripper: Optional[GripperParams] = None
+    enable_switch: Optional[EnableSwitchParams] = None
+    # Seconds between retry attempts when the arm fails to connect at
+    # startup, or when the control loop detects a sustained run of SDK
+    # exceptions and decides the hardware has gone away. 2 s is the
+    # default "human waiting at the USB plug" cadence — long enough for
+    # the OS to release a re-enumerated /dev/ttyACM0 between attempts,
+    # short enough that the operator doesn't think the daemon is hung.
+    reconnect_interval_s: float = 2.0
+    # Consecutive SDK-exception count in the control loop before the
+    # session is torn down and reconnected. At 500 Hz, 250 ticks ≈ 500 ms.
+    # The fault counter resets on every successful tick, so this only
+    # trips on *sustained* failure — bursts of 10-30 ``CallError`` during
+    # a damiao CAN brown-out are normal and self-recover within a few
+    # dozen ticks, well below this floor.
+    disconnect_fault_threshold: int = 250
 
     def __post_init__(self) -> None:
         if len(self.gravity_in_base) != 3:
@@ -133,13 +197,22 @@ def load_daemon_config(path: str | Path) -> DaemonConfig:
     pos_raw = raw.get("position", {})
     # Gripper is opt-in: omitting the ``gripper:`` section disables it.
     gripper_raw = raw.get("gripper")
+    # Enable-switch is opt-in for the same reason.
+    enable_switch_raw = raw.get("enable_switch")
     return DaemonConfig(
         arm_config=raw.get("arm_config", "configs/rebotarm/arm.yaml"),
         zmq_address=raw.get("zmq_address", "tcp://*:5558"),
         control_rate_hz=int(raw.get("control_rate_hz", 500)),
         gravity_in_base=list(raw.get("gravity_in_base", [0.0, 0.0, -9.81])),
+        reconnect_interval_s=float(raw.get("reconnect_interval_s", 2.0)),
+        disconnect_fault_threshold=int(raw.get("disconnect_fault_threshold", 250)),
         safety=SafetyLimits(**safety_raw) if safety_raw else SafetyLimits(),
         gravity_comp=GravityCompParams(**grav_raw) if grav_raw else GravityCompParams(),
         position=PositionParams(**pos_raw) if pos_raw else PositionParams(),
         gripper=GripperParams(**gripper_raw) if gripper_raw else None,
+        enable_switch=(
+            EnableSwitchParams(**enable_switch_raw)
+            if enable_switch_raw
+            else None
+        ),
     )

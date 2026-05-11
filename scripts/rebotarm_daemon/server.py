@@ -13,6 +13,19 @@ thread that calls ``callback(arm, dt)`` at the requested rate (verified
 in actuator/arm.py:737). The main thread therefore drives the ZMQ REP
 loop directly — no extra threading needed beyond the SDK's.
 
+Reconnect model
+---------------
+``run_server`` runs an outer retry loop. ``_connect_arm_with_retry``
+keeps trying to construct + enable a ``RobotArm`` instance every
+``cfg.reconnect_interval_s`` until it succeeds — ZMQ is NOT bound while
+this is happening, so callers see ``connection refused`` until the
+daemon is ready. After connect succeeds, ``_serve_one_session`` does
+the per-session work (controllers, gripper, ZMQ, message loop) inside
+its own try/finally. If the control callback sees a sustained run of
+SDK exceptions (``cfg.disconnect_fault_threshold`` consecutive faults)
+it sets a disconnect event, the message loop raises
+``_ArmDisconnected``, teardown runs, and the outer loop reconnects.
+
 Wire-protocol constants are duplicated from
 ``backend/mimicrec/adapters/rebotarm_protocol.py`` because the daemon
 runs in a separate venv and cannot import the backend package. Keep
@@ -20,6 +33,7 @@ them in sync.
 """
 from __future__ import annotations
 
+import threading
 import time
 from typing import Optional  # noqa: F401  (used by Gripper annotation below)
 
@@ -35,6 +49,7 @@ from rebotarm_daemon.controllers import (
     PositionController,
 )
 from rebotarm_daemon.ee_pose import EEPose
+from rebotarm_daemon.enable_switch import make_enable_switch
 from rebotarm_daemon.safety import SafetyManager
 from rebotarm_daemon.state import SharedRobotState
 
@@ -61,6 +76,14 @@ MODE_GRAVITY_COMP = "gravity_comp"
 SAFETY_OK = "ok"
 
 
+class _ArmDisconnected(Exception):
+    """Signal raised from the message loop when the control callback
+    observed enough consecutive SDK exceptions to conclude the hardware
+    has gone away. The outer retry loop in ``run_server`` catches this
+    and reconnects after ``cfg.reconnect_interval_s``.
+    """
+
+
 def _ramp_disable(arm: RobotArm, n: int, secs: float = 1.0, rate_hz: int = 100) -> None:
     """Ramp ``kp`` -> 0 over ``secs`` seconds while keeping ``tau_g`` active.
 
@@ -70,12 +93,9 @@ def _ramp_disable(arm: RobotArm, n: int, secs: float = 1.0, rate_hz: int = 100) 
     while still feeding the gravity-comp torque, then returns. The caller
     is expected to invoke ``arm.disable()``/``arm.disconnect()`` after.
 
-    Race note: ``arm.start_control_loop`` runs its callback on a daemon
-    thread (verified in actuator/arm.py). The reBotArm SDK does not expose
-    a ``stop_control_loop`` API, so the callback may continue issuing its
-    own ``arm.mit(...)`` calls in parallel with this ramp. The SDK's
-    per-call ``try/except CallError`` papers over conflicts; the ramp will
-    still mostly converge. If the SDK adds a stop API, gate that here.
+    Called only AFTER ``arm.stop_control_loop()`` returns, so the SDK's
+    control thread has joined and there's no parallel ``arm.mit(...)``
+    racing us here.
     """
     import time as _time  # local import — keep top-of-file lean
     from reBotArm_control_py.dynamics import compute_generalized_gravity
@@ -111,6 +131,58 @@ def _ramp_disable(arm: RobotArm, n: int, secs: float = 1.0, rate_hz: int = 100) 
 # eliminates that failure mode entirely.
 
 
+def _connect_arm_with_retry(cfg: DaemonConfig) -> RobotArm:
+    """Construct + enable a ``RobotArm`` instance, retrying on any failure.
+
+    Returns only when the arm is up. On each failure the partially-built
+    arm (if any) is best-effort torn down and we sleep
+    ``cfg.reconnect_interval_s`` before the next attempt.
+
+    Re-constructs the ``RobotArm`` on every attempt rather than calling
+    ``arm.reconnect()``. The SDK's ``reconnect()`` iterates the
+    ``_ctrl_map`` to rebuild controllers, but ``disconnect()`` clears
+    that map first — so a reconnect call after a disconnect rebuilds
+    zero controllers and the next ``enable()`` ``KeyError``s. Building
+    a fresh ``RobotArm`` runs ``_setup_motors`` end-to-end, which is
+    correct in all cases.
+    """
+    retry_s = max(0.1, float(cfg.reconnect_interval_s))
+    attempt = 0
+    while True:
+        attempt += 1
+        arm: Optional[RobotArm] = None
+        try:
+            arm = RobotArm(cfg.arm_config)
+            arm.enable()
+            print(
+                f"[rebotarm-daemon] arm connected (attempt {attempt})",
+                flush=True,
+            )
+            return arm
+        except KeyboardInterrupt:
+            raise
+        except Exception as e:
+            print(
+                f"[rebotarm-daemon] arm connect failed (attempt {attempt}): "
+                f"{type(e).__name__}: {e}; retrying in {retry_s:.1f}s",
+                flush=True,
+            )
+            # Best-effort cleanup of whatever partial state ``RobotArm``
+            # /``enable`` got to before failing. The serial port may be
+            # half-open; ``disconnect()`` releases it so the next attempt
+            # can re-open without an "device busy" race.
+            if arm is not None:
+                try:
+                    arm.stop_control_loop()
+                except Exception:
+                    pass
+                try:
+                    arm.disconnect()
+                except Exception:
+                    pass
+            time.sleep(retry_s)
+
+
 def run_server(cfg: DaemonConfig) -> None:
     # Apply the configured mount-aware gravity vector to the cached
     # dynamics model BEFORE any controller is constructed.
@@ -126,9 +198,60 @@ def run_server(cfg: DaemonConfig) -> None:
         flush=True,
     )
 
-    arm = RobotArm(cfg.arm_config)
-    arm.connect()
-    arm.enable()
+    # Optional hardware enable-switch (deadman). Hoisted OUT of the
+    # session because the GPIO line is independent of the arm — its
+    # physical state should persist across an arm reconnect cycle. When
+    # active, the daemon holds the current pose and rejects motion
+    # commands. ``None`` means either the YAML section was omitted or
+    # GPIO init failed; the daemon then behaves as if the line is
+    # permanently unlocked.
+    enable_switch = make_enable_switch(cfg.enable_switch)
+    if enable_switch is not None:
+        print("[rebotarm-daemon] enable_switch armed", flush=True)
+
+    retry_s = max(0.1, float(cfg.reconnect_interval_s))
+
+    try:
+        while True:
+            try:
+                _serve_one_session(cfg, enable_switch)
+            except KeyboardInterrupt:
+                raise
+            except _ArmDisconnected as e:
+                print(
+                    f"[rebotarm-daemon] arm disconnected ({e}); "
+                    f"reconnecting in {retry_s:.1f}s",
+                    flush=True,
+                )
+                time.sleep(retry_s)
+            except Exception as e:
+                # An unexpected exception from the session shouldn't bring
+                # down the daemon — log it and retry. KeyboardInterrupt is
+                # already handled above so it still terminates cleanly.
+                print(
+                    f"[rebotarm-daemon] session ended unexpectedly "
+                    f"({type(e).__name__}: {e}); reconnecting in {retry_s:.1f}s",
+                    flush=True,
+                )
+                time.sleep(retry_s)
+    except KeyboardInterrupt:
+        print("[rebotarm-daemon] interrupted; exiting", flush=True)
+    finally:
+        if enable_switch is not None:
+            try:
+                enable_switch.close()
+            except Exception:
+                pass
+
+
+def _serve_one_session(cfg: DaemonConfig, enable_switch) -> None:
+    """One connect → run → teardown cycle.
+
+    Returns normally only on ``KeyboardInterrupt``. Raises
+    ``_ArmDisconnected`` (or any other unexpected exception) to signal
+    the outer retry loop to reconnect.
+    """
+    arm = _connect_arm_with_retry(cfg)
     n = arm.num_joints
 
     safety = SafetyManager(cfg.safety, dof=n)
@@ -157,130 +280,205 @@ def run_server(cfg: DaemonConfig) -> None:
     # ``gripper_target[0] = float | None``. Mutable cell so the message
     # loop can rebind without ``nonlocal`` gymnastics in the closure.
     gripper_target: list = [None]
-    if cfg.gripper is not None:
-        shared_ctrl = next(iter(arm._ctrl_map.values()))
-        gripper = Gripper(cfg_path=cfg.gripper.cfg_path, controller=shared_ctrl)
-        gripper.enable()
-        gripper.mode_mit(kp=0.0, kd=cfg.gripper.kd)
-        gripper_params = cfg.gripper
-
-        def _gripper_callback(g: Gripper, _dt: float) -> None:
-            if (
-                mode["current"] == MODE_POSITION
-                and gripper_target[0] is not None
-            ):
-                # Position-tracking: follow the replay/teleop target.
-                g.mit(
-                    pos=float(gripper_target[0]),
-                    vel=0.0,
-                    kp=float(gripper_params.position_kp),
-                    kd=float(gripper_params.position_kd),
-                    tau=0.0,
-                )
-                return
-            # Compliance fallback (GRAVITY_COMP, or POSITION before any
-            # target has arrived — stay free instead of locking at zero).
-            pos, vel, _ = g.get_state(request=False)
-            if abs(vel) > gripper_params.vel_deadband_rad_s:
-                tau = gripper_params.friction_tau_nm * (1.0 if vel > 0 else -1.0)
-            else:
-                tau = 0.0
-            # Constant open-direction bias so the gripper drifts toward
-            # open when not actively held. Added on top of friction comp.
-            tau += gripper_params.open_bias_tau_nm
-            g.mit(pos=pos, vel=0.0, kp=0.0, kd=gripper_params.kd, tau=tau)
-
-        gripper.start_control_loop(
-            _gripper_callback, rate=float(gripper_params.control_rate_hz)
-        )
-
-    # Force the underlying motors into MIT mode at startup. RobotArm's
-    # __init__ sets self._mode = "mit" as a Python-side default, but the
-    # motor hardware may have been left in POS_VEL by a previous process
-    # (its mode persists across power-cycles). Without this explicit call,
-    # _switch_arm_mode below sees ``arm.mode == "mit"`` and skips
-    # mode_mit() — so motors stay in their residual mode and the kp/kd we
-    # send via arm.mit() get reinterpreted incorrectly. This was the
-    # cause of joints 1-3 (4340P) appearing locked in gravity-comp mode.
-    arm.mode_mit(
-        kp=np.asarray(cfg.gravity_comp.kp, dtype=float),
-        kd=np.asarray(cfg.gravity_comp.kd, dtype=float),
-    )
-    mode["current"] = MODE_GRAVITY_COMP
-    # Wall-clock timestamp of the last CMD_SEND_COMMAND we accepted, used
-    # to compute the real elapsed dt for safety.ramp_velocity/ramp_accel.
-    # Replay sends commands at the trajectory's native rate (~28-30 Hz),
-    # not at the daemon's 500 Hz tick — using control_rate_hz here would
-    # over-clamp by ~17x, leaving the arm lagging the command until the
-    # watchdog trips on joint_position_jump.
-    last_cmd_t: list = [None]  # mutable cell so the message loop can rebind
-
-    def control_callback(arm: RobotArm, dt: float) -> None:
-        q = arm.get_positions()
-        ee_pos, ee_rotvec = ee.pose(q)
-
-        # Motor temperatures aren't exposed by the current SDK; fall
-        # back to zeros so the safety manager's thermal watchdog
-        # degrades gracefully instead of false-tripping.
-        try:
-            temps = np.asarray(arm.get_temperatures(), dtype=np.float32)
-        except AttributeError:
-            temps = np.zeros(n, dtype=np.float32)
-
-        try:
-            taus = np.asarray(arm.get_torques(), dtype=np.float32)
-        except AttributeError:
-            taus = np.zeros(n, dtype=np.float32)
-
-        try:
-            qd = np.asarray(arm.get_velocities(), dtype=np.float32)
-        except AttributeError:
-            qd = np.zeros(n, dtype=np.float32)
-
-        gripper_pos = None
-        if gripper is not None:
-            try:
-                gripper_pos = float(gripper.get_position(request=False))
-            except Exception:
-                gripper_pos = None
-
-        state.set(
-            joint_pos=q.astype(np.float32),
-            joint_vel=qd,
-            joint_effort=taus,
-            ee_pos=ee_pos,
-            ee_rotvec=ee_rotvec,
-            gripper_pos=gripper_pos,
-            motor_temps_c=temps,
-            motor_torques_nm=taus,
-        )
-
-        # Safety state machine — fall back to pure gravity comp on any
-        # active fault or heartbeat timeout, regardless of the requested
-        # mode.
-        safety.evaluate_thermal(temps)
-        if (
-            safety.is_active_fault()
-            or safety.heartbeat_state() != SAFETY_OK
-            or mode["current"] == MODE_GRAVITY_COMP
-        ):
-            grav.step(arm)
-        else:
-            posctl.step(arm)
-
-    arm.start_control_loop(control_callback, rate=cfg.control_rate_hz)
-
-    ctx = zmq.Context()
-    sock = ctx.socket(zmq.REP)
-    sock.bind(cfg.zmq_address)
-    sock.setsockopt(zmq.RCVTIMEO, 100)
-
-    print(f"[rebotarm-daemon] listening on {cfg.zmq_address}")
-    # Daemon survives client connect/disconnect cycles. The hardware loop
-    # runs once per process; clients (the backend) come and go via ZMQ.
-    # Process exits only on SIGINT/SIGTERM (KeyboardInterrupt) below.
+    sock: Optional[zmq.Socket] = None
+    ctx: Optional[zmq.Context] = None
     try:
+        if cfg.gripper is not None:
+            shared_ctrl = next(iter(arm._ctrl_map.values()))
+            gripper = Gripper(cfg_path=cfg.gripper.cfg_path, controller=shared_ctrl)
+            gripper.enable()
+            gripper.mode_mit(kp=0.0, kd=cfg.gripper.kd)
+            gripper_params = cfg.gripper
+
+            def _gripper_callback(g: Gripper, _dt: float) -> None:
+                if (
+                    mode["current"] == MODE_POSITION
+                    and gripper_target[0] is not None
+                ):
+                    # Position-tracking: follow the replay/teleop target.
+                    g.mit(
+                        pos=float(gripper_target[0]),
+                        vel=0.0,
+                        kp=float(gripper_params.position_kp),
+                        kd=float(gripper_params.position_kd),
+                        tau=0.0,
+                    )
+                    return
+                # Compliance fallback (GRAVITY_COMP, or POSITION before any
+                # target has arrived — stay free instead of locking at zero).
+                pos, vel, _ = g.get_state(request=False)
+                if abs(vel) > gripper_params.vel_deadband_rad_s:
+                    tau = gripper_params.friction_tau_nm * (1.0 if vel > 0 else -1.0)
+                else:
+                    tau = 0.0
+                # Constant open-direction bias so the gripper drifts toward
+                # open when not actively held. Added on top of friction comp.
+                tau += gripper_params.open_bias_tau_nm
+                g.mit(pos=pos, vel=0.0, kp=0.0, kd=gripper_params.kd, tau=tau)
+
+            gripper.start_control_loop(
+                _gripper_callback, rate=float(gripper_params.control_rate_hz)
+            )
+
+        # Force the underlying motors into MIT mode at startup. RobotArm's
+        # __init__ sets self._mode = "mit" as a Python-side default, but the
+        # motor hardware may have been left in POS_VEL by a previous process
+        # (its mode persists across power-cycles). Without this explicit call,
+        # _switch_arm_mode below sees ``arm.mode == "mit"`` and skips
+        # mode_mit() — so motors stay in their residual mode and the kp/kd we
+        # send via arm.mit() get reinterpreted incorrectly. This was the
+        # cause of joints 1-3 (4340P) appearing locked in gravity-comp mode.
+        arm.mode_mit(
+            kp=np.asarray(cfg.gravity_comp.kp, dtype=float),
+            kd=np.asarray(cfg.gravity_comp.kd, dtype=float),
+        )
+        mode["current"] = MODE_GRAVITY_COMP
+        # Wall-clock timestamp of the last CMD_SEND_COMMAND we accepted, used
+        # to compute the real elapsed dt for safety.ramp_velocity/ramp_accel.
+        # Replay sends commands at the trajectory's native rate (~28-30 Hz),
+        # not at the daemon's 500 Hz tick — using control_rate_hz here would
+        # over-clamp by ~17x, leaving the arm lagging the command until the
+        # watchdog trips on joint_position_jump.
+        last_cmd_t: list = [None]  # mutable cell so the message loop can rebind
+        # Edge tracker for the unified lock state (GPIO switch OR latched
+        # ESTOP). Rising edge snapshots the current pose into posctl so the
+        # arm holds where it was; falling edge drops to GRAVITY_COMP and
+        # waits for an explicit set_mode from the client (no auto-resume).
+        was_locked: list = [False]
+
+        def _is_locked_now() -> bool:
+            gpio_locked = enable_switch.is_locked() if enable_switch else False
+            return gpio_locked or safety._estop_active
+
+        # Disconnect detection: the control callback increments
+        # ``consecutive_faults`` whenever its body raises and resets to
+        # zero on each successful tick. Once we cross the threshold the
+        # event is set; the message loop raises ``_ArmDisconnected`` on
+        # the next 100 ms recv timeout. Threshold defaults to 250 ticks
+        # ≈ 500 ms at 500 Hz — bursts of 10-30 ``CallError`` during a
+        # damiao CAN brown-out are normal and self-recover well below
+        # this floor.
+        disconnect_event = threading.Event()
+        consecutive_faults = [0]
+        fault_threshold = max(1, int(cfg.disconnect_fault_threshold))
+
+        def control_callback(arm: RobotArm, dt: float) -> None:
+            try:
+                q = arm.get_positions()
+                ee_pos, ee_rotvec = ee.pose(q)
+
+                # Motor temperatures aren't exposed by the current SDK; fall
+                # back to zeros so the safety manager's thermal watchdog
+                # degrades gracefully instead of false-tripping.
+                try:
+                    temps = np.asarray(arm.get_temperatures(), dtype=np.float32)
+                except AttributeError:
+                    temps = np.zeros(n, dtype=np.float32)
+
+                try:
+                    taus = np.asarray(arm.get_torques(), dtype=np.float32)
+                except AttributeError:
+                    taus = np.zeros(n, dtype=np.float32)
+
+                try:
+                    qd = np.asarray(arm.get_velocities(), dtype=np.float32)
+                except AttributeError:
+                    qd = np.zeros(n, dtype=np.float32)
+
+                gripper_pos = None
+                if gripper is not None:
+                    try:
+                        gripper_pos = float(gripper.get_position(request=False))
+                    except Exception:
+                        gripper_pos = None
+
+                state.set(
+                    joint_pos=q.astype(np.float32),
+                    joint_vel=qd,
+                    joint_effort=taus,
+                    ee_pos=ee_pos,
+                    ee_rotvec=ee_rotvec,
+                    gripper_pos=gripper_pos,
+                    motor_temps_c=temps,
+                    motor_torques_nm=taus,
+                )
+
+                # Safety state machine. Three precedence levels, top to bottom:
+                #   1. Thermal / torque fault / heartbeat timeout → gravity comp.
+                #      A hot motor or a stuck client should drop torque, not
+                #      hold pose with strong kp (which keeps drawing current).
+                #   2. Lock active (GPIO switch or latched ESTOP) → hold the
+                #      snapshot pose with posctl. ESTOP no longer calls
+                #      arm.disable(); the QDD arm has no brakes so killing
+                #      torque would drop it. Holding pose under MIT control is
+                #      the safer Cat-2 behaviour.
+                #   3. Otherwise honour the requested mode.
+                safety.evaluate_thermal(temps)
+                locked_now = _is_locked_now()
+                if locked_now and not was_locked[0]:
+                    # Rising edge: anchor posctl at the current pose and force
+                    # POSITION dispatch. The gripper, if present, also gets
+                    # snapshotted so it holds in place under its position
+                    # callback instead of going compliant.
+                    posctl.set_target(q.copy())
+                    safety.reset_ramp_state()
+                    last_cmd_t[0] = None
+                    if gripper is not None and gripper_pos is not None:
+                        gripper_target[0] = gripper_pos
+                    else:
+                        gripper_target[0] = None
+                    mode["current"] = MODE_POSITION
+                elif not locked_now and was_locked[0]:
+                    # Falling edge: client must explicitly re-enter POSITION;
+                    # default to compliance so the arm doesn't suddenly track
+                    # a stale target.
+                    grav.reset()
+                    posctl.reset()
+                    safety.reset_ramp_state()
+                    last_cmd_t[0] = None
+                    gripper_target[0] = None
+                    mode["current"] = MODE_GRAVITY_COMP
+                was_locked[0] = locked_now
+
+                non_estop_fault = safety._thermal_active or safety._torque_active
+                if non_estop_fault or safety.heartbeat_state() != SAFETY_OK:
+                    grav.step(arm)
+                elif locked_now:
+                    posctl.step(arm)
+                elif mode["current"] == MODE_GRAVITY_COMP:
+                    grav.step(arm)
+                else:
+                    posctl.step(arm)
+                consecutive_faults[0] = 0
+            except Exception:
+                # MUST catch every exception. The SDK's
+                # ``_control_loop_impl`` re-raises if our callback throws
+                # while ``_running`` is True, which kills the SDK thread
+                # and we'd silently stop running. Counting faults here
+                # lets the message loop notice the hardware is gone and
+                # trigger a clean reconnect cycle instead.
+                consecutive_faults[0] += 1
+                if consecutive_faults[0] >= fault_threshold:
+                    disconnect_event.set()
+
+        arm.start_control_loop(control_callback, rate=cfg.control_rate_hz)
+
+        ctx = zmq.Context()
+        sock = ctx.socket(zmq.REP)
+        sock.bind(cfg.zmq_address)
+        sock.setsockopt(zmq.RCVTIMEO, 100)
+
+        print(f"[rebotarm-daemon] listening on {cfg.zmq_address}", flush=True)
+        # Daemon survives client connect/disconnect cycles. The hardware loop
+        # runs once per session; clients (the backend) come and go via ZMQ.
+        # Process exits only on SIGINT/SIGTERM (KeyboardInterrupt) below;
+        # arm disconnect raises ``_ArmDisconnected`` which the outer
+        # ``run_server`` loop catches to reconnect.
         while True:
+            if disconnect_event.is_set():
+                raise _ArmDisconnected(
+                    f"{fault_threshold}+ consecutive SDK exceptions in control loop"
+                )
             try:
                 msg = sock.recv_json()
             except zmq.Again:
@@ -310,6 +508,9 @@ def run_server(cfg: DaemonConfig) -> None:
                 sock.send_json({"ok": True})
             elif cmd == CMD_READ_STATE:
                 snap = state.snapshot()
+                gpio_locked = (
+                    bool(enable_switch.is_locked()) if enable_switch else False
+                )
                 payload = {
                     "joint_pos": snap["joint_pos"].tolist(),
                     "joint_vel": snap["joint_vel"].tolist(),
@@ -318,11 +519,23 @@ def run_server(cfg: DaemonConfig) -> None:
                     "ee_rotvec": None if snap["ee_rotvec"] is None else snap["ee_rotvec"].tolist(),
                     "gripper_pos": snap["gripper_pos"],
                     "safety_state": safety.overall_state(snap["motor_temps_c"]),
+                    # Unified lock state, ORed across the GPIO deadman
+                    # switch and the latched ESTOP. UI can show a single
+                    # "locked" badge; clients that need finer detail can
+                    # split on enable_switch_locked vs the safety_state
+                    # "estop" value.
+                    "locked": gpio_locked or safety._estop_active,
+                    "enable_switch_locked": gpio_locked,
                     "t_mono_ns": time.monotonic_ns(),
                 }
                 sock.send_json(payload)
             elif cmd == CMD_SEND_COMMAND:
-                if safety.is_active_fault() or safety.heartbeat_state() != SAFETY_OK:
+                if _is_locked_now():
+                    sock.send_json({
+                        "ok": False,
+                        "error": "enable switch / estop locked",
+                    })
+                elif safety.is_active_fault() or safety.heartbeat_state() != SAFETY_OK:
                     sock.send_json({"ok": False, "error": "safety fault active"})
                 elif mode["current"] != MODE_POSITION:
                     # The control callback only feeds posctl.set_target() into
@@ -355,7 +568,12 @@ def run_server(cfg: DaemonConfig) -> None:
                     sock.send_json({"ok": True})
             elif cmd == CMD_SET_MODE:
                 m = msg.get("mode", MODE_GRAVITY_COMP)
-                if m not in (MODE_POSITION, MODE_GRAVITY_COMP):
+                if _is_locked_now():
+                    sock.send_json({
+                        "ok": False,
+                        "error": "enable switch / estop locked",
+                    })
+                elif m not in (MODE_POSITION, MODE_GRAVITY_COMP):
                     sock.send_json({"ok": False, "error": f"unknown mode: {m}"})
                 else:
                     # Pure software-mode swap. Motors stay in MIT; the
@@ -377,7 +595,12 @@ def run_server(cfg: DaemonConfig) -> None:
                     mode["current"] = m
                     sock.send_json({"ok": True, "mode": m})
             elif cmd == CMD_SEND_GRIPPER_COMMAND:
-                if gripper is None:
+                if _is_locked_now():
+                    sock.send_json({
+                        "ok": False,
+                        "error": "enable switch / estop locked",
+                    })
+                elif gripper is None:
                     sock.send_json({
                         "ok": False,
                         "error": "no gripper configured on this daemon",
@@ -397,27 +620,37 @@ def run_server(cfg: DaemonConfig) -> None:
                             "error": f"bad gripper payload: {exc}",
                         })
             elif cmd == CMD_ESTOP:
+                # Unified lock: latch the estop flag so the control loop
+                # snapshots the current pose and holds it. We deliberately
+                # do NOT call arm.disable() — the QDD arm has no brakes and
+                # cutting torque would drop it. Posctl holding pose under
+                # MIT is the safer Cat-2 behaviour, and matches the
+                # hardware enable-switch path so the front-end E-stop
+                # button and the deadman switch produce identical state.
                 safety.trigger_estop()
-                try:
-                    arm.disable()
-                except Exception:
-                    pass
                 sock.send_json({"ok": True})
             elif cmd == CMD_CLEAR_ESTOP:
                 snap = state.snapshot()
                 if safety.try_clear_estop(snap["motor_temps_c"]):
-                    try:
-                        arm.enable()
-                    except Exception:
-                        pass
+                    # No arm.enable() here: the arm was never disabled by
+                    # CMD_ESTOP under the unified-lock semantics, so it
+                    # remains enabled throughout. If the GPIO switch is
+                    # still asserted the daemon stays locked; on the next
+                    # control tick the falling edge fires once both
+                    # sources are clear.
                     sock.send_json({"ok": True})
                 else:
                     sock.send_json({"ok": False, "reason": "preconditions not met"})
             elif cmd == CMD_GET_SAFETY_STATUS:
                 snap = state.snapshot()
+                gpio_locked = (
+                    bool(enable_switch.is_locked()) if enable_switch else False
+                )
                 sock.send_json({
                     "safety_state": safety.overall_state(snap["motor_temps_c"]),
                     "mode": mode["current"],
+                    "locked": gpio_locked or safety._estop_active,
+                    "enable_switch_locked": gpio_locked,
                 })
             elif cmd == CMD_DISCONNECT:
                 # Soft disconnect — acknowledge but keep running. Reset to
@@ -435,17 +668,29 @@ def run_server(cfg: DaemonConfig) -> None:
             else:
                 sock.send_json({"ok": False, "error": f"unknown cmd: {cmd}"})
     finally:
-        # Soft-stop: ramp kp to zero while holding tau_g so the QDD arm
-        # doesn't drop when we cut torque. The SDK's start_control_loop
-        # thread is still running here (no SDK stop API), but the per-call
-        # CallError handling papers over the resulting parallel mit() calls.
+        # Teardown order matters:
+        #   1. Stop the arm control loop FIRST so the SDK thread joins
+        #      and stops calling ``arm.mit()`` mid-teardown.
+        #   2. Soft-stop (ramp kp → 0 while holding tau_g) so the QDD
+        #      arm doesn't drop. Safe to run with the SDK thread joined
+        #      — no parallel ``mit()`` calls fight with us.
+        #   3. Stop + disable + disconnect the gripper. Gripper shares
+        #      the arm's Controller, so it must release before the arm
+        #      tears the bus down.
+        #   4. ``arm.disconnect()`` releases the serial port.
+        #   5. ZMQ teardown last — once we close ``ctx`` we can't reply
+        #      anyway, and pending replies are dropped via ``linger=0``.
+        # Every step is best-effort: on a real disconnect any of these
+        # may raise OSError / serial errors. We swallow and continue so
+        # the outer retry loop gets a clean handoff.
+        try:
+            arm.stop_control_loop()
+        except Exception:
+            pass
         try:
             _ramp_disable(arm, n)
         except Exception:
             pass
-        # Stop gripper compliance loop and disable BEFORE arm.disconnect():
-        # the gripper shares the arm's Controller, so once arm.disconnect()
-        # closes the bus, gripper commands would call into a dead handle.
         if gripper is not None:
             try:
                 gripper.stop_control_loop()
@@ -463,5 +708,13 @@ def run_server(cfg: DaemonConfig) -> None:
             arm.disconnect()
         except Exception:
             pass
-        sock.close(linger=0)
-        ctx.term()
+        if sock is not None:
+            try:
+                sock.close(linger=0)
+            except Exception:
+                pass
+        if ctx is not None:
+            try:
+                ctx.term()
+            except Exception:
+                pass
