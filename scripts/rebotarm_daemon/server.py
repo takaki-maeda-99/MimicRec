@@ -43,7 +43,7 @@ import zmq
 from reBotArm_control_py.actuator import Gripper, RobotArm
 from reBotArm_control_py.dynamics import load_dynamics_model, set_gravity
 
-from rebotarm_daemon.config import DaemonConfig
+from rebotarm_daemon.config import DaemonConfig, clamp_gripper_target
 from rebotarm_daemon.controllers import (
     GravityCompController,
     PositionController,
@@ -612,13 +612,26 @@ def _serve_one_session(cfg: DaemonConfig, enable_switch) -> None:
                     })
                 else:
                     try:
-                        gripper_target[0] = float(msg["gripper"])
-                        sock.send_json({"ok": True})
+                        raw = float(msg["gripper"])
                     except (KeyError, TypeError, ValueError) as exc:
                         sock.send_json({
                             "ok": False,
                             "error": f"bad gripper payload: {exc}",
                         })
+                    else:
+                        clamped = clamp_gripper_target(raw, gripper_params)
+                        if clamped != raw:
+                            lo = gripper_params.position_min_rad
+                            hi = gripper_params.position_max_rad
+                            lo_s = "-inf" if lo is None else f"{lo:.4f}"
+                            hi_s = "+inf" if hi is None else f"{hi:.4f}"
+                            print(
+                                f"[rebotarm-daemon] gripper clamp "
+                                f"{raw:.4f} -> {clamped:.4f} "
+                                f"(range [{lo_s}, {hi_s}])"
+                            )
+                        gripper_target[0] = clamped
+                        sock.send_json({"ok": True, "clamped": clamped != raw})
             elif cmd == CMD_ESTOP:
                 # Unified lock: latch the estop flag so the control loop
                 # snapshots the current pose and holds it. We deliberately

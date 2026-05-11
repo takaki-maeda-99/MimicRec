@@ -367,9 +367,9 @@ class SessionManager:
             return
         try:
             await move_to_idle(self._robot, after_mode=RobotMode.POSITION)
-        except FileNotFoundError:
+        except FileNotFoundError as e:
             logger.warning(
-                "idle pose yaml missing; skipping move_to_idle",
+                "idle pose yaml missing; skipping move_to_idle (%s)", e,
             )
 
     async def _await_pending_idle_move(self) -> None:
@@ -744,23 +744,21 @@ class SessionManager:
 
         # Flip the adapter into POSITION mode BEFORE spawning the replay
         # task, otherwise the daemon's control loop ignores the position
-        # targets we feed via command_goal_slot. Hand-teach sessions sit in
-        # GRAVITY_COMP, so without this the replay path silently no-ops.
+        # targets we feed via command_goal_slot.
         # We remember the prior mode and restore it in replay_stop.
         await self._robot.set_mode(RobotMode.POSITION)
-        # Track what we need to restore. Hand-teach sessions came from
-        # GRAVITY_COMP; teleop already runs in POSITION.
-        self._mode_before_replay = (
-            RobotMode.GRAVITY_COMP
-            if self.session.mode == SessionMode.HAND_TEACH
-            else RobotMode.POSITION
-        )
+        # Track what we need to restore. Every session mode now sits in
+        # POSITION at READY (HAND_TEACH holds idle in POSITION until
+        # episode_start; TELEOP/INFERENCE always run in POSITION), so
+        # the restore target is uniformly POSITION.
+        self._mode_before_replay = RobotMode.POSITION
 
         async def _run_with_restore() -> None:
-            # Wrap run_replay so the prior mode is restored on ANY exit —
-            # normal completion, ReplaySafetyError, cancellation. Without
-            # this, a safety trip leaves the daemon in POSITION holding
-            # pose, which the operator perceives as the arm "stiffening".
+            # Wrap run_replay so cleanup runs on ANY exit — normal
+            # completion, ReplaySafetyError, cancellation. Cleanup =
+            # restore the pre-replay mode + (HAND_TEACH only) return
+            # the arm to the captured idle pose so the next episode
+            # starts from a known posture.
             try:
                 await run_replay(
                     session=self.session,
@@ -774,7 +772,7 @@ class SessionManager:
                     gripper_binarize=self._gripper_binarize,
                 )
             finally:
-                await self._restore_mode_after_replay()
+                await self._replay_cleanup()
 
         self._replay_task = asyncio.create_task(_run_with_restore())
 
@@ -796,6 +794,22 @@ class SessionManager:
                 "replay restore: failed to set robot mode %s: %s", prev, e,
             )
 
+    async def _replay_cleanup(self) -> None:
+        """Restore prior mode and (for HAND_TEACH) return to idle.
+
+        Replay leaves the arm wherever the trajectory ended; without
+        the idle return, HAND_TEACH sessions would resume episodes
+        from that arbitrary pose. ``_move_to_idle_for_session`` is a
+        no-op for TELEOP/INFERENCE so this is safe to call uniformly.
+        Failures (e.g. daemon dropped mid-cleanup) are logged, never
+        raised, so callers can chain this in finally blocks.
+        """
+        await self._restore_mode_after_replay()
+        try:
+            await self._move_to_idle_for_session()
+        except Exception as e:
+            logger.warning("idle return after replay failed: %s", e)
+
     async def replay_stop(self) -> None:
         """Clear replay_active, await replay task, restore prior robot mode."""
         async with self._mode_transition_lock:
@@ -811,9 +825,13 @@ class SessionManager:
                 pass
         self._replay_task = None
         # Idempotent: the replay task's finally already calls this on its
-        # way out, but in race cases (cancel before the finally fires) we
-        # call it again here to make sure mode is restored.
-        await self._restore_mode_after_replay()
+        # way out, but a cancel may have interrupted its idle ramp mid-
+        # await, so we run it again here to make sure mode + idle pose
+        # are both restored. _restore_mode_after_replay no-ops on the
+        # second call (cleared _mode_before_replay), and the idle ramp
+        # starts from current pose so a partial first ramp is just
+        # finished here.
+        await self._replay_cleanup()
 
     # ------------------------------------------------------------------
     # Inference safety config helper
@@ -1170,6 +1188,17 @@ class SessionManager:
                     pass
 
         await self._cameras.stop()
+
+        # Return to idle pose before dropping the daemon connection so
+        # the arm ends in a known posture. _move_to_idle_for_session
+        # early-returns for non-HAND_TEACH modes. Swallow failures so a
+        # daemon error (e.g. e-stop already engaged) never blocks the
+        # rest of teardown.
+        try:
+            await self._move_to_idle_for_session()
+        except Exception as e:
+            logger.warning("idle return on end() failed: %s", e)
+
         await self._robot.disconnect()
         if self._teleop:
             await self._teleop.disconnect()

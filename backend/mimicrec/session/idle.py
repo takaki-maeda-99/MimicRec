@@ -26,7 +26,12 @@ from mimicrec.util.clock import Clock, RealClock
 logger = logging.getLogger(__name__)
 
 
-DEFAULT_IDLE_POSE_PATH = Path("configs/rebotarm/idle_pose.yaml")
+# Anchor to the repo root via __file__ so the lookup survives whatever
+# cwd uvicorn / the test runner / scripts happen to be launched from.
+# backend/mimicrec/session/idle.py → parents[3] is the repo root.
+DEFAULT_IDLE_POSE_PATH = (
+    Path(__file__).resolve().parents[3] / "configs/rebotarm/idle_pose.yaml"
+)
 
 
 @dataclass(frozen=True)

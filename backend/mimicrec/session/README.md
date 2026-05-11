@@ -36,24 +36,31 @@ async def move_to_idle(
 
 ## SessionManager への統合
 
-| タイミング | 呼び方 | after_mode |
-|---|---|---|
-| `start()` (IDLE → READY) | **同期 await**（readers/dispatcher を spawn する前に到達を保証） | session の target_mode |
-| `episode_stop()` (RECORDING → REVIEW) | **バックグラウンド task として spawn**（REVIEW UI を即返すため） | session の target_mode |
-| `episode_save()` / `episode_discard()` (REVIEW → READY) | 背景 task を **await**（READY 時点で idle 到達を保証） | — |
-| `end()` (任意 → IDLE) | 背景 task を cancel | — |
+| タイミング | 呼び方 |
+|---|---|
+| `start()` (IDLE → READY) | **同期 await**（readers/dispatcher を spawn する前に到達を保証） |
+| `episode_stop()` (RECORDING → REVIEW) | **バックグラウンド task として spawn**（REVIEW UI を即返すため） |
+| `episode_save()` / `episode_discard()` (REVIEW → READY) | 背景 task を **await**（READY 時点で idle 到達を保証） |
+| `replay_start` → 完了 / 安全停止 / `replay_stop` | `_replay_cleanup()` がモード復元後に **同期 await** で idle 復帰 |
+| `end()` (任意 → IDLE) | 背景 task を cancel し、その後 **同期 await** で最終 idle 復帰してから disconnect |
 
 `session.mode` 別の挙動:
 
-| mode | `start()` (セッション開始) | `episode_stop()` (エピソード間) | `after_mode` |
-|---|---|---|---|
-| `HAND_TEACH` | ✅ 復帰 | ✅ 復帰 | `GRAVITY_COMP`（次のエピソードを手で動かして教示） |
-| `TELEOP` | ❌ スキップ | ❌ スキップ | — |
-| `INFERENCE` | ❌ スキップ | ❌ スキップ | — |
+| mode | `start()` | `episode_stop()` | `end()` | `after_mode` |
+|---|---|---|---|---|
+| `HAND_TEACH` | ✅ 復帰 | ✅ 復帰 | ✅ 復帰 | `POSITION`（idle を剛性ホールド。`episode_start` 時に `GRAVITY_COMP` へ切替） |
+| `TELEOP` | ❌ スキップ | ❌ スキップ | ❌ スキップ | — |
+| `INFERENCE` | ❌ スキップ | ❌ スキップ | ❌ スキップ | — |
 
-`TELEOP` がスキップな理由: リーダーアームは read-only で同期できないため、idle へ復帰すると EE-delta マッパが古い anchor を抱えたまま次の tick で follower が snap する。セッション開始時／エピソード間ともに復帰しない方針。
+`TELEOP` がスキップな理由: リーダーアームは read-only で同期できないため、idle へ復帰すると EE-delta マッパが古い anchor を抱えたまま次の tick で follower が snap する。セッション開始時／エピソード間／終了時いずれも復帰しない方針。
 
-実装は `lifecycle.py` の `_move_to_idle_for_session()` に集約。HAND_TEACH のときだけ `move_to_idle(after_mode=GRAVITY_COMP)` を呼び、それ以外は早期 return する。
+実装は `lifecycle.py` の `_move_to_idle_for_session()` に集約。HAND_TEACH のときだけ `move_to_idle(after_mode=POSITION)` を呼び、それ以外は早期 return する。
+
+`after_mode=POSITION` の意図: idle に到達した後も剛性ホールドで姿勢を死守し、`GRAVITY_COMP` へは `episode_start()` の中で切り替える。GRAVITY_COMP のまま放置すると重力補償の誤差で REVIEW/READY 中にアームが垂れたり、わずかな外力で動かされたりするため。HAND_TEACH の control loop (`run_handteach_control_loop`) は `set_mode` を発行しない（発行すると post-idle POSITION ホールドを上書きしてしまうため）。
+
+`end()` での idle 復帰: 全 task を cancel した後、`disconnect()` の直前にもう一度 `_move_to_idle_for_session()` を await。失敗（e-stop 中など）は warning ログのみで握り潰して teardown は続行する。
+
+リプレイ後の idle 復帰: `_replay_cleanup()` がリプレイ task の `finally` と `replay_stop` の両方から呼ばれる。まず `_restore_mode_after_replay()` で `_mode_before_replay`（常に `POSITION`）に戻し、続けて `_move_to_idle_for_session()` を await。HAND_TEACH 以外は idle 復帰は no-op で抜けるため、replay→idle のレールはモード問わず安全に通る。idle 中の失敗は finally 内で raise を避けるため warning に握り潰す。
 
 これにより HAND_TEACH の autoCycle（連続自動収集）でも:
 

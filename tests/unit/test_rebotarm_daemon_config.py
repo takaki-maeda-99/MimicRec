@@ -4,8 +4,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 
 import pytest
 from rebotarm_daemon.config import (
-    DaemonConfig, SafetyLimits, GravityCompParams, EnableSwitchParams,
-    load_daemon_config,
+    DaemonConfig, SafetyLimits, GravityCompParams, GripperParams,
+    EnableSwitchParams, clamp_gripper_target, load_daemon_config,
 )
 
 
@@ -28,6 +28,55 @@ def test_loads_yaml(tmp_path):
     assert cfg.gravity_comp.friction_vel_taper_rad_s == [1.5, 1.5, 1.5, 1.0, 1.0, 0.0]
     assert cfg.position.kp == [120.0, 120.0, 120.0, 18.0, 18.0, 18.0]
     assert cfg.position.kd == [8.0, 8.0, 8.0, 2.0, 2.0, 2.0]
+
+
+def test_gripper_position_limits_default_to_none():
+    """Backwards compatibility: unset limits = no clamp."""
+    g = GripperParams()
+    assert g.position_min_rad is None
+    assert g.position_max_rad is None
+
+
+def test_clamp_gripper_target_disabled_when_both_none():
+    g = GripperParams()
+    assert clamp_gripper_target(-100.0, g) == -100.0
+    assert clamp_gripper_target(100.0, g) == 100.0
+
+
+def test_clamp_gripper_target_lower_bound():
+    g = GripperParams(position_min_rad=-3.0)
+    assert clamp_gripper_target(-5.0, g) == -3.0
+    assert clamp_gripper_target(-3.0, g) == -3.0  # boundary passes
+    assert clamp_gripper_target(0.0, g) == 0.0
+    assert clamp_gripper_target(100.0, g) == 100.0  # upper still free
+
+
+def test_clamp_gripper_target_upper_bound():
+    g = GripperParams(position_max_rad=1.0)
+    assert clamp_gripper_target(5.0, g) == 1.0
+    assert clamp_gripper_target(1.0, g) == 1.0  # boundary passes
+    assert clamp_gripper_target(-100.0, g) == -100.0  # lower still free
+
+
+def test_clamp_gripper_target_both_bounds():
+    g = GripperParams(position_min_rad=-3.0, position_max_rad=1.0)
+    assert clamp_gripper_target(-5.0, g) == -3.0
+    assert clamp_gripper_target(0.0, g) == 0.0
+    assert clamp_gripper_target(5.0, g) == 1.0
+
+
+def test_loads_gripper_position_limits_from_yaml(tmp_path):
+    p = tmp_path / "with_gripper_limits.yaml"
+    p.write_text(
+        "gripper:\n"
+        "  cfg_path: configs/rebotarm/gripper.yaml\n"
+        "  position_min_rad: -5.5\n"
+        "  position_max_rad: 0.5\n"
+    )
+    cfg = load_daemon_config(p)
+    assert cfg.gripper is not None
+    assert cfg.gripper.position_min_rad == -5.5
+    assert cfg.gripper.position_max_rad == 0.5
 
 
 def test_loads_empty_yaml_yields_full_defaults(tmp_path):

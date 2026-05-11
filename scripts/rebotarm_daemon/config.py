@@ -96,6 +96,29 @@ class GripperParams:
     # way is "open" for the gripper hardware. 0.0 disables (default,
     # preserves prior behavior).
     open_bias_tau_nm: float = 0.0
+    # Position-mode setpoint clamp (raw motor rad, same coordinate as
+    # `read_state`'s gripper_pos). ``send_gripper_command`` clamps the
+    # incoming target to ``[position_min_rad, position_max_rad]`` before
+    # the 100 Hz control loop picks it up. ``None`` on either side
+    # disables that bound. Captured idle poses must lie inside this
+    # range or the idle ramp will be silently clamped short.
+    position_min_rad: Optional[float] = None
+    position_max_rad: Optional[float] = None
+
+
+def clamp_gripper_target(value: float, params: "GripperParams") -> float:
+    """Clamp a gripper setpoint to the configured ``[min, max]`` range.
+
+    ``None`` on either bound disables that side. The clamp uses ``<`` /
+    ``>`` so a value exactly at the bound passes through unchanged.
+    """
+    lo = params.position_min_rad
+    hi = params.position_max_rad
+    if lo is not None and value < lo:
+        return lo
+    if hi is not None and value > hi:
+        return hi
+    return value
 
 
 @dataclass
