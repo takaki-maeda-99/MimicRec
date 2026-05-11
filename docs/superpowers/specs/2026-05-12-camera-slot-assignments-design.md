@@ -116,7 +116,7 @@ In `deps.create_session_from_request`, after loading the dataset path and before
 1. Load `configs/camera_roles.yaml` → `declared_roles`.
 2. **Backward-compat shim**: if `req.slot_assignments` is empty and `req.cameras` or `req.gopros` is non-empty, rewrite as
    `req.slot_assignments = [SlotAssignment(slot=n, device=n) for n in (*req.cameras, *req.gopros)]`.
-   Old clients keep working until the deprecated fields are removed.
+   Old clients keep working until the deprecated fields are removed. If the same basename appears in both `cameras` and `gopros` (a configuration mistake), the duplicate slot check in step 3 OR the duplicate device basename check in step 5 catches it as 400.
 3. Reject duplicate slot names (HTTP 400).
 4. For each slot, reject if `slot` fails the path-safe regex OR is in neither `declared_roles` nor `existing_image_keys` (HTTP 400).
 5. For each device:
@@ -130,15 +130,16 @@ In `deps.create_session_from_request`, after loading the dataset path and before
 7. **Orphan GoPro sidecar check**: list `*.json` under `paths.pending_dir/gopro_dl/`. For each sidecar:
    - If the file cannot be parsed as JSON or as `GoProDLJob`, reject with HTTP 409. A corrupt sidecar may reference any cam_name; refusing to start until the operator inspects it is safer than guessing.
    - If `cam_name` is not in the requested slot set, reject with HTTP 409: `orphan GoPro sidecar <file> (cam_name=<x>) does not match this session's slots <list>`. The operator must end the previous session cleanly or move the file aside. Automatic discard was considered and rejected: silently throwing away a downloaded mp4 because the next session picked different slots is too easy to do by mistake.
-8. Build the resolved tuple list `[(slot, kind, cfg, adapter), ...]`.
+8. Build the resolved tuple list `[(slot, device, kind, cfg, adapter), ...]` where `device` is the requested basename, `kind` is `"camera"` or `"gopro"`, `cfg` is the yaml content dict, and `adapter` is the instantiated object. All subsequent steps reference fields from these tuples by position or by the destructured loop variables shown.
 9. `init_dataset` arguments are derived from the resolved list:
-   - `camera_names = [s for s,k,_,_ in resolved if k == "camera"]`
-   - `gopro_specs = {s: adapter.get_spec() for s,k,_,adapter in resolved if k == "gopro"}`
-   - `camera_resolutions = {s: (int(cfg["width"]), int(cfg["height"])) for s,k,cfg,_ in resolved if k == "camera"}`
+   - `camera_names = [s for s,_,k,_,_ in resolved if k == "camera"]`
+   - `gopro_specs = {s: adapter.get_spec() for s,_,k,_,adapter in resolved if k == "gopro"}`
+   - `camera_resolutions = {s: (int(cfg["width"]), int(cfg["height"])) for s,_,k,cfg,_ in resolved if k == "camera"}`
    OpenCV and GoPro features stay in their existing separate loops in `dataset_layout.init_dataset`.
 10. Persist into `app.state.session_meta`:
-    - `slot_assignments: [{"slot": s, "device": a.device, "kind": k} for ...]` — for state payloads.
-    - `cameras` / `gopros` mirror filled with slot names by kind.
+    - `slot_assignments: [{"slot": s, "device": d, "kind": k} for s,d,k,_,_ in resolved]` — for state payloads.
+    - `cameras = [s for s,_,k,_,_ in resolved if k == "camera"]` and `gopros = [s for s,_,k,_,_ in resolved if k == "gopro"]` mirror filled with slot names by kind.
+11. Persist into `app.state.resolved_config["slot_assignments"]`: `[{"slot": s, "device": d, "kind": k, "device_config": cfg} for s,d,k,cfg,_ in resolved]`. The adapter object itself is not serialized; only the cfg dict from yaml. This snapshot lets an episode's `meta/info.json` record exactly what hardware produced it.
 
 ### State payload builders
 
@@ -156,7 +157,6 @@ return SessionStatePayload(
 ```
 
 The integration tests below pin both REST and WS responses to include `image_sources` with the correct shape.
-11. Persist into `app.state.resolved_config["slot_assignments"]`: the full list including each device's yaml snapshot, so an episode's `meta/info.json` records exactly what hardware produced it. The adapter object itself is not serialized; only the cfg dict from yaml.
 
 ## Frontend
 
