@@ -434,6 +434,14 @@ async def create_session_from_request(app, req) -> SessionManager:
     if cam_cfgs:
         resolved_config_snapshot["cameras"] = cam_cfgs
 
+    # Persist the full slot assignment snapshot — slot, device, kind,
+    # AND the yaml content dict — so an episode's meta/info.json can
+    # later record exactly what hardware produced the recording.
+    resolved_config_snapshot["slot_assignments"] = [
+        {"slot": s, "device": d, "kind": k, "device_config": cfg}
+        for s, d, k, cfg, _adapter in resolved
+    ]
+
     # Store metadata in app.state for payload building
     app.state.error_bus = error_bus
     app.state.camera_manager = cm
