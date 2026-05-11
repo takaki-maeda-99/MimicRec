@@ -1,0 +1,8 @@
+# Globally-defined camera slots. Datasets pick a subset; each session
+# decides which physical device fills each slot.
+roles:
+  - front
+  - wrist
+  - top
+  - side
+  - gripper
