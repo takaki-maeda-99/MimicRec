@@ -1,9 +1,24 @@
 from __future__ import annotations
 import importlib
+import re
 from pathlib import Path
 
 from fastapi import HTTPException
 from omegaconf import OmegaConf
+
+_SLOT_NAME_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
+
+
+def _load_camera_roles(configs_root: Path) -> list[str]:
+    """Read the global slot vocabulary from configs/camera_roles.yaml.
+    Returns [] if the file is missing so the same helper is safe to
+    call before the feature ships (existing datasets do not require
+    camera_roles.yaml)."""
+    path = configs_root / "camera_roles.yaml"
+    if not path.exists():
+        return []
+    cfg = OmegaConf.load(path)
+    return list(cfg.roles) if hasattr(cfg, "roles") else []
 
 from mimicrec.cameras.manager import CameraManager
 from mimicrec.errors import InvalidTransitionError
