@@ -9,6 +9,7 @@ from mimicrec.cameras.manager import CameraManager
 from mimicrec.errors import InvalidTransitionError
 from mimicrec.recording.dataset_layout import init_dataset
 from mimicrec.session.lifecycle import SessionManager
+from mimicrec.session.replay import GripperBinarize
 from mimicrec.session.replay_safety import ReplaySafetyConfig
 from mimicrec.types import SessionMode
 from mimicrec.util.error_bus import ErrorBus
@@ -163,6 +164,17 @@ async def create_session_from_request(app, req) -> SessionManager:
         replay_safety = ReplaySafetyConfig.from_robot_cfg(
             robot_cfg, dof=robot.dof, dt_sec=1.0 / req.fps
         )
+
+    gripper_binarize = None
+    if "replay" in robot_cfg and "gripper_binarize" in robot_cfg.replay:
+        gb = robot_cfg.replay.gripper_binarize
+        if bool(gb.get("enabled", False)):
+            gripper_binarize = GripperBinarize(
+                threshold=float(gb.threshold),
+                open_value=float(gb.open_value),
+                closed_value=float(gb.closed_value),
+                dwell_delta=float(gb.get("dwell_delta", 0.0)),
+            )
 
     # Forward kinematics for EE pose recording (optional; requires placo).
     # Robot config may declare a `kinematics:` block with urdf_path etc.;
@@ -322,6 +334,7 @@ async def create_session_from_request(app, req) -> SessionManager:
         error_bus=error_bus,
         resolved_config=resolved,
         replay_safety=replay_safety,
+        gripper_binarize=gripper_binarize,
         fk=fk,
         task=req.task or "default",
         instruction=getattr(req, "instruction", "") or "",

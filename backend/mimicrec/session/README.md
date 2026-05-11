@@ -48,17 +48,14 @@ async def move_to_idle(
 | mode | `start()` (セッション開始) | `episode_stop()` (エピソード間) | `after_mode` |
 |---|---|---|---|
 | `HAND_TEACH` | ✅ 復帰 | ✅ 復帰 | `GRAVITY_COMP`（次のエピソードを手で動かして教示） |
-| `TELEOP` | ✅ 復帰 | ❌ スキップ | `POSITION`（idle 姿勢を保持したままリーダー → 制御ループへ） |
+| `TELEOP` | ❌ スキップ | ❌ スキップ | — |
 | `INFERENCE` | ❌ スキップ | ❌ スキップ | — |
 
-`TELEOP` の振る舞いが分かれている理由:
+`TELEOP` がスキップな理由: リーダーアームは read-only で同期できないため、idle へ復帰すると EE-delta マッパが古い anchor を抱えたまま次の tick で follower が snap する。セッション開始時／エピソード間ともに復帰しない方針。
 
-- **セッション開始時は安全に復帰できる**: 制御ループ／マッパはまだ spawn されていないので、idle へ動かしてもマッパの anchor 計算に巻き込まれない。`after_mode=POSITION` で抜けるとそのまま剛性で姿勢を保ち、続いて起動する `run_teleop_control_loop` が現在のリーダー姿勢を初回 anchor として取り込むため snap しない。
-- **エピソード間は依然スキップ**: REVIEW フェーズでも制御ループは生きており、リーダーアームは read-only で同期できない。idle へ復帰すると EE-delta マッパが古い anchor を抱えたまま次の tick で follower が snap するため、ここは復帰しない方針を維持。
+実装は `lifecycle.py` の `_move_to_idle_for_session()` に集約。HAND_TEACH のときだけ `move_to_idle(after_mode=GRAVITY_COMP)` を呼び、それ以外は早期 return する。
 
-実装は `lifecycle.py` の `_move_to_idle_for_session(at_session_start: bool = False)` に集約。`start()` からは `at_session_start=True`、`episode_stop()` からは（背景タスクで）`at_session_start=False` で呼ぶことで上表の dispatch を実現している。
-
-これにより autoCycle（連続自動収集）でも:
+これにより HAND_TEACH の autoCycle（連続自動収集）でも:
 
 ```
 record → auto-stop ─┐
@@ -68,6 +65,8 @@ record → auto-stop ─┐
 auto-save / auto-discard ─ await idle move ─ READY ─ next episode_start
                                                        ↑ 必ず idle 起点
 ```
+
+TELEOP の autoCycle では idle move は発火せず、リーダー姿勢に追従したまま次のエピソードへ進む。
 
 ## idle 姿勢のキャプチャ／更新
 

@@ -32,6 +32,68 @@ class ReplayTrajectory:
     gripper_targets: np.ndarray | None = None  # shape (T,)
 
 
+@dataclass(frozen=True)
+class GripperBinarize:
+    """Snap recorded gripper targets to grip-saturating motor values.
+
+    HAND_TEACH recordings capture the gripper position the human pushed
+    it to with their own muscle. Replaying the same raw position via
+    pure position control (kp/kd, tau=0) can't reproduce that grip
+    force — objects slip. We detect the operator's intent from the
+    recorded track and emit fully-saturated targets instead.
+
+    Three cases (units are raw rad, same as recorded action.gripper_pos;
+    reBotArm convention: smaller = more open):
+
+    1. ``recorded <= threshold`` → ``open_value``
+       Operator wanted the gripper open. Snap to a fully-open target.
+
+    2. ``recorded > threshold`` and ``|recorded[i] - recorded[i-1]| <
+       dwell_delta`` → ``closed_value``
+       Operator was *holding* something — track is above the close
+       threshold AND not moving. Snap to a target slightly past the
+       mechanical close so the position controller stays saturated and
+       kp delivers maximum closing torque (grip).
+
+    3. ``recorded > threshold`` and the value is changing → recorded
+       passthrough.
+       Operator is mid-motion in the close direction. Let the gripper
+       track the recording so the close ramp is smooth; the next stable
+       frame will trigger the snap to ``closed_value`` once the hand
+       settles on the object.
+
+    Set ``dwell_delta = 0`` to disable case-3 entirely (old behavior:
+    pure threshold binarize, no hold detection).
+    """
+    threshold: float
+    open_value: float
+    closed_value: float
+    dwell_delta: float = 0.0
+
+    def apply(self, value: float) -> float:
+        """Stateless single-value snap (ignores dwell_delta)."""
+        return self.closed_value if value > self.threshold else self.open_value
+
+    def apply_track(self, values: list[float]) -> list[float]:
+        """Apply the three-case logic across a recorded track."""
+        if not values:
+            return []
+        use_dwell = self.dwell_delta > 0.0
+        out: list[float] = []
+        for i, raw in enumerate(values):
+            v = float(raw)
+            prev = float(values[i - 1]) if i > 0 else v
+            above = v > self.threshold
+            stable = (not use_dwell) or (abs(v - prev) < self.dwell_delta)
+            if not above:
+                out.append(self.open_value)
+            elif stable:
+                out.append(self.closed_value)
+            else:
+                out.append(v)
+        return out
+
+
 async def run_replay(
     session: Session,
     trajectory: ReplayTrajectory,
@@ -42,6 +104,7 @@ async def run_replay(
     safety: "ReplaySafetyConfig | None" = None,
     error_bus: "object | None" = None,
     interp_steps: int = 10,
+    gripper_binarize: "GripperBinarize | None" = None,
 ) -> None:
     if session.state != SessionState.READY:
         from mimicrec.errors import InvalidTransitionError
@@ -92,6 +155,15 @@ async def run_replay(
         if trajectory.gripper_targets is not None
         else None
     )
+    if gripper_binarize is not None and grip_targets is not None:
+        grip_targets = gripper_binarize.apply_track(grip_targets)
+        logger.warning(
+            "[replay] gripper_binarize ON: threshold=%.3f open=%.3f closed=%.3f dwell=%.3f",
+            gripper_binarize.threshold,
+            gripper_binarize.open_value,
+            gripper_binarize.closed_value,
+            gripper_binarize.dwell_delta,
+        )
     if (
         safety is not None
         and measured_state_slot is not None
@@ -213,6 +285,12 @@ async def run_replay(
                     ).astype(np.float32)
                     if grip is None or next_grip is None:
                         sub_grip = grip if grip is not None else next_grip
+                    elif gripper_binarize is not None:
+                        # Binarized track is discrete — interpolating between
+                        # open_value and closed_value would emit meaningless
+                        # intermediate setpoints. Hold the current bin until
+                        # the next tick's primary send delivers the new bin.
+                        sub_grip = grip
                     else:
                         sub_grip = float(grip + (next_grip - grip) * alpha)
                     await clock.sleep_until(base_ns + s * substep_interval_ns)

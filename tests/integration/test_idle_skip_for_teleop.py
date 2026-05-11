@@ -1,7 +1,7 @@
 """idle 復帰のモード別挙動。
 
 - HAND_TEACH: セッション開始時もエピソード間も発火 (after_mode=GRAVITY_COMP)
-- TELEOP: セッション開始時のみ発火 (after_mode=POSITION)、エピソード間はスキップ
+- TELEOP: 常にスキップ (リーダー追従中に snap するため)
 - INFERENCE: 常にスキップ
 """
 from __future__ import annotations
@@ -37,16 +37,7 @@ def _build_sm(mode: SessionMode, dataset_root) -> SessionManager:
 
 
 @pytest.mark.asyncio
-async def test_teleop_session_start_holds_in_position(tmp_path):
-    sm = _build_sm(SessionMode.TELEOP, tmp_path)
-    with patch("mimicrec.session.lifecycle.move_to_idle", new=AsyncMock()) as m:
-        await sm._move_to_idle_for_session(at_session_start=True)
-    m.assert_called_once()
-    assert m.call_args.kwargs["after_mode"] == RobotMode.POSITION
-
-
-@pytest.mark.asyncio
-async def test_teleop_episode_loop_skips_move_to_idle(tmp_path):
+async def test_teleop_skips_move_to_idle(tmp_path):
     sm = _build_sm(SessionMode.TELEOP, tmp_path)
     with patch("mimicrec.session.lifecycle.move_to_idle", new=AsyncMock()) as m:
         await sm._move_to_idle_for_session()
@@ -63,18 +54,8 @@ async def test_hand_teach_calls_move_to_idle_with_gravity_comp(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_hand_teach_session_start_calls_move_to_idle(tmp_path):
-    sm = _build_sm(SessionMode.HAND_TEACH, tmp_path)
-    with patch("mimicrec.session.lifecycle.move_to_idle", new=AsyncMock()) as m:
-        await sm._move_to_idle_for_session(at_session_start=True)
-    m.assert_called_once()
-    assert m.call_args.kwargs["after_mode"] == RobotMode.GRAVITY_COMP
-
-
-@pytest.mark.asyncio
 async def test_inference_still_skips_move_to_idle(tmp_path):
     sm = _build_sm(SessionMode.INFERENCE, tmp_path)
     with patch("mimicrec.session.lifecycle.move_to_idle", new=AsyncMock()) as m:
-        await sm._move_to_idle_for_session(at_session_start=True)
         await sm._move_to_idle_for_session()
     m.assert_not_called()
