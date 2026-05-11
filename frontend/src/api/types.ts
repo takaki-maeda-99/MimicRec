@@ -83,3 +83,9 @@ export interface ConfigEntry {
   file?: string;
   content: Record<string, unknown>;
 }
+
+export interface ImageSource {
+  slot: string;
+  device: string;
+  kind: "camera" | "gopro";
+}
