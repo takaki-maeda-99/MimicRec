@@ -71,7 +71,7 @@ async def test_media_list_late_finalization_still_detects_new_file(paths, queue)
 
     errs = ErrorBus()
     sub = errs.subscribe()
-    r = GoProRecorder(d, queue, paths, errs)
+    r = GoProRecorder(d, queue, paths, errs, slot="g1")
     await r.start_episode(0, t_host_mono_ns=0)
     await r.stop_episode(0)
 
@@ -106,7 +106,7 @@ async def test_media_list_never_returns_file_publishes_warning(paths, queue):
 
     errs = ErrorBus()
     sub = errs.subscribe()
-    r = GoProRecorder(d, queue, paths, errs)
+    r = GoProRecorder(d, queue, paths, errs, slot="g1")
     await r.start_episode(0, t_host_mono_ns=0)
     await r.stop_episode(0)
 
@@ -120,7 +120,7 @@ async def test_media_list_first_try_no_polling_overhead(paths, queue):
     d = MockGoProDevice(name="g1", usb_serial="S1")
     await d.connect()
     errs = ErrorBus()
-    r = GoProRecorder(d, queue, paths, errs)
+    r = GoProRecorder(d, queue, paths, errs, slot="g1")
 
     t0 = asyncio.get_event_loop().time()
     await r.start_episode(0, t_host_mono_ns=0)

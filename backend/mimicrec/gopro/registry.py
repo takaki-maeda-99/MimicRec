@@ -62,7 +62,9 @@ class GoProDeviceRegistry:
         # 2. Restore queue, build recorders + (optionally) preview sources.
         self._queue = DLQueue.restore(self._paths.pending_dir / "gopro_dl")
         for d in self._devices:
-            self._recorders[d.name] = GoProRecorder(d, self._queue, self._paths, self._errors)
+            # TODO(T6): registry will receive explicit (slot, device) pairs;
+            # for now default slot=d.name to preserve pre-T5 behavior.
+            self._recorders[d.name] = GoProRecorder(d, self._queue, self._paths, self._errors, slot=d.name)
             if self._preview_enabled:
                 # The device knows which UDP port the camera will actually
                 # emit to: HERO9–11 firmware ignores the port arg and forces

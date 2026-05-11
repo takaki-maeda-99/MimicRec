@@ -28,7 +28,7 @@ async def test_normal_lifecycle_enqueues_one_job(paths, queue):
     d = MockGoProDevice(name="g1", usb_serial="S1")
     await d.connect()
     errs = ErrorBus()
-    r = GoProRecorder(d, queue, paths, errs)
+    r = GoProRecorder(d, queue, paths, errs, slot="g1")
 
     await r.start_episode(0, t_host_mono_ns=10_000_000_000)
     await r.stop_episode(0)
@@ -46,7 +46,7 @@ async def test_chapter_split_only_first_chapter_enqueued(paths, queue):
     await d.connect()
     errs = ErrorBus()
     sub = errs.subscribe()
-    r = GoProRecorder(d, queue, paths, errs)
+    r = GoProRecorder(d, queue, paths, errs, slot="g1")
 
     await r.start_episode(0, t_host_mono_ns=0)
     await r.stop_episode(0)
@@ -70,7 +70,7 @@ async def test_disabled_device_is_noop(paths, queue):
     await d.connect()
     d.disable("test")
     errs = ErrorBus()
-    r = GoProRecorder(d, queue, paths, errs)
+    r = GoProRecorder(d, queue, paths, errs, slot="g1")
 
     await r.start_episode(0, t_host_mono_ns=0)
     await r.stop_episode(0)
@@ -89,7 +89,7 @@ async def test_no_new_files_at_stop_skips_enqueue(paths, queue):
     d.shutter_off = _no_op  # type: ignore[assignment]
 
     errs = ErrorBus()
-    r = GoProRecorder(d, queue, paths, errs)
+    r = GoProRecorder(d, queue, paths, errs, slot="g1")
     await r.start_episode(0, t_host_mono_ns=0)
     await r.stop_episode(0)
 

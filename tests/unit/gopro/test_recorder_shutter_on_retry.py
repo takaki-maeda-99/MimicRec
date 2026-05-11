@@ -62,7 +62,7 @@ async def test_shutter_on_recovers_from_two_transient_failures(paths, queue):
 
     errs = ErrorBus()
     sub = errs.subscribe()
-    r = GoProRecorder(d, queue, paths, errs)
+    r = GoProRecorder(d, queue, paths, errs, slot="g1")
 
     await r.start_episode(0, t_host_mono_ns=10_000_000_000)
     await r.stop_episode(0)
@@ -88,7 +88,7 @@ async def test_shutter_on_persistent_failure_publishes_hardware_error(paths, que
     d.shutter_on = always_fails  # type: ignore[assignment]
     errs = ErrorBus()
     sub = errs.subscribe()
-    r = GoProRecorder(d, queue, paths, errs)
+    r = GoProRecorder(d, queue, paths, errs, slot="g1")
 
     await r.start_episode(0, t_host_mono_ns=0)
     await r.stop_episode(0)
@@ -114,7 +114,7 @@ async def test_shutter_on_first_try_no_retry_overhead(paths, queue):
 
     d.shutter_on = counting  # type: ignore[assignment]
     errs = ErrorBus()
-    r = GoProRecorder(d, queue, paths, errs)
+    r = GoProRecorder(d, queue, paths, errs, slot="g1")
 
     t0 = asyncio.get_event_loop().time()
     await r.start_episode(0, t_host_mono_ns=0)
