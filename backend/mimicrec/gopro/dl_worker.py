@@ -32,12 +32,21 @@ class GoProDLWorker:
         paths: DatasetPaths,
         errors: ErrorBus,
         shutdown_grace_sec: float = 30.0,
+        download_timeout_sec: float = 300.0,
     ) -> None:
         self._queue = queue
         self._devices = devices
         self._paths = paths
         self._errors = errors
         self._grace = shutdown_grace_sec
+        # If the GoPro hangs mid-HTTP-download (USB-CDC-NCM hiccup, camera
+        # firmware glitch), open_gopro has no internal timeout — the
+        # coroutine waits forever. With Bug B in place, that hung sidecar
+        # also blocks every future episode_start until the operator kills
+        # the backend. Enforce a generous cap (5 min covers a 1080p
+        # episode at ~5 MB/s typical) and treat a timeout as a permanent
+        # DL failure (sidecar cleaned up below).
+        self._download_timeout_sec = download_timeout_sec
         self._stop = asyncio.Event()
         self._inflight: asyncio.Task | None = None
 
@@ -95,10 +104,20 @@ class GoProDLWorker:
 
         if not skip_dl:
             try:
-                await device.download_file(job.sd_filename, tmp_raw)
+                await asyncio.wait_for(
+                    device.download_file(job.sd_filename, tmp_raw),
+                    timeout=self._download_timeout_sec,
+                )
+            except asyncio.TimeoutError:
+                await self._errors.publish(HardwareError(
+                    f"GoPro DL timeout for ep {job.episode_index} after "
+                    f"{self._download_timeout_sec:.0f}s — sidecar discarded"))
+                await self._queue.mark_done(job.job_id)
+                return
             except Exception as e:
                 await self._errors.publish(HardwareError(
                     f"GoPro DL failed for ep {job.episode_index}: {e}"))
+                await self._queue.mark_done(job.job_id)
                 return
 
         # Duration check: only flag "shorter than expected" by > 2.0s.
@@ -132,6 +151,11 @@ class GoProDLWorker:
         except Exception as e:
             await self._errors.publish(HardwareError(
                 f"GoPro ffmpeg failed for ep {job.episode_index}: {e}"))
+            # Clean up so the operator can keep recording. Without
+            # mark_done the sidecar persists, pending_count never reaches
+            # zero, and Bug B (block episode_start while pending > 0)
+            # halts the session indefinitely.
+            await self._queue.mark_done(job.job_id)
             return
 
         try:
