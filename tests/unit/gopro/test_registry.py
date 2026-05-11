@@ -17,24 +17,28 @@ def paths(tmp_path):
     return p
 
 
-def test_duplicate_name_raises(paths):
-    a = MockGoProDevice(name="g1", usb_serial="S1")
-    b = MockGoProDevice(name="g1", usb_serial="S2")
-    with pytest.raises(ValueError, match="duplicate name"):
-        GoProDeviceRegistry(devices=[a, b], paths=paths, errors=ErrorBus())
+def test_duplicate_slot_raises(paths):
+    a = MockGoProDevice(name="ga", usb_serial="S1")
+    b = MockGoProDevice(name="gb", usb_serial="S2")
+    with pytest.raises(ValueError, match="duplicate slot"):
+        GoProDeviceRegistry(
+            devices=[("g1", a), ("g1", b)],
+            paths=paths,
+            errors=ErrorBus(),
+        )
 
 
 def test_duplicate_serial_raises(paths):
     a = MockGoProDevice(name="g1", usb_serial="S1")
     b = MockGoProDevice(name="g2", usb_serial="S1")
     with pytest.raises(ValueError, match="duplicate usb_serial"):
-        GoProDeviceRegistry(devices=[a, b], paths=paths, errors=ErrorBus())
+        GoProDeviceRegistry(devices=[(a.name, a), (b.name, b)], paths=paths, errors=ErrorBus())
 
 
 @pytest.mark.asyncio
 async def test_start_connects_and_provides_preview_sources(paths):
     a = MockGoProDevice(name="g1", usb_serial="S1")
-    reg = GoProDeviceRegistry(devices=[a], paths=paths, errors=ErrorBus())
+    reg = GoProDeviceRegistry(devices=[(a.name, a)], paths=paths, errors=ErrorBus())
     await reg.start()
     sources = reg.preview_sources()
     assert "g1" in sources
@@ -53,7 +57,7 @@ async def test_one_failing_connect_does_not_block_others(paths):
 
     errs = ErrorBus()
     sub = errs.subscribe()
-    reg = GoProDeviceRegistry(devices=[a, b], paths=paths, errors=errs)
+    reg = GoProDeviceRegistry(devices=[(a.name, a), (b.name, b)], paths=paths, errors=errs)
     await reg.start()
     # b was disabled and an error was published.
     assert b.is_disabled
@@ -72,7 +76,7 @@ async def test_episode_lifecycle_propagates_errors(paths):
     a = MockGoProDevice(name="g1", usb_serial="S1")
     errs = ErrorBus()
     sub = errs.subscribe()
-    reg = GoProDeviceRegistry(devices=[a], paths=paths, errors=errs)
+    reg = GoProDeviceRegistry(devices=[(a.name, a)], paths=paths, errors=errs)
     await reg.start()
     # Sabotage a's recorder by pinning an exception inside start_episode.
     real_recorder = reg._recorders["g1"]  # type: ignore[attr-defined]
@@ -95,7 +99,7 @@ async def test_commit_episode_moves_staged_to_dataset(paths, tmp_path):
     """When a job is in state=staged, commit_episode moves the file to
     paths.episode_video(...) and removes the sidecar."""
     a = MockGoProDevice(name="g1", usb_serial="S1")
-    reg = GoProDeviceRegistry(devices=[a], paths=paths, errors=ErrorBus())
+    reg = GoProDeviceRegistry(devices=[(a.name, a)], paths=paths, errors=ErrorBus())
     await reg.start()
 
     # Manually craft a staged job sidecar + staged file.
@@ -129,7 +133,7 @@ async def test_commit_episode_moves_staged_to_dataset(paths, tmp_path):
 @pytest.mark.asyncio
 async def test_discard_episode_removes_staged(paths):
     a = MockGoProDevice(name="g1", usb_serial="S1")
-    reg = GoProDeviceRegistry(devices=[a], paths=paths, errors=ErrorBus())
+    reg = GoProDeviceRegistry(devices=[(a.name, a)], paths=paths, errors=ErrorBus())
     await reg.start()
 
     from mimicrec.gopro.dl_queue import GoProDLJob
@@ -159,7 +163,7 @@ async def test_commit_episode_on_pending_dl_flips_state(paths):
     """If the job is still pending_dl when commit fires, sidecar state flips
     to commit_pending (DLWorker will commit after ffmpeg)."""
     a = MockGoProDevice(name="g1", usb_serial="S1")
-    reg = GoProDeviceRegistry(devices=[a], paths=paths, errors=ErrorBus())
+    reg = GoProDeviceRegistry(devices=[(a.name, a)], paths=paths, errors=ErrorBus())
     await reg.start()
 
     from mimicrec.gopro.dl_queue import GoProDLJob

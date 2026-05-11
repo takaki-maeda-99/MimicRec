@@ -20,7 +20,7 @@ def paths(tmp_path):
 async def test_registry_preview_disabled_yields_empty_sources(paths):
     a = MockGoProDevice(name="g1", usb_serial="S1")
     reg = GoProDeviceRegistry(
-        devices=[a], paths=paths, errors=ErrorBus(), preview_enabled=False,
+        devices=[(a.name, a)], paths=paths, errors=ErrorBus(), preview_enabled=False,
     )
     await reg.start()
     try:
@@ -43,7 +43,7 @@ async def test_registry_preview_disabled_does_not_call_start_preview(paths):
     a.start_preview = spy_start  # type: ignore[assignment]
 
     reg = GoProDeviceRegistry(
-        devices=[a], paths=paths, errors=ErrorBus(), preview_enabled=False,
+        devices=[(a.name, a)], paths=paths, errors=ErrorBus(), preview_enabled=False,
     )
     await reg.start()
     try:
@@ -56,7 +56,7 @@ async def test_registry_preview_disabled_does_not_call_start_preview(paths):
 async def test_registry_default_preview_enabled_is_true(paths):
     """Existing behavior: preview_enabled defaults to True and sources are populated."""
     a = MockGoProDevice(name="g1", usb_serial="S1")
-    reg = GoProDeviceRegistry(devices=[a], paths=paths, errors=ErrorBus())
+    reg = GoProDeviceRegistry(devices=[(a.name, a)], paths=paths, errors=ErrorBus())
     await reg.start()
     try:
         assert "g1" in reg.preview_sources()
@@ -75,7 +75,7 @@ async def test_registry_preview_disabled_episode_lifecycle_still_works(paths):
     errs = ErrorBus()
     sub = errs.subscribe()
     reg = GoProDeviceRegistry(
-        devices=[a], paths=paths, errors=errs, preview_enabled=False,
+        devices=[(a.name, a)], paths=paths, errors=errs, preview_enabled=False,
     )
     await reg.start()
     try:

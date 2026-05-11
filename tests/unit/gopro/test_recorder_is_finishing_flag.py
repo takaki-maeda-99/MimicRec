@@ -92,7 +92,7 @@ async def test_registry_dl_in_flight_counts_finishing_recorders(paths):
 
     d.shutter_off = slow_off  # type: ignore[assignment]
 
-    reg = GoProDeviceRegistry(devices=[d], paths=paths, errors=ErrorBus())
+    reg = GoProDeviceRegistry(devices=[(d.name, d)], paths=paths, errors=ErrorBus())
     await reg.start()
     try:
         await reg.episode_start(0, t_host_mono_ns=0)

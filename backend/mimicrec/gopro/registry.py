@@ -18,18 +18,19 @@ log = logging.getLogger(__name__)
 class GoProDeviceRegistry:
     def __init__(
         self,
-        devices: list,
+        devices: list[tuple[str, object]],
         paths: DatasetPaths,
         errors: ErrorBus,
         preview_enabled: bool = True,
     ) -> None:
-        names = [d.name for d in devices]
-        serials = [d.usb_serial for d in devices]
-        if len(set(names)) != len(names):
-            raise ValueError(f"duplicate name in GoPro devices: {names}")
+        slots = [s for s, _ in devices]
+        serials = [d.usb_serial for _, d in devices]  # type: ignore[union-attr]
+        if len(set(slots)) != len(slots):
+            raise ValueError(f"duplicate slot in GoPro devices: {slots}")
         if len(set(serials)) != len(serials):
             raise ValueError(f"duplicate usb_serial in GoPro devices: {serials}")
-        self._devices = devices
+        self._pairs = list(devices)
+        self._devices = [d for _, d in devices]
         self._paths = paths
         self._errors = errors
         self._preview_enabled = preview_enabled
@@ -61,16 +62,16 @@ class GoProDeviceRegistry:
 
         # 2. Restore queue, build recorders + (optionally) preview sources.
         self._queue = DLQueue.restore(self._paths.pending_dir / "gopro_dl")
-        for d in self._devices:
-            # TODO(T6): registry will receive explicit (slot, device) pairs;
-            # for now default slot=d.name to preserve pre-T5 behavior.
-            self._recorders[d.name] = GoProRecorder(d, self._queue, self._paths, self._errors, slot=d.name)
+        for slot, d in self._pairs:
+            self._recorders[slot] = GoProRecorder(
+                d, self._queue, self._paths, self._errors, slot=slot,
+            )
             if self._preview_enabled:
-                # The device knows which UDP port the camera will actually
-                # emit to: HERO9–11 firmware ignores the port arg and forces
-                # 8554, so the device must claim it via udp_preview_port and
-                # the preview source binds the same.
-                self._previews[d.name] = GoProPreviewSource(d, udp_port=d.udp_preview_port)
+                # HERO9–11 firmware ignores set_preview_stream's port arg
+                # and forces 8554, so the device must own the port via
+                # ``udp_preview_port`` and the preview source binds the
+                # same.
+                self._previews[slot] = GoProPreviewSource(d, udp_port=d.udp_preview_port)
 
         # 3. Start the DL worker.
         devices_by_serial = {d.usb_serial: d for d in self._devices}
@@ -174,7 +175,7 @@ class GoProDeviceRegistry:
         return dict(self._previews)
 
     def gopro_specs(self) -> dict[str, GoProSpec]:
-        return {d.name: d.get_spec() for d in self._devices}
+        return {slot: d.get_spec() for slot, d in self._pairs}  # type: ignore[union-attr]
 
     @property
     def pending_count(self) -> int:
