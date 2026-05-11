@@ -8,7 +8,10 @@ export interface SessionStatePayload {
   teleop: string | null;
   mapper: string | null;
   cameras: string[];
+  gopros: string[];
   fps: number | null;
+  preview_enabled?: boolean;
+  image_sources?: ImageSource[];
 }
 
 export interface DatasetSummary {
