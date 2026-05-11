@@ -1,13 +1,17 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
+export interface SlotAssignmentDraft {
+  slot: string;
+  device: string;
+}
+
 export interface RecordFormDraft {
   mode: "teleop" | "hand_teach";
   robot: string;
   teleop: string;
   mapper: string;
-  selectedCams: string[];
-  selectedGopros: string[];
+  slotAssignments: SlotAssignmentDraft[];
   dataset: string;
   task: string;
   fps: number;
@@ -27,8 +31,7 @@ const DEFAULTS: RecordFormDraft = {
   robot: "",
   teleop: "",
   mapper: "",
-  selectedCams: [],
-  selectedGopros: [],
+  slotAssignments: [],
   dataset: "",
   task: "",
   fps: 30,

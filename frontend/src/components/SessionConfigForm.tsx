@@ -23,7 +23,9 @@ export default function SessionConfigForm({ onStarted }: Props) {
   const clearError = useSessionStore((s) => s.clearError);
 
   const form = useRecordFormStore();
-  const { mode, robot, teleop, mapper, selectedCams, selectedGopros, dataset, task, fps, previewEnabled } = form;
+  const { mode, robot, teleop, mapper, dataset, task, fps, previewEnabled } = form;
+  const selectedCams: string[] = [];  // TEMPORARY: removed by T16
+  const selectedGopros: string[] = [];  // TEMPORARY: removed by T16
 
   const datasetExists = !!datasets?.some(d => d.name === dataset);
   const { data: tasks } = useTasks(datasetExists ? dataset : "");
@@ -150,10 +152,7 @@ export default function SessionConfigForm({ onStarted }: Props) {
               multiSelect
               selected={selectedCams.includes(c.name)}
               onClick={() => {
-                const next = selectedCams.includes(c.name)
-                  ? selectedCams.filter(x => x !== c.name)
-                  : [...selectedCams, c.name];
-                form.set({ selectedCams: next });
+                // TEMPORARY: camera selection rewritten in T16
               }}
             />
           ))}
@@ -173,10 +172,7 @@ export default function SessionConfigForm({ onStarted }: Props) {
                 multiSelect
                 selected={selectedGopros.includes(g.name)}
                 onClick={() => {
-                  const next = selectedGopros.includes(g.name)
-                    ? selectedGopros.filter(x => x !== g.name)
-                    : [...selectedGopros, g.name];
-                  form.set({ selectedGopros: next });
+                  // TEMPORARY: gopro selection rewritten in T16
                 }}
               />
             ))}
