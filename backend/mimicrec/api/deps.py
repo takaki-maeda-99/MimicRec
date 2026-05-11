@@ -20,6 +20,7 @@ def _load_camera_roles(configs_root: Path) -> list[str]:
     cfg = OmegaConf.load(path)
     return list(cfg.roles) if hasattr(cfg, "roles") else []
 
+from mimicrec.api.schemas import SlotAssignment
 from mimicrec.cameras.manager import CameraManager
 from mimicrec.errors import InvalidTransitionError
 from mimicrec.recording.dataset_layout import init_dataset
@@ -119,36 +120,114 @@ async def create_session_from_request(app, req) -> SessionManager:
             ]
         mapper = instantiate_adapter(str(mapper_cfg._target_), **mapper_kwargs)
 
-    # Cameras
-    cams = {}
-    cam_cfgs: dict[str, object] = {}
-    for cam_name in req.cameras:
-        cam_cfg = OmegaConf.load(configs_root / "cameras" / f"{cam_name}.yaml")
-        cam_cfgs[cam_name] = OmegaConf.to_container(cam_cfg)
-        cam_kwargs = {k: v for k, v in OmegaConf.to_container(cam_cfg).items()
-                     if k not in ("_target_",)}
-        cam_kwargs.setdefault("name", cam_name)
-        cams[cam_name] = instantiate_adapter(str(cam_cfg._target_), **cam_kwargs)
+    # ── Slot assignments (replaces the legacy cameras/gopros lists) ────
+    declared_roles = _load_camera_roles(configs_root)
 
-    # GoPros (NEW)
-    overlap = set(req.cameras) & set(getattr(req, "gopros", []))
-    if overlap:
-        raise HTTPException(status_code=400,
-                            detail=f"name overlap between cameras and gopros: {sorted(overlap)}")
+    # Backward-compat shim: legacy clients that send only `cameras`
+    # and/or `gopros` get rewritten into slot_assignments where slot == device.
+    _from_shim = False
+    if not req.slot_assignments and (req.cameras or req.gopros):
+        req.slot_assignments = [
+            SlotAssignment(slot=n, device=n)
+            for n in (*req.cameras, *req.gopros)
+        ]
+        _from_shim = True
 
-    gopro_devices: list = []
-    for g_name in getattr(req, "gopros", []):
-        try:
-            g_cfg = OmegaConf.load(configs_root / "gopros" / f"{g_name}.yaml")
-            g_kwargs = {k: v for k, v in OmegaConf.to_container(g_cfg).items()
-                        if k not in ("_target_",)}
-            g_kwargs.setdefault("name", g_name)
-            gopro_devices.append(instantiate_adapter(str(g_cfg._target_), **g_kwargs))
-        except HTTPException:
-            raise
-        except Exception as e:
-            raise HTTPException(status_code=400,
-                                detail=f"GoPro config '{g_name}' invalid: {e}") from e
+    # Slot duplicate
+    seen_slots: set[str] = set()
+    for a in req.slot_assignments:
+        if a.slot in seen_slots:
+            raise HTTPException(400, f"duplicate slot {a.slot!r}")
+        seen_slots.add(a.slot)
+
+    # Device basename duplicate (catches mock / sim cameras that have
+    # no physical-ID uniqueness check downstream)
+    seen_devices: set[str] = set()
+    for a in req.slot_assignments:
+        if a.device in seen_devices:
+            raise HTTPException(400,
+                f"duplicate device basename {a.device!r} assigned to multiple slots")
+        seen_devices.add(a.device)
+
+    # Slot name path-safe + must be in declared roles or in this
+    # dataset's existing image_keys (existing datasets keep legacy keys working).
+    # Legacy shim slots (slot == device from old cameras/gopros lists) bypass
+    # the role vocabulary check since they may use device basenames as slot names.
+    ds_root = datasets_root / req.dataset
+    existing_image_keys: set[str] = set()
+    info_path = ds_root / "meta" / "info.json"
+    if info_path.exists():
+        import json as _json
+        info = _json.loads(info_path.read_text())
+        existing_image_keys = {
+            k.removeprefix("observation.images.")
+            for k in info.get("features", {})
+            if k.startswith("observation.images.")
+        }
+    allowed_slots = set(declared_roles) | existing_image_keys
+    for a in req.slot_assignments:
+        if not _SLOT_NAME_RE.match(a.slot):
+            raise HTTPException(400,
+                f"slot {a.slot!r} contains path-unsafe characters")
+        if not _from_shim and a.slot not in allowed_slots:
+            raise HTTPException(400,
+                f"slot {a.slot!r} is neither in camera_roles.yaml nor in this "
+                f"dataset's existing image_keys ({sorted(existing_image_keys)})")
+
+    # Resolve each device basename to (slot, device, kind, cfg, adapter)
+    resolved: list[tuple[str, str, str, dict, object]] = []
+    cam_cfgs: dict[str, dict] = {}
+    for a in req.slot_assignments:
+        cam_path = configs_root / "cameras" / f"{a.device}.yaml"
+        go_path = configs_root / "gopros" / f"{a.device}.yaml"
+        if cam_path.exists() and go_path.exists():
+            raise HTTPException(400,
+                f"device {a.device!r} is ambiguous (in both cameras/ and gopros/)")
+        if cam_path.exists():
+            kind = "camera"
+            cfg = OmegaConf.to_container(OmegaConf.load(cam_path))
+        elif go_path.exists():
+            kind = "gopro"
+            cfg = OmegaConf.to_container(OmegaConf.load(go_path))
+        else:
+            raise HTTPException(400, f"device {a.device!r} not found")
+        kwargs = {k: v for k, v in cfg.items() if k != "_target_"}
+        adapter = instantiate_adapter(str(cfg["_target_"]), **kwargs)
+        resolved.append((a.slot, a.device, kind, cfg, adapter))
+        if kind == "camera":
+            cam_cfgs[a.slot] = cfg
+
+    # Physical-ID uniqueness across resolved devices
+    seen_device_ids: dict[int, str] = {}
+    for slot, _device, kind, cfg, _adapter in resolved:
+        if kind == "camera" and "device_id" in cfg:
+            did = int(cfg["device_id"])
+            if did in seen_device_ids:
+                raise HTTPException(400,
+                    f"duplicate OpenCV device_id={did} across slots "
+                    f"({seen_device_ids[did]!r} and {slot!r})")
+            seen_device_ids[did] = slot
+    seen_serials: dict[str, str] = {}
+    for slot, _device, kind, cfg, _adapter in resolved:
+        if kind == "gopro" and "usb_serial" in cfg:
+            ser = str(cfg["usb_serial"])
+            if ser in seen_serials:
+                raise HTTPException(400,
+                    f"duplicate GoPro usb_serial={ser!r} across slots "
+                    f"({seen_serials[ser]!r} and {slot!r})")
+            seen_serials[ser] = slot
+
+    # cams dict for CameraManager: keyed by slot
+    cams: dict[str, object] = {
+        slot: adapter for slot, _device, kind, _cfg, adapter in resolved
+        if kind == "camera"
+    }
+
+    # GoPro device pairs for the registry: [(slot, device)]
+    gopro_pairs: list[tuple[str, object]] = [
+        (slot, adapter) for slot, _device, kind, _cfg, adapter in resolved
+        if kind == "gopro"
+    ]
 
     error_bus = ErrorBus()
 
@@ -157,11 +236,11 @@ async def create_session_from_request(app, req) -> SessionManager:
     _paths.pending_dir.mkdir(parents=True, exist_ok=True)
 
     gopro_registry = None
-    if gopro_devices:
+    if gopro_pairs:
         from mimicrec.gopro.registry import GoProDeviceRegistry
         try:
             gopro_registry = GoProDeviceRegistry(
-                devices=gopro_devices, paths=_paths, errors=error_bus,
+                devices=gopro_pairs, paths=_paths, errors=error_bus,
                 preview_enabled=req.preview_enabled,
             )
         except ValueError as e:
@@ -212,11 +291,10 @@ async def create_session_from_request(app, req) -> SessionManager:
         fk = load_kinematics(kin_dict)
 
     # Dataset
-    ds_root = datasets_root / req.dataset
+    # NOTE: ds_root and info_path were already computed above for slot validation.
     # NOTE: pending_dir.mkdir (above) may have already created ds_root.
     # Guard on info.json presence rather than directory existence so that
     # init_dataset is called even when the pending dir was pre-created.
-    info_path = ds_root / "meta" / "info.json"
     if not info_path.exists():
         # Capture per-adapter declarations if available (None for mock adapters).
         rt = type(robot).__name__
@@ -228,17 +306,16 @@ async def create_session_from_request(app, req) -> SessionManager:
             robot.proprio_layout()
             if hasattr(robot, "proprio_layout") else None
         )
+        camera_slots = [slot for slot, _d, k, _c, _a in resolved if k == "camera"]
         camera_resolutions = {
-            cam_name: (
-                int(cam_cfgs[cam_name].get("width", 640)),
-                int(cam_cfgs[cam_name].get("height", 480)),
-            )
-            for cam_name in req.cameras
+            slot: (int(cam_cfgs[slot].get("width", 640)),
+                   int(cam_cfgs[slot].get("height", 480)))
+            for slot in camera_slots
         }
         init_dataset(
             ds_root, fps=req.fps,
             joint_names=robot.joint_names,
-            camera_names=list(req.cameras),
+            camera_names=camera_slots,
             robot_type=rt,
             gripper_convention=(
                 {"closed_at": gc.closed_at, "open_at": gc.open_at} if gc else None
@@ -298,10 +375,10 @@ async def create_session_from_request(app, req) -> SessionManager:
             for k in info.get("features", {})
             if k.startswith("observation.images.")
         }
-        requested_images = set(req.cameras) | set(getattr(req, "gopros", []))
-        if existing_image_keys != requested_images:
-            missing = sorted(existing_image_keys - requested_images)
-            extra = sorted(requested_images - existing_image_keys)
+        requested_slots = {a.slot for a in req.slot_assignments}
+        if existing_image_keys != requested_slots:
+            missing = sorted(existing_image_keys - requested_slots)
+            extra = sorted(requested_slots - existing_image_keys)
             parts: list[str] = []
             if missing:
                 parts.append(f"missing {missing}")
@@ -310,34 +387,38 @@ async def create_session_from_request(app, req) -> SessionManager:
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    f"dataset '{req.dataset}' was created with cameras+gopros="
-                    f"{sorted(existing_image_keys)}; request differs ({'; '.join(parts)}). "
-                    f"Create a new dataset to use a different camera set."
+                    f"dataset '{req.dataset}' was created with slots="
+                    f"{sorted(existing_image_keys)}; request differs "
+                    f"({'; '.join(parts)}). Create a new dataset to use a different slot set."
                 ),
             )
 
-    # Resolved config snapshot
-    resolved: dict[str, object] = {"robot": OmegaConf.to_container(robot_cfg)}
+    # Resolved config snapshot (Tasks 8+9 will extend this)
+    resolved_config_snapshot: dict[str, object] = {"robot": OmegaConf.to_container(robot_cfg)}
     if teleop_cfg is not None:
-        resolved["teleop"] = OmegaConf.to_container(teleop_cfg)
+        resolved_config_snapshot["teleop"] = OmegaConf.to_container(teleop_cfg)
     if mapper_cfg is not None:
-        resolved["mapper"] = OmegaConf.to_container(mapper_cfg)
+        resolved_config_snapshot["mapper"] = OmegaConf.to_container(mapper_cfg)
     if cam_cfgs:
-        resolved["cameras"] = cam_cfgs
+        resolved_config_snapshot["cameras"] = cam_cfgs
 
     # Store metadata in app.state for payload building
     app.state.error_bus = error_bus
     app.state.camera_manager = cm
     app.state.gopro_registry = gopro_registry
-    app.state.resolved_config = resolved
+    app.state.resolved_config = resolved_config_snapshot
     app.state.session_meta = {
         "dataset": req.dataset,
         "task": req.task,
         "robot": req.robot,
         "teleop": teleop_name,
         "mapper": mapper_name,
-        "cameras": list(req.cameras),
-        "gopros": list(getattr(req, "gopros", [])),
+        "slot_assignments": [
+            {"slot": s, "device": d, "kind": k}
+            for s, d, k, _c, _a in resolved
+        ],
+        "cameras": [s for s, _d, k, _c, _a in resolved if k == "camera"],
+        "gopros": [s for s, _d, k, _c, _a in resolved if k == "gopro"],
         "fps": req.fps,
         "preview_enabled": bool(req.preview_enabled),
     }
@@ -353,7 +434,7 @@ async def create_session_from_request(app, req) -> SessionManager:
         mode=mode,
         fps=req.fps,
         error_bus=error_bus,
-        resolved_config=resolved,
+        resolved_config=resolved_config_snapshot,
         replay_safety=replay_safety,
         gripper_binarize=gripper_binarize,
         fk=fk,
