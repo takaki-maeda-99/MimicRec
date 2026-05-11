@@ -17,3 +17,14 @@ gripper:
       pos_kp: 50.0
       pos_ki: 1.0
       vlim: 3.0
+    # 歯飛び限界トルク (実測; reBotArm_control_py/example/measure_gripper_max_torque.py)
+    # - intact 個体: tau_cmd ~3.88 Nm で歯飛び発生 (gripper_torque_test_1778392815.csv, 2026-05-10)
+    #   モータ 4310 のピーク (~4 Nm) 付近 = 機構側のマージンほぼゼロ。
+    # - 一度歯飛びさせると以降 ~1.3 Nm で滑る (劣化が残る) → 修理/交換が必要。
+    # Gripper.mit() が safe_max_nm を上限として |τ| をクランプ。
+    # τ = kp·(p_des-p) + kd·(v_des-v) + tau を予測し、超えたら p_des を
+    # 逆算してリミットぎりぎりに収める (kp~0 なら tau を直接クリップ)。
+    # 計測スクリプト等で一時的に外す場合は Gripper.set_tau_limit_nm(None)。
+    torque_limits:
+      slip_torque_nm: 3.88
+      safe_max_nm: 2.5

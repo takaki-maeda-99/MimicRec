@@ -21,5 +21,27 @@ replay:
   max_joint_position_jump: 1.5      # was 0.5
   command_timeout_sec: 0.2
   watchdog_hz: 20
+  # Snap recorded gripper targets to grip-saturating motor values during
+  # replay. HAND_TEACH captures whatever raw position the operator
+  # pushed the gripper to; replaying via pure position control
+  # (kp/kd, tau=0) cannot reproduce that grip force.
+  #
+  # Units: raw rad, same as recorded action.gripper_pos. reBotArm
+  # convention (smaller = more open). Three cases:
+  #   1. recorded <= threshold                    → open_value
+  #   2. recorded > threshold AND |Δ| < dwell    → closed_value
+  #      (operator is *holding* — track sits above close threshold
+  #       AND is not moving frame-to-frame)
+  #   3. recorded > threshold AND moving         → passthrough recorded
+  #      (operator is mid-close — let the ramp follow the recording)
+  # Set dwell_delta: 0 to disable the hold detection (case 3 collapses
+  # into case 2 → pure threshold binarize). Set enabled: false to
+  # disable the whole transformation (raw passthrough).
+  gripper_binarize:
+    enabled: true
+    threshold: -4.0
+    open_value: -5.7
+    closed_value: -0.8
+    dwell_delta: 0.2
 # No `kinematics:` block needed — the daemon supplies EE pose directly
 # in the read_state payload (RobotState.ee_*).

@@ -39,6 +39,14 @@ class GravityCompParams:
     # because noisy proximal joints need a wider dead zone than distal.
     friction_tau_nm: List[float] = field(default_factory=lambda: [0.0] * 6)
     vel_deadband_rad_s: List[float] = field(default_factory=lambda: [0.05] * 6)
+    # Per-joint linear taper on the Coulomb comp: the effective torque
+    # becomes ``friction_tau_nm[i] * sign(qdot) * max(0, 1 - |qdot|/v_taper[i])``.
+    # At low |qdot| the comp is full strength (initial-push ease intact);
+    # as |qdot| approaches ``v_taper[i]`` it fades to zero so a residual
+    # coast cannot be sustained by the comp itself. Set 0 (default) to
+    # disable the taper on that joint — comp stays constant for all
+    # velocities, matching the pre-taper behavior.
+    friction_vel_taper_rad_s: List[float] = field(default_factory=lambda: [0.0] * 6)
 
 
 @dataclass

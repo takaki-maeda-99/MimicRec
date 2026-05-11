@@ -24,6 +24,7 @@ def test_loads_yaml(tmp_path):
     assert cfg.safety.heartbeat_timeout_ms == 500
     assert cfg.gravity_comp.kp == [0.0] * 6
     assert cfg.gravity_comp.kd == [1.5, 1.5, 1.0, 0.6, 0.4, 0.2]
+    assert cfg.gravity_comp.friction_vel_taper_rad_s == [1.5, 1.5, 1.5, 1.0, 1.0, 0.0]
     assert cfg.position.kp == [120.0, 120.0, 120.0, 18.0, 18.0, 18.0]
     assert cfg.position.kd == [8.0, 8.0, 8.0, 2.0, 2.0, 2.0]
 
@@ -36,5 +37,9 @@ def test_loads_empty_yaml_yields_full_defaults(tmp_path):
     assert cfg.safety.heartbeat_timeout_ms == 500
     assert cfg.gravity_comp.kp == [0.0] * 6
     assert cfg.gravity_comp.kd == [1.5, 1.5, 1.0, 0.6, 0.4, 0.2]
+    # Default disables the taper on every joint so behavior stays
+    # identical to the pre-taper controller for users who haven't
+    # opted in via YAML.
+    assert cfg.gravity_comp.friction_vel_taper_rad_s == [0.0] * 6
     assert cfg.position.kp == [120.0, 120.0, 120.0, 18.0, 18.0, 18.0]
     assert cfg.position.kd == [8.0, 8.0, 8.0, 2.0, 2.0, 2.0]

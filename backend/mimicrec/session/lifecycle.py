@@ -18,6 +18,7 @@ from mimicrec.recording.pending import PendingEpisode
 from mimicrec.session.control_loop import run_handteach_control_loop, run_teleop_control_loop
 from mimicrec.session.dispatcher import run_command_dispatcher
 from mimicrec.session.idle import move_to_idle
+from mimicrec.session.replay import GripperBinarize
 from mimicrec.session.replay_safety import ReplaySafetyConfig
 from mimicrec.session.state import Session
 from mimicrec.recording.writer import run_writer
@@ -120,6 +121,7 @@ class SessionManager:
         ds_name=None,
         app=None,
         gopro_registry: object | None = None,
+        gripper_binarize: GripperBinarize | None = None,
     ):
         self.session = Session(mode=mode, state=SessionState.IDLE)
         self._dataset_root = dataset_root
@@ -131,6 +133,7 @@ class SessionManager:
         self._error_bus = error_bus
         self._resolved_config = resolved_config
         self._replay_safety = replay_safety
+        self._gripper_binarize = gripper_binarize
         self._task = task
         self._instruction = instruction
         self._fk = fk
@@ -321,15 +324,13 @@ class SessionManager:
 
     async def _move_to_idle_for_session(self) -> None:
         """Smoothly return the arm to the configured idle pose, leaving
-        it in the mode appropriate for the current session.
+        it in GRAVITY_COMP for the next hand demonstration.
 
-        Only HAND_TEACH triggers idle return — that mode benefits from a
-        consistent starting pose between episodes and ends in
-        GRAVITY_COMP for the next hand demonstration. TELEOP and
-        INFERENCE skip this entirely (TELEOP because the leader arm is
+        Only HAND_TEACH triggers idle return (both at session start and
+        between episodes). TELEOP is skipped because the leader arm is
         read-only and resuming from idle without a leader-side reset
-        causes the mapper to snap on the next tick; INFERENCE has its
-        own lifecycle).
+        causes the mapper to snap on the next tick. INFERENCE has its
+        own lifecycle and is always skipped.
 
         Skipped silently if the idle yaml hasn't been captured yet.
         """
@@ -411,6 +412,7 @@ class SessionManager:
         # Move smoothly to the captured idle pose so each data-collection
         # session starts from a known posture. Synchronous here — the
         # readers/dispatcher must not spawn until the arm is settled.
+        # HAND_TEACH only; TELEOP/INFERENCE skip (see _move_to_idle_for_session).
         await self._move_to_idle_for_session()
 
         # Set current_pending to None initially
@@ -736,6 +738,7 @@ class SessionManager:
                     measured_state_slot=self._robot_state_slot,
                     safety=self._replay_safety,
                     error_bus=self._error_bus,
+                    gripper_binarize=self._gripper_binarize,
                 )
             finally:
                 await self._restore_mode_after_replay()
