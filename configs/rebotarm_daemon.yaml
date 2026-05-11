@@ -93,6 +93,14 @@ gripper:
   # the gripper.yaml MIT defaults shipped with reBotArm_control_py.
   position_kp: 8.0
   position_kd: 1.0
+  # Optional setpoint clamp for CMD_SEND_GRIPPER_COMMAND, in the same
+  # raw motor rad coordinate as read_state.gripper_pos (set_zero()
+  # basis). Omit either side or set to null to disable that bound.
+  # Captured idle_pose.yaml gripper values must lie inside this range
+  # or the idle ramp will be silently clamped short. Uncomment + tune
+  # to the gripper's safe open / closed range.
+  position_min_rad: -5.5
+  position_max_rad: -0.5
 
 # Optional hardware enable-switch (deadman) on a GPIO line. When the
 # line reads its "locked" state the daemon holds the current pose in
