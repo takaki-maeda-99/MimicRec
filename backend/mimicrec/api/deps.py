@@ -217,6 +217,38 @@ async def create_session_from_request(app, req) -> SessionManager:
                     f"({seen_serials[ser]!r} and {slot!r})")
             seen_serials[ser] = slot
 
+    # Orphan / corrupt sidecar check. Sidecars persisted from a previous
+    # session whose slot set differs from this one would cause DLWorker
+    # to commit mp4s under unexpected paths (or fail validation in info.json).
+    # Refuse to start until the operator resolves the discrepancy.
+    pdir = ds_root / ".pending" / "gopro_dl"
+    if pdir.exists():
+        slot_names = {a.slot for a in req.slot_assignments}
+        import json as _json
+        from mimicrec.gopro.dl_queue import GoProDLJob
+        for sidecar in sorted(pdir.glob("*.json")):
+            try:
+                data = _json.loads(sidecar.read_text())
+                job = GoProDLJob.from_json(data)
+            except Exception:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"corrupt or unparseable GoPro sidecar "
+                        f"{sidecar.name!r} — refusing to start session "
+                        f"until inspected"),
+                )
+            if job.cam_name not in slot_names:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"orphan GoPro sidecar {sidecar.name} "
+                        f"(cam_name={job.cam_name!r}) does not match this "
+                        f"session's slots {sorted(slot_names)}. Resolve by "
+                        f"ending the previous session cleanly or moving "
+                        f"the file aside."),
+                )
+
     # cams dict for CameraManager: keyed by slot
     cams: dict[str, object] = {
         slot: adapter for slot, _device, kind, _cfg, adapter in resolved
