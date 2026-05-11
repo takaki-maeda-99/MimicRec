@@ -1,6 +1,18 @@
 arm_config: configs/rebotarm/arm.yaml   # provided by reBotArm_control_py user setup
 zmq_address: tcp://*:5558
 control_rate_hz: 500
+# Seconds between hardware reconnect attempts. The daemon retries
+# RobotArm() construction on startup and after a mid-flight disconnect.
+# ZMQ is NOT bound during these retries, so clients see "connection
+# refused" until the arm is back. 2 s matches the typical human
+# operator cadence (re-plug USB, power-cycle motors).
+reconnect_interval_s: 2.0
+# Consecutive SDK-exception count in the 500 Hz control loop before
+# we consider the arm disconnected and trigger a teardown + reconnect.
+# 250 ticks ≈ 500 ms — high enough to absorb damiao CAN brown-out
+# bursts (10-30 transient CallErrors are normal), low enough to react
+# within half a second to a real unplug.
+disconnect_fault_threshold: 250
 # Optional: world gravity expressed in the arm's base frame, m/s².
 # Default (omit this line) is [0.0, 0.0, -9.81] = upright/flat mount
 # (base +z = world up, base +x = forward, base +y = left).
@@ -81,3 +93,45 @@ gripper:
   # the gripper.yaml MIT defaults shipped with reBotArm_control_py.
   position_kp: 8.0
   position_kd: 1.0
+
+# Optional hardware enable-switch (deadman) on a GPIO line. When the
+# line reads its "locked" state the daemon holds the current pose in
+# POSITION mode and rejects CMD_SEND_COMMAND / CMD_SEND_GRIPPER_COMMAND
+# / CMD_SET_MODE. CMD_ESTOP from the front-end follows the same lock
+# path. Releasing the switch drops to GRAVITY_COMP and waits for an
+# explicit set_mode from the client (no auto-resume).
+#
+# Backend is libgpiod v2 (python `gpiod` 2.x), which works on both
+# Raspberry Pi 5 and Jetson family. Pin identity is given by chip +
+# line (offset or DTB line-name) so the same daemon binary moves
+# between boards by only editing this section.
+#
+# Wiring (default): GPIO line with internal pull-up, switch closes to
+# GND. Open switch (operator NOT holding deadman) → line reads HIGH →
+# daemon locked. Press switch → line reads LOW → daemon unlocked.
+# Reverse the polarity with active_state: low if your hardware uses a
+# pull-down + switch-to-VCC layout instead.
+#
+# Raspberry Pi 5, BCM17 (header pin 11). Internal pull-up; switch
+# closes to GND. Open (operator NOT holding) = HIGH = locked.
+enable_switch:
+  chip: gpiochip0
+  line: 17
+  bias: pull_up
+  active_state: high
+  poll_hz: 50
+  debounce_ms: 20
+
+# Jetson Orin Nano alternative (commented). Many Jetson pins ignore
+# internal bias — wire an external pull-up and use bias: disabled.
+#   enable_switch:
+#     chip: gpiochip0
+#     line: 144         # PR.04 (header pin 11) — verify per board DTB
+#     bias: disabled
+#     active_state: high
+#     poll_hz: 50
+#     debounce_ms: 20
+#
+# To disable the switch entirely, delete the enable_switch: block
+# above (or comment every line). The daemon then behaves as if
+# permanently unlocked.

@@ -1,6 +1,7 @@
 """idle 復帰のモード別挙動。
 
-- HAND_TEACH: セッション開始時もエピソード間も発火 (after_mode=GRAVITY_COMP)
+- HAND_TEACH: セッション開始時もエピソード間も発火 (after_mode=POSITION で保持し、
+  episode_start で GRAVITY_COMP に切替)
 - TELEOP: 常にスキップ (リーダー追従中に snap するため)
 - INFERENCE: 常にスキップ
 """
@@ -45,12 +46,12 @@ async def test_teleop_skips_move_to_idle(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_hand_teach_calls_move_to_idle_with_gravity_comp(tmp_path):
+async def test_hand_teach_calls_move_to_idle_with_position(tmp_path):
     sm = _build_sm(SessionMode.HAND_TEACH, tmp_path)
     with patch("mimicrec.session.lifecycle.move_to_idle", new=AsyncMock()) as m:
         await sm._move_to_idle_for_session()
     m.assert_called_once()
-    assert m.call_args.kwargs["after_mode"] == RobotMode.GRAVITY_COMP
+    assert m.call_args.kwargs["after_mode"] == RobotMode.POSITION
 
 
 @pytest.mark.asyncio

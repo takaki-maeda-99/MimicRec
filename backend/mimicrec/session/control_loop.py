@@ -93,7 +93,9 @@ async def run_handteach_control_loop(
     clock: Clock,
     metrics: Metrics,
 ) -> None:
-    await robot_adapter.set_mode(RobotMode.GRAVITY_COMP)
+    # Mode is owned by SessionManager: POSITION at idle hold, then
+    # GRAVITY_COMP on episode_start. Don't override here — doing so
+    # used to clobber the post-idle POSITION hold on session start.
     tick_interval_ns = 1_000_000_000 // fps
     next_tick_ns = clock.monotonic_ns() + tick_interval_ns
 

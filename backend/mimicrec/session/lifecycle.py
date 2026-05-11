@@ -350,8 +350,10 @@ class SessionManager:
     # ------------------------------------------------------------------
 
     async def _move_to_idle_for_session(self) -> None:
-        """Smoothly return the arm to the configured idle pose, leaving
-        it in GRAVITY_COMP for the next hand demonstration.
+        """Smoothly return the arm to the configured idle pose and hold
+        it under POSITION. The switch to GRAVITY_COMP happens in
+        ``episode_start`` so the arm stays rigid until the operator
+        presses space to begin the demonstration.
 
         Only HAND_TEACH triggers idle return (both at session start and
         between episodes). TELEOP is skipped because the leader arm is
@@ -364,7 +366,7 @@ class SessionManager:
         if self.session.mode != SessionMode.HAND_TEACH:
             return
         try:
-            await move_to_idle(self._robot, after_mode=RobotMode.GRAVITY_COMP)
+            await move_to_idle(self._robot, after_mode=RobotMode.POSITION)
         except FileNotFoundError:
             logger.warning(
                 "idle pose yaml missing; skipping move_to_idle",
@@ -417,23 +419,19 @@ class SessionManager:
 
         # Align the robot mode with the session's intent. Adapters that
         # gate send_joint_command on mode (notably the reBotArm daemon)
-        # will silently or noisily refuse otherwise. Hand-teach is the only
-        # mode that wants the controller to leave the arm compliant; all
-        # other session modes need POSITION so the dispatcher can issue
-        # joint commands.
-        target_mode = (
-            RobotMode.GRAVITY_COMP
-            if self.session.mode == SessionMode.HAND_TEACH
-            else RobotMode.POSITION
-        )
+        # will silently or noisily refuse otherwise. Every session mode
+        # starts in POSITION: TELEOP/INFERENCE need it so the dispatcher
+        # can issue joint commands, and HAND_TEACH now holds idle in
+        # POSITION until the operator presses space — episode_start
+        # flips it to GRAVITY_COMP.
         try:
-            await self._robot.set_mode(target_mode)
+            await self._robot.set_mode(RobotMode.POSITION)
         except (HardwareError, NotImplementedError):
             # Adapters that don't support set_mode (or fail soft) will
             # surface mode mismatches via downstream dispatch errors.
             logger.warning(
-                "robot adapter %r refused set_mode(%s); proceeding",
-                self._robot.name, target_mode,
+                "robot adapter %r refused set_mode(POSITION); proceeding",
+                self._robot.name,
             )
 
         # Move smoothly to the captured idle pose so each data-collection
@@ -497,6 +495,17 @@ class SessionManager:
     async def episode_start(self) -> None:
         """READY -> RECORDING. Create PendingEpisode, open video writers."""
         assert_can_start_episode(self.session, gopro_registry=self._gopro_registry)
+        # HAND_TEACH holds the arm in POSITION at idle until the operator
+        # is ready to demonstrate; flip to GRAVITY_COMP now so the arm
+        # becomes compliant as recording begins.
+        if self.session.mode == SessionMode.HAND_TEACH:
+            try:
+                await self._robot.set_mode(RobotMode.GRAVITY_COMP)
+            except (HardwareError, NotImplementedError):
+                logger.warning(
+                    "robot adapter %r refused set_mode(GRAVITY_COMP); proceeding",
+                    self._robot.name,
+                )
         self._pending = PendingEpisode.open(
             self._dataset_root, self._episode_index,
             coordinator=self._coordinator,
