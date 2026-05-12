@@ -104,12 +104,15 @@ class InferenceClient:
         """Normalize raw gripper → [0,1] via convention. The source of the raw
         value is declared in ProprioLayout.
 
-        Falls back to raw ``state.gripper_pos`` (without normalization) when
-        convention/layout are not wired, preserving backward compatibility until
-        the lifecycle wires them in (Task 9).
+        Per spec §3.3: state.gripper_pos has no normalized-unit contract per
+        adapter (e.g. reBot populates it raw from the daemon). The client must
+        refuse to encode gripper_pos without an explicit convention + layout.
         """
         if self.gripper_convention is None or self.proprio_layout is None:
-            return float(state.gripper_pos or 0.0)
+            raise ValueError(
+                "contract requires gripper_pos but gripper_convention / "
+                "proprio_layout are not wired"
+            )
         gc = self.gripper_convention
         pl = self.proprio_layout
 

@@ -183,3 +183,15 @@ def test_encode_state_raises_when_ee_required_but_fk_missing():
     state = _make_state(joint_pos=np.zeros(6))
     with pytest.raises(ValueError, match="ee_pos/ee_rotvec"):
         client._encode_state(state)
+
+
+def test_gripper_without_convention_or_layout_raises():
+    """Per spec §3.3: state.gripper_pos has no normalized-unit contract
+    per adapter, so the client MUST refuse to encode gripper without an
+    explicit convention + layout. No silent fallback."""
+    spec = ContractSpec.from_yaml_text(_EE_YAML)
+    fk = FKService(_FK_CFG)
+    client = InferenceClient(spec=spec, fk=fk)  # no convention/layout
+    state = _make_state(joint_pos=np.zeros(6))
+    with pytest.raises(ValueError, match="gripper_convention / proprio_layout"):
+        client._encode_state(state)
