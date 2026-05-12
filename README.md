@@ -4,6 +4,16 @@
 
 Local-first web application for collecting imitation-learning datasets from physical robot arms. Teleoperate, hand-teach, record, review, replay, and download — all in LeRobot format.
 
+## Live demo
+
+**🚀 https://takaki-maeda-99.github.io/MimicRec/**
+
+A browser-only mock build of the **Record → Episodes → Replay** flow.
+No hardware, no installation required. Recordings reset on page reload.
+Settings, inference, cloud sync, and export are stubbed out in the demo
+build — the full feature set requires a local install (see Quick start
+below).
+
 ## What it does
 
 - **Teleoperate** a follower arm with a leader arm, keyboard, or simulator and record trajectories

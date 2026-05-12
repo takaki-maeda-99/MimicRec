@@ -56,33 +56,48 @@ export default function Layout() {
   }, [apiState, setSessionState]);
 
   return (
-    <div className="flex h-screen bg-surface-soft">
-      <aside className="w-60 bg-canvas border-r border-hairline-soft flex flex-col">
-        <div className="px-md py-md border-b border-hairline-soft flex items-center justify-between">
-          <h1 className="text-heading-5 text-ink">MimicRec</h1>
-          <div className="flex flex-col items-end gap-1">
-            <SessionBadge />
-            <GoProPendingBadge />
+    <div className="flex flex-col h-screen">
+      {import.meta.env.VITE_DEMO === "true" && (
+        <div className="bg-amber-500 text-black text-center text-sm py-1 px-2 shrink-0">
+          Demo mode — recordings reset on reload.{" "}
+          <a
+            href="https://github.com/takaki-maeda-99/MimicRec"
+            className="underline"
+            target="_blank"
+            rel="noreferrer"
+          >
+            View source
+          </a>
+        </div>
+      )}
+      <div className="flex flex-1 bg-surface-soft min-h-0">
+        <aside className="w-60 bg-canvas border-r border-hairline-soft flex flex-col">
+          <div className="px-md py-md border-b border-hairline-soft flex items-center justify-between">
+            <h1 className="text-heading-5 text-ink">MimicRec</h1>
+            <div className="flex flex-col items-end gap-1">
+              <SessionBadge />
+              <GoProPendingBadge />
+            </div>
           </div>
-        </div>
-        <nav className="flex-1 p-xs flex flex-col gap-0.5">
-          {navItems.map((item) => (
-            <SidebarNavItem key={item.to} to={item.to}>
-              {item.label}
-            </SidebarNavItem>
-          ))}
-        </nav>
-        <div className="border-t border-hairline-soft">
-          <ConnectionStatus />
-        </div>
-      </aside>
-      <main className="flex-1 overflow-auto">
-        <div className="max-w-[1280px] mx-auto px-lg py-md">
-          <ErrorBoundary>
-            <Outlet />
-          </ErrorBoundary>
-        </div>
-      </main>
+          <nav className="flex-1 p-xs flex flex-col gap-0.5">
+            {navItems.map((item) => (
+              <SidebarNavItem key={item.to} to={item.to}>
+                {item.label}
+              </SidebarNavItem>
+            ))}
+          </nav>
+          <div className="border-t border-hairline-soft">
+            <ConnectionStatus />
+          </div>
+        </aside>
+        <main className="flex-1 overflow-auto">
+          <div className="max-w-[1280px] mx-auto px-lg py-md">
+            <ErrorBoundary>
+              <Outlet />
+            </ErrorBoundary>
+          </div>
+        </main>
+      </div>
     </div>
   );
 }

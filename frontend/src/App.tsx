@@ -15,11 +15,13 @@ import MockNotebook from "./pages/mocks/MockNotebook";
 
 const queryClient = new QueryClient();
 
+const ROUTER_BASENAME = import.meta.env.BASE_URL.replace(/\/$/, "");
+
 export default function App() {
   return (
     <ErrorBoundary>
       <QueryClientProvider client={queryClient}>
-        <BrowserRouter>
+        <BrowserRouter basename={ROUTER_BASENAME}>
           <Routes>
             <Route element={<Layout />}>
               <Route path="/" element={<Navigate to="/datasets" replace />} />
