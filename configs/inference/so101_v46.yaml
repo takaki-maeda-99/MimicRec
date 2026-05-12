@@ -1,0 +1,48 @@
+# configs/inference/so101_v46.yaml
+#
+# Pairs with X-VLA-Adapter server invoked as:
+#   uv run python scripts/serve.py \
+#     --predictor xvla_adapter \
+#     --checkpoint <ckpt_export_dir> \
+#     --deploy-config configs/deploy/so101_v46.yaml \
+#     --domain-id 0 --port 8001
+#
+# Smoke-only. Server has wire_only_smoke=true (frame=world +
+# frame_conversion=none); commands are not validated for real-arm
+# correctness. Run smoke against the sim bridge, NOT the physical SO101.
+# See docs/superpowers/specs/2026-05-13-mimicrec-inference-so101-v46-design.md
+
+name: so101_v46
+description: "X-VLA-Adapter SO101 v46 FT ckpt (wire_only_smoke; not validated on real arm)."
+
+endpoint:
+  url: "http://localhost:8001/predict"
+  method: POST
+  timeout_s: 5.0
+  retry: { max_attempts: 0 }
+
+request:
+  images:
+    front: { field: image_primary, encoding: jpeg_base64, resize: [224, 224], jpeg_quality: 90 }
+    wrist: { field: image_wrist,   encoding: jpeg_base64, resize: [224, 224], jpeg_quality: 90 }
+  state:
+    field: proprio
+    components: [ee_pos, ee_rotvec, gripper_pos]
+    normalization: { method: none }
+  instruction:
+    field: instruction
+  extra_fields:
+    model_version: x_vla_so101_v46
+
+response:
+  actions_path: actions
+  chunk:
+    expected_size: 8
+    on_size_mismatch: reject
+  action:
+    type: ee_delta
+    frame: world
+    pose: { units: meter_axisangle_rad }
+    gripper: { kind: absolute, units: normalized_0_1 }
+    components: [ee_delta, gripper]
+    normalization: { method: none }
