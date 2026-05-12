@@ -938,10 +938,21 @@ class SessionManager:
         new_ik = IKService(self._fk.cfg)
         new_decoder = ActionDecoder(
             spec=contract, fk=self._fk, ik=new_ik,
-            narm=self._robot.dof,
+            narm=self._fk.n_kin_joints,  # NOT self._robot.dof — FK excludes the packed gripper
             action_stats=action_stats,
         )
-        new_client = InferenceClient(spec=contract)
+        new_client = InferenceClient(
+            spec=contract,
+            fk=self._fk,
+            gripper_convention=(
+                self._robot.default_gripper_convention()
+                if hasattr(self._robot, "default_gripper_convention") else None
+            ),
+            proprio_layout=(
+                self._robot.proprio_layout()
+                if hasattr(self._robot, "proprio_layout") else None
+            ),
+        )
         new_chunk_buffer = ChunkBuffer.create(
             prefetch_threshold=contract.loop.prefetch_threshold,
         )

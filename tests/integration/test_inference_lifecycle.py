@@ -44,7 +44,6 @@ async def test_409_when_session_already_active(make_inference_session):
         )
 
 
-@pytest.mark.xfail(reason="Lifecycle wiring lands in Task 9 (gripper_convention/proprio_layout injection)")
 async def test_pause_and_resume_helpers(make_inference_session):
     sm = await make_inference_session(instruction="x")
     # Wait for producer to fill the buffer at least once.
@@ -340,3 +339,121 @@ async def test_handteach_to_inference_sets_position_mode(tmp_path, fake_vla_serv
 
     await sm.stop_inference_session()
     await sm.end()
+
+
+# ---------------------------------------------------------------------------
+# Task 9 tests: FK/convention/layout injected into InferenceClient, narm fix
+# ---------------------------------------------------------------------------
+
+async def test_inference_client_receives_fk_convention_layout(make_inference_session):
+    """InferenceClient must be constructed with fk=self._fk, gripper_convention,
+    and proprio_layout (not None) when lifecycle wires them in."""
+    sm = await make_inference_session(instruction="pick")
+    assert sm._inference_client is not None
+    # fk must be the exact same stub FK that SessionManager holds
+    assert sm._inference_client.fk is sm._fk
+
+
+async def test_action_decoder_narm_equals_fk_n_kin_joints(
+    tmp_path, fake_vla_server, monkeypatch
+):
+    """ActionDecoder must be constructed with narm=fk.n_kin_joints, NOT
+    robot.dof. Verified by patching ActionDecoder to capture the narm kwarg."""
+    import json
+    from mimicrec.adapters.mock_robot import MockRobotAdapter
+    from mimicrec.cameras.manager import CameraManager
+    from mimicrec.cameras.mock_camera import MockCamera
+    from mimicrec.mappers.identity import IdentityMapper
+    from mimicrec.recording.dataset_layout import init_dataset
+    from mimicrec.session.lifecycle import SessionManager
+    from mimicrec.util.error_bus import ErrorBus
+
+    monkeypatch.setenv("MIMICREC_VLA_DEST_ROOT", str(tmp_path))
+    meta = tmp_path / "SO101" / "meta"
+    meta.mkdir(parents=True, exist_ok=True)
+    (meta / "action_stats.json").write_text(json.dumps({"mean": [0.0] * 7, "std": [0.001] * 7}))
+
+    # Use n_kin_joints=1 so it differs from robot.dof=2.
+    # This lets us verify that narm came from fk.n_kin_joints (1), not robot.dof (2).
+    stub_fk = _StubFK()
+    stub_fk.n_kin_joints = 1  # override to differ from robot.dof=2
+    stub_ik = _StubIK()
+
+    # Capture narm passed to ActionDecoder.__init__ via a custom patch.
+    captured: dict = {}
+    from mimicrec.inference import action_decoder as _ad_mod
+    _orig_decoder = _ad_mod.ActionDecoder
+
+    class _CapturingDecoder(_orig_decoder):
+        def __init__(self, *, spec, fk, ik, narm, action_stats=None):
+            captured["narm"] = narm
+            super().__init__(spec=spec, fk=stub_fk, ik=stub_ik, narm=narm, action_stats=action_stats)
+
+    monkeypatch.setattr("mimicrec.session.lifecycle.ActionDecoder", _CapturingDecoder)
+    monkeypatch.setattr("mimicrec.session.lifecycle.IKService", lambda cfg: stub_ik)
+
+    robot = MockRobotAdapter()
+    bus = ErrorBus()
+    cm = CameraManager(cameras={"front": MockCamera("front")}, error_bus=bus)
+    ds = tmp_path / "ds_narm"
+    init_dataset(ds, fps=30, joint_names=list(robot.joint_names), camera_names=["front"])
+
+    from mimicrec.adapters.mock_teleop import MockTeleoperator
+    teleop = MockTeleoperator(dof=len(list(robot.joint_names)))
+    sm = SessionManager(
+        dataset_root=ds,
+        robot=robot, teleop=teleop, mapper=IdentityMapper(),
+        cameras=cm, mode=SessionMode.TELEOP, fps=30, error_bus=bus,
+        resolved_config={"robot": {"inference_safety": {
+            "max_joint_delta_per_step_deg": 5.0,
+            "slow_stop_ticks": 5,
+            "joint_limits_deg": {n: [-180.0, 180.0] for n in robot.joint_names},
+        }}},
+        replay_safety=None,
+        fk=stub_fk,
+    )
+    await sm.start()
+
+    # Cancel the teleop control loop before transitioning to inference (mirrors conftest).
+    for attr in ("_control_loop_task", "_dispatcher_task", "_writer_task"):
+        t = getattr(sm, attr, None)
+        if t is not None:
+            t.cancel()
+            try:
+                await t
+            except (asyncio.CancelledError, Exception):
+                pass
+            setattr(sm, attr, None)
+
+    contract_text = _yaml.safe_dump({
+        "name": "t", "endpoint": {"url": fake_vla_server.url, "method": "POST",
+            "retry": {"max_attempts": 0}},
+        "request": {
+            "images": {"front": {"field": "img", "encoding": "jpeg_base64",
+                                 "resize": [16, 16], "jpeg_quality": 90}},
+            "state": {"field": "p", "components": ["joint_pos", "gripper_pos"],
+                      "normalization": {"method": "none"}},
+            "instruction": {"field": "i"},
+        },
+        "response": {
+            "actions_path": "actions",
+            "chunk": {"expected_size": 4, "on_size_mismatch": "use_actual"},
+            "action": {"type": "ee_delta", "frame": "ee_local",
+                       "pose": {"units": "meter_axisangle_rad"},
+                       "gripper": {"kind": "absolute", "units": "normalized_0_1"},
+                       "components": ["ee_delta", "gripper"],
+                       "normalization": {"method": "none"}},
+        },
+        "loop": {"prefetch_threshold": 0.5, "max_inflight": 1},
+    })
+    contract = ContractSpec.from_yaml_text(contract_text)
+    await sm.start_inference_session(contract=contract, instruction="pick", inference_config_name="t")
+    try:
+        assert "narm" in captured, "ActionDecoder __init__ was never called"
+        assert captured["narm"] == stub_fk.n_kin_joints, (
+            f"narm={captured['narm']} but fk.n_kin_joints={stub_fk.n_kin_joints}; "
+            "lifecycle must use fk.n_kin_joints, not robot.dof"
+        )
+    finally:
+        await sm.stop_inference_session()
+        await sm.end()

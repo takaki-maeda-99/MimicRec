@@ -4,6 +4,7 @@ import numpy as np
 
 from mimicrec.adapters.robot import RobotMode
 from mimicrec.adapters.fault_profile import FaultProfile
+from mimicrec.adapters.types import GripperConvention, ProprioLayout
 from mimicrec.types import RobotState
 
 
@@ -49,3 +50,18 @@ class MockRobotAdapter:
 
     def supports_mode(self, mode: RobotMode) -> bool:
         return True
+
+    @classmethod
+    def default_gripper_convention(cls) -> GripperConvention:
+        """Stub convention used in tests; gripper sourced from joint_pos[1]."""
+        return GripperConvention(closed_at=0.0, open_at=1.0)
+
+    @classmethod
+    def proprio_layout(cls) -> ProprioLayout:
+        """Stub layout: joint_pos only, gripper taken from joint_pos[1]."""
+        return ProprioLayout(
+            columns=("observation.state.joint_pos",),
+            output_names=("j1", "j2"),
+            gripper_via_column="observation.state.joint_pos",
+            gripper_index_in_column=1,
+        )
