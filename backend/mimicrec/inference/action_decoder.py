@@ -72,6 +72,12 @@ class ActionDecoder:
 
     def decode(self, response_body: dict, current_state: RobotState) -> list[StepAction]:
         actions = self._extract_actions(response_body)
+        chunk_spec = self.spec.response.chunk
+        if chunk_spec.on_size_mismatch == "reject" and len(actions) != chunk_spec.expected_size:
+            raise ValueError(
+                f"chunk size {len(actions)} != expected {chunk_spec.expected_size}; "
+                f"contract on_size_mismatch=reject"
+            )
         expected_action_dim = _expected_dim(self.spec.response.action.components)
         seed_q = current_state.joint_pos[:self.narm].copy()
         T_curr = self.fk.matrix(seed_q)

@@ -237,6 +237,29 @@ def test_ik_failure_does_not_drift_t_curr():
         f"— the bug case would produce ~2.007 (compounded from failed step)"
 
 
+def test_decode_rejects_chunk_size_mismatch_in_reject_mode():
+    import yaml as _yaml
+
+    d = _yaml.safe_load(YAML_CONTRACT)
+    d["response"]["chunk"] = {"expected_size": 2, "on_size_mismatch": "reject"}
+    spec = ContractSpec.from_yaml_text(_yaml.safe_dump(d))
+    dec = ActionDecoder(spec=spec, fk=FakeFK(), ik=FakeIK(), narm=5, action_stats=None)
+
+    only_one = {"actions": [[0.0] * 7]}  # 1 row, expected 2
+
+    with pytest.raises(ValueError, match="chunk size 1 != expected 2"):
+        dec.decode(only_one, _state())
+
+
+def test_decode_accepts_any_chunk_in_use_actual_mode():
+    """Default `use_actual` keeps processing whatever the server returned."""
+    spec = ContractSpec.from_yaml_text(YAML_CONTRACT)  # expected_size=4, use_actual
+    dec = ActionDecoder(spec=spec, fk=FakeFK(), ik=FakeIK(), narm=5, action_stats=None)
+
+    out = dec.decode({"actions": [[0.0] * 7, [0.0] * 7, [0.0] * 7]}, _state())
+    assert len(out) == 3
+
+
 def test_decode_rejects_wrong_row_length():
     spec = ContractSpec.from_yaml_text(YAML_CONTRACT)
     dec = ActionDecoder(spec=spec, fk=FakeFK(), ik=FakeIK(), narm=5, action_stats=None)
