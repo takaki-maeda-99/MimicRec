@@ -5,6 +5,7 @@ import {
   pushFakeEpisode,
   setSession,
 } from "./store";
+import { CONFIG_NAMES, SEED_DATASETS, SEED_TASKS } from "./seed";
 
 const FPS = 30;
 
@@ -97,4 +98,111 @@ export const lifecycleHandlers = [
   }),
 ];
 
-export const restHandlers = [...lifecycleHandlers];
+const FIXTURE_URL = `${import.meta.env.BASE_URL}demo/episode_0`;
+
+async function loadMeta() {
+  const res = await fetch(`${FIXTURE_URL}/meta.json`);
+  return res.json() as Promise<{
+    frames: Array<{
+      t: number;
+      joint_pos: number[];
+      joint_vel: number[];
+      joint_effort: number[];
+      gripper_pos: number;
+      ee_pos: number[];
+      ee_rotvec: number[];
+    }>;
+    fps: number;
+    num_frames: number;
+    cameras: string[];
+    joint_names: string[];
+    robot: string;
+  }>;
+}
+
+let metaCachePromise: ReturnType<typeof loadMeta> | null = null;
+export function getMeta() {
+  if (!metaCachePromise) metaCachePromise = loadMeta();
+  return metaCachePromise;
+}
+
+export const dataHandlers = [
+  http.get("/api/datasets", () => HttpResponse.json(SEED_DATASETS)),
+
+  http.get("/api/datasets/:ds/tasks", () => HttpResponse.json(SEED_TASKS)),
+
+  http.get("/api/datasets/:ds/episodes", ({ request }) => {
+    const url = new URL(request.url);
+    const includeDeleted = url.searchParams.get("include_deleted") === "true";
+    const visible = demoStore.episodes.filter(
+      (e) => includeDeleted || !demoStore.tombstones.has(e.episode_index),
+    );
+    return HttpResponse.json(visible);
+  }),
+
+  http.delete("/api/datasets/:ds/episodes/:idx", ({ params }) => {
+    const idx = Number(params.idx);
+    if (demoStore.tombstones.has(idx)) demoStore.tombstones.delete(idx);
+    else demoStore.tombstones.add(idx);
+    return HttpResponse.json({ ok: true });
+  }),
+
+  http.get("/api/datasets/:ds/schema", async () => {
+    const meta = await getMeta();
+    return HttpResponse.json({
+      fps: meta.fps,
+      robot: meta.robot,
+      cameras: meta.cameras,
+      joint_names: meta.joint_names,
+      image_keys: meta.cameras.map((c) => `observation.images.${c}`),
+    });
+  }),
+
+  http.get("/api/datasets/:ds/episodes/:idx/frames", async () => {
+    const meta = await getMeta();
+    const rows = meta.frames.map((f, i) => ({
+      frame_index: i,
+      timestamp: f.t,
+      ...Object.fromEntries(
+        meta.joint_names.flatMap((n, j) => [
+          [`observation.state.${n}`, f.joint_pos[j]],
+          [`action.${n}`, f.joint_pos[j]],
+        ]),
+      ),
+      "observation.state.gripper": f.gripper_pos,
+      "observation.ee.pos.x": f.ee_pos[0],
+      "observation.ee.pos.y": f.ee_pos[1],
+      "observation.ee.pos.z": f.ee_pos[2],
+    }));
+    return HttpResponse.json(rows);
+  }),
+
+  http.get("/api/datasets/:ds/episodes/:idx/video/:cam", async () => {
+    const res = await fetch(`${FIXTURE_URL}/cam_front.mp4`);
+    const buf = await res.arrayBuffer();
+    return new HttpResponse(buf, {
+      status: 200,
+      headers: { "Content-Type": "video/mp4" },
+    });
+  }),
+
+  http.get("/api/configs/camera_roles", () => HttpResponse.json({ roles: ["front", "wrist"] })),
+
+  http.get("/api/configs/:group", ({ params }) => {
+    const group = String(params.group);
+    return HttpResponse.json(CONFIG_NAMES[group] ?? []);
+  }),
+
+  http.get("/api/settings/configs/:group", ({ params }) => {
+    const group = String(params.group);
+    if (group === "gopros") {
+      return new HttpResponse(null, { status: 404 });
+    }
+    const names = CONFIG_NAMES[group] ?? [];
+    return HttpResponse.json(names.map((name) => ({ name, content: {} })));
+  }),
+
+  http.get("/api/session/gopro_pending", () => HttpResponse.json({ pending: 0 })),
+];
+
+export const restHandlers = [...lifecycleHandlers, ...dataHandlers];
