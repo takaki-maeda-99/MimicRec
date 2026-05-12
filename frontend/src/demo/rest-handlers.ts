@@ -205,4 +205,29 @@ export const dataHandlers = [
   http.get("/api/session/gopro_pending", () => HttpResponse.json({ pending: 0 })),
 ];
 
-export const restHandlers = [...lifecycleHandlers, ...dataHandlers];
+function demoUnsupported() {
+  return HttpResponse.json(
+    { detail: "Not available in demo" },
+    { status: 503 },
+  );
+}
+
+export const stubHandlers = [
+  http.post("/api/datasets", demoUnsupported),
+  http.delete("/api/datasets/:ds", demoUnsupported),
+  http.post("/api/datasets/:ds/export", demoUnsupported),
+  http.post("/api/datasets/:ds/annotate-all", demoUnsupported),
+  http.get("/api/datasets/:ds/annotate-progress", demoUnsupported),
+  http.post("/api/datasets/:ds/episodes/:idx/annotate", demoUnsupported),
+
+  http.get("/api/cloud/auth-status", demoUnsupported),
+  http.get("/api/datasets/:ds/hub", demoUnsupported),
+  http.put("/api/datasets/:ds/hub", demoUnsupported),
+  http.post("/api/datasets/:ds/hub/push", demoUnsupported),
+
+  http.get("/api/settings/devices/cameras", () => HttpResponse.json([])),
+  http.get("/api/settings/devices/cameras/:id/capabilities", () => HttpResponse.json([])),
+  http.put("/api/settings/configs/cameras/:name", demoUnsupported),
+];
+
+export const restHandlers = [...lifecycleHandlers, ...dataHandlers, ...stubHandlers];
