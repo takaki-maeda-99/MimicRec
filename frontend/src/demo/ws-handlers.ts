@@ -12,7 +12,7 @@ const cameraWs  = ws.link(/.*\/ws\/cameras\/[^/]+$/);
 const teleopWs  = ws.link(/.*\/ws\/teleop$/);
 const inferWs   = ws.link(/.*\/ws\/inference$/);
 
-sessionWs.addEventListener("connection", ({ client }) => {
+const sessionHandler = sessionWs.addEventListener("connection", ({ client }) => {
   const sendState = () => client.send(JSON.stringify({ type: "session_state", data: demoStore.session }));
   sendState();
 
@@ -81,7 +81,7 @@ sessionWs.addEventListener("connection", ({ client }) => {
   });
 });
 
-stateWs.addEventListener("connection", async ({ client }) => {
+const stateHandler = stateWs.addEventListener("connection", async ({ client }) => {
   const meta = await getMeta();
   let frameIdx = 0;
   const timer = window.setInterval(() => {
@@ -101,22 +101,22 @@ stateWs.addEventListener("connection", async ({ client }) => {
   client.addEventListener("close", () => clearInterval(timer));
 });
 
-cameraWs.addEventListener("connection", ({ client }) => {
+const cameraHandler = cameraWs.addEventListener("connection", ({ client }) => {
   const unsubscribe = subscribeFrames((blob) => {
     client.send(blob);
   });
   client.addEventListener("close", () => unsubscribe());
 });
 
-teleopWs.addEventListener("connection", ({ client }) => {
+const teleopHandler = teleopWs.addEventListener("connection", ({ client }) => {
   // Accept and drop incoming messages.
   client.addEventListener("message", () => {
     /* noop */
   });
 });
 
-inferWs.addEventListener("connection", ({ client }) => {
+const inferHandler = inferWs.addEventListener("connection", ({ client }) => {
   client.close(1008, "Demo mode — inference unavailable");
 });
 
-export const wsHandlers = [sessionWs, stateWs, cameraWs, teleopWs, inferWs];
+export const wsHandlers = [sessionHandler, stateHandler, cameraHandler, teleopHandler, inferHandler];
