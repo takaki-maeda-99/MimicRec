@@ -31,6 +31,8 @@
   --color-muted: #a8a8aa;
   --color-on-dark: #ffffff;
   --color-on-dark-muted: #b3b3b3;
+  --color-on-dark-dim: #71717a;     /* secondary text on canvas-dark wells */
+  --color-on-dark-mark: #fbbf24;    /* corner ticks / accents on canvas-dark */
 
   /* Typography (19) — paired with line-height, font-weight, and letter-spacing per the spec */
   --text-display-lg: 56px;
