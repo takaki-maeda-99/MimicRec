@@ -41,6 +41,9 @@ jobs:
         working-directory: frontend
         run: pnpm build:demo
 
+      - name: Copy index.html to 404.html for SPA fallback
+        run: cp frontend/dist/index.html frontend/dist/404.html
+
       - uses: actions/configure-pages@v5
 
       - uses: actions/upload-pages-artifact@v3
