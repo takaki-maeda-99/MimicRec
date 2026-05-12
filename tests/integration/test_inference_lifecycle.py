@@ -5,6 +5,8 @@ and pause/resume helpers. They depend on fixtures (fake_vla_server,
 make_inference_session) defined in tests/conftest.py (Task 26).
 """
 import asyncio
+import json
+from pathlib import Path
 
 import pytest
 import yaml as _yaml
@@ -12,6 +14,8 @@ import yaml as _yaml
 from mimicrec.errors import InvalidTransitionError
 from mimicrec.inference.contract import ContractSpec
 from mimicrec.types import SessionMode, SessionState
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 async def _wait_for(predicate, timeout=5.0, step=0.02):
@@ -459,4 +463,198 @@ async def test_action_decoder_narm_equals_fk_n_kin_joints(
         )
     finally:
         await sm.stop_inference_session()
+        await sm.end()
+
+
+# ---------------------------------------------------------------------------
+# Task 10 tests: startup validation — fail fast on bad wiring
+# ---------------------------------------------------------------------------
+
+async def _make_sm(
+    *,
+    tmp_path,
+    monkeypatch,
+    cameras: dict,
+    fk,
+    mode=SessionMode.TELEOP,
+):
+    """Build a SessionManager without starting inference — just boot to TELEOP/HAND_TEACH.
+
+    Patches IKService and ActionDecoder with stubs so the tests don't need
+    real kinematics config. Returns the SessionManager after sm.start().
+    """
+    from mimicrec.adapters.mock_robot import MockRobotAdapter
+    from mimicrec.adapters.mock_teleop import MockTeleoperator
+    from mimicrec.cameras.manager import CameraManager
+    from mimicrec.mappers.identity import IdentityMapper
+    from mimicrec.recording.dataset_layout import init_dataset
+    from mimicrec.session.lifecycle import SessionManager
+    from mimicrec.util.error_bus import ErrorBus
+
+    monkeypatch.setenv("MIMICREC_VLA_DEST_ROOT", str(tmp_path))
+    # action stats not needed for so101_v46 (normalization=none), but write
+    # a dummy file so any future stats-path resolution doesn't crash.
+    meta = tmp_path / "SO101" / "meta"
+    meta.mkdir(parents=True, exist_ok=True)
+    (meta / "action_stats.json").write_text(json.dumps({"mean": [0.0] * 7, "std": [0.001] * 7}))
+
+    stub_ik = _StubIK()
+    from mimicrec.inference import action_decoder as _ad_mod
+    _orig_decoder = _ad_mod.ActionDecoder
+
+    class _Patched(_orig_decoder):
+        def __init__(self, *, spec, fk, ik, narm, action_stats=None):
+            _stub_fk = _StubFK()
+            super().__init__(spec=spec, fk=_stub_fk, ik=stub_ik, narm=narm, action_stats=action_stats)
+
+    monkeypatch.setattr("mimicrec.session.lifecycle.ActionDecoder", _Patched)
+    monkeypatch.setattr("mimicrec.session.lifecycle.IKService", lambda cfg: stub_ik)
+
+    robot = MockRobotAdapter()
+    joint_names = list(robot.joint_names)
+    bus = ErrorBus()
+    cm = CameraManager(cameras=cameras, error_bus=bus)
+
+    ds = tmp_path / "ds_validation"
+    camera_names = list(cameras.keys())
+    init_dataset(ds, fps=30, joint_names=joint_names, camera_names=camera_names)
+
+    teleop = MockTeleoperator(dof=len(joint_names)) if mode != SessionMode.HAND_TEACH else None
+    sm = SessionManager(
+        dataset_root=ds,
+        robot=robot,
+        teleop=teleop,
+        mapper=IdentityMapper(),
+        cameras=cm,
+        mode=mode,
+        fps=30,
+        error_bus=bus,
+        resolved_config={"robot": {"inference_safety": {
+            "max_joint_delta_per_step_deg": 5.0,
+            "slow_stop_ticks": 5,
+            "joint_limits_deg": {n: [-180.0, 180.0] for n in joint_names},
+        }}},
+        replay_safety=None,
+        fk=fk,
+    )
+    await sm.start()
+
+    # Cancel teleop tasks spawned by start() so start_inference_session gets a clean slate.
+    for attr in ("_control_loop_task", "_dispatcher_task", "_writer_task", "_teleop_reader_task"):
+        t = getattr(sm, attr, None)
+        if t is not None:
+            t.cancel()
+            try:
+                await t
+            except (asyncio.CancelledError, Exception):
+                pass
+            setattr(sm, attr, None)
+
+    return sm
+
+
+@pytest.mark.asyncio
+async def test_start_raises_when_contract_needs_ee_but_fk_unconfigured(
+    monkeypatch, tmp_path, fake_vla_server,
+):
+    """contract.state.components contains ee_pos/ee_rotvec but fk=None →
+    InvalidTransitionError at session start from Phase 1 validation,
+    with a message mentioning 'FKService is not configured'."""
+    from mimicrec.cameras.mock_camera import MockCamera
+
+    sm = await _make_sm(
+        tmp_path=tmp_path,
+        monkeypatch=monkeypatch,
+        cameras={"front": MockCamera("front"), "wrist": MockCamera("wrist")},
+        fk=None,
+    )
+
+    contract = ContractSpec.from_yaml_text(
+        (REPO_ROOT / "configs/inference/so101_v46.yaml").read_text()
+    )
+    contract.endpoint.url = fake_vla_server.url
+
+    # The new Phase 1 validation must fire BEFORE the generic line-936 check,
+    # with a message that names the specific state components requiring FK.
+    try:
+        with pytest.raises(InvalidTransitionError, match=r"ee_pos|ee_rotvec"):
+            await sm.start_inference_session(
+                contract=contract, instruction="x", inference_config_name="so101_v46"
+            )
+    finally:
+        await sm.end()
+
+
+@pytest.mark.asyncio
+async def test_start_raises_when_required_image_role_unconfigured(
+    monkeypatch, tmp_path, fake_vla_server,
+):
+    """so101_v46 contract requires 'wrist' but cameras dict only has 'front' →
+    InvalidTransitionError at session start mentioning 'image roles'."""
+    from mimicrec.cameras.mock_camera import MockCamera
+
+    stub_fk = _StubFK()
+    sm = await _make_sm(
+        tmp_path=tmp_path,
+        monkeypatch=monkeypatch,
+        cameras={"front": MockCamera("front")},  # wrist is missing
+        fk=stub_fk,
+    )
+
+    contract = ContractSpec.from_yaml_text(
+        (REPO_ROOT / "configs/inference/so101_v46.yaml").read_text()
+    )
+    contract.endpoint.url = fake_vla_server.url
+
+    try:
+        with pytest.raises(InvalidTransitionError, match="image roles"):
+            await sm.start_inference_session(
+                contract=contract, instruction="x", inference_config_name="so101_v46"
+            )
+    finally:
+        await sm.end()
+
+
+@pytest.mark.asyncio
+async def test_start_raises_on_unsupported_gripper_column(
+    monkeypatch, tmp_path, fake_vla_server,
+):
+    """Adapter whose proprio_layout.gripper_via_column is not in the encoder's
+    supported set must fail at session start with InvalidTransitionError
+    mentioning 'gripper_via_column'."""
+    from mimicrec.cameras.mock_camera import MockCamera
+
+    stub_fk = _StubFK()
+    sm = await _make_sm(
+        tmp_path=tmp_path,
+        monkeypatch=monkeypatch,
+        cameras={"front": MockCamera("front"), "wrist": MockCamera("wrist")},
+        fk=stub_fk,
+    )
+
+    # Replace proprio_layout on the type to return a layout with a bogus column.
+    # We use a duck-type FakeLayout to bypass ProprioLayout's __post_init__ check.
+    class FakeLayout:
+        columns = ("observation.state.joint_pos",)
+        output_names = ("j0", "j1", "gripper")
+        gripper_via_column = "observation.state.bogus"
+        gripper_index_in_column = 0
+
+    monkeypatch.setattr(
+        type(sm._robot),
+        "proprio_layout",
+        classmethod(lambda cls: FakeLayout()),
+    )
+
+    contract = ContractSpec.from_yaml_text(
+        (REPO_ROOT / "configs/inference/so101_v46.yaml").read_text()
+    )
+    contract.endpoint.url = fake_vla_server.url
+
+    try:
+        with pytest.raises(InvalidTransitionError, match="gripper_via_column"):
+            await sm.start_inference_session(
+                contract=contract, instruction="x", inference_config_name="so101_v46"
+            )
+    finally:
         await sm.end()
