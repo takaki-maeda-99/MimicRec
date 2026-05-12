@@ -130,21 +130,44 @@ MSW `http.*` handlers for the endpoints required by the core flow:
 | `POST /api/episode/stop` | `state="review"`, dispatch `recording-stop` |
 | `POST /api/episode/save` | Push fake episode (copy of seed with new index + timestamp), `state="ready"` |
 | `POST /api/episode/discard` | `state="ready"` |
-| `POST /api/replay/start` | `state="recording"` (subState replay), `replayIndex=0`, dispatch `replay-start` |
-| `POST /api/replay/stop` | `state="ready"`, dispatch `replay-stop` |
+| `POST /api/replay/start` | `state="recording"`, `sub_state="replaying"`, `replayIndex=0`, dispatch `replay-start` |
+| `POST /api/replay/stop` | `state="ready"`, `sub_state=null`, dispatch `replay-stop` |
 | `POST /api/robot/estop` | `{ ok: true }`, set internal flag |
 | `POST /api/robot/clear_estop` | `{ ok: true }` |
+| `GET /api/datasets/:ds/schema` | Minimal schema matching `RecordPage` form expectations (cameras, robot, fps from seed) |
+| `GET /api/datasets/:ds/episodes/:idx/frames` | `meta.json.joints` reshaped into `FrameRow[]` (used by JointPlot / EndEffectorPlot / SubtaskTimeline during episode review) |
+| `GET /api/datasets/:ds/episodes/:idx/video/:cam` | Serve `demo/episode_0/cam_front.mp4` (any cam name maps to the same file). Use `HttpResponse` with `Content-Type: video/mp4` and the raw bytes |
+| `POST /api/datasets/:ds/episodes/:idx/annotate` | 503 — subtask annotation runs an ML model, not feasible in demo. SubtaskAnnotator card already has an error path |
+| `* /api/datasets/:ds/annotate-all`, `/annotate-progress` | 503 |
 | `* /api/cloud/*`, `* /api/datasets/:ds/hub*`, `POST /api/datasets/:ds/export` | 503 |
 | `GET /api/session/gopro_pending` | `[]` |
+| `GET /api/configs/gopros`, `GET /api/settings/configs/gopros` | `404` — the frontend already passes `{ optional: true }`, so 404 produces an empty list cleanly |
 | `* /api/settings/devices/*` | 503 |
+
+**`sub_state` values**: confirmed by `frontend/src/state/session-store.ts` and
+`ReplayPage.tsx:subState === "replaying"`. The session state's
+`sub_state` field is read by both Record and Replay pages, so the
+replay handler MUST set it to `"replaying"` and clear to `null` on stop.
 
 Anything not listed: `onUnhandledRequest: 'bypass'` lets real requests
 (to static `demo/*` files) go through to the network.
 
 ### `frontend/src/demo/ws-handlers.ts`
 
-MSW `ws.link()` handler. One link object, three `.addEventListener('connection')`
-branches keyed on URL path:
+MSW `ws.link()` handler. One link object per endpoint, matched by **regex
+against the full URL** (not subpath):
+
+```ts
+// WsConnection builds wss://<page-host>/ws/<path> — not /MimicRec/ws/...
+// so handlers must match by path regardless of host:
+const sessionWs = ws.link(/.*\/ws\/session$/);
+const stateWs   = ws.link(/.*\/ws\/state$/);
+const cameraWs  = ws.link(/.*\/ws\/cameras\/[^/]+$/);
+const teleopWs  = ws.link(/.*\/ws\/teleop$/);
+const inferWs   = ws.link(/.*\/ws\/inference$/);
+```
+
+Each link has its own `.addEventListener('connection', ...)`:
 
 **`/ws/session`** — On `recording-start`, every 33ms emit
 `{ type: 'episode_progress', data: { num_frames: elapsed*30, ... } }`. On
@@ -173,26 +196,46 @@ Singleton that loads `demo/episode_0/cam_front.mp4` into a hidden
 
 ```ts
 const video = document.createElement('video');
-video.src = `${BASE_URL}demo/episode_0/cam_front.mp4`;
+video.src = `${import.meta.env.BASE_URL}demo/episode_0/cam_front.mp4`;
 video.muted = true; video.loop = true; video.playsInline = true;
 video.style.display = 'none';
 document.body.appendChild(video);
-await video.play();
+
+try {
+  await video.play();
+} catch {
+  // Autoplay rejected (rare with muted+playsInline but possible on
+  // privacy-strict browsers). Fall back to showing a "Click to enable
+  // preview" overlay that calls video.play() on user gesture.
+  showAutoplayFallback();
+}
 
 const canvas = new OffscreenCanvas(224, 224);
 const ctx = canvas.getContext('2d')!;
 
 const subscribers = new Set<(b: Blob) => void>();
+let encoding = false;  // backpressure: drop frames while a prior encode is pending
 const tick = () => {
-  ctx.drawImage(video, 0, 0, 224, 224);
-  canvas.convertToBlob({ type: 'image/jpeg', quality: 0.85 })
-    .then(b => subscribers.forEach(fn => fn(b)));
+  if (!encoding && subscribers.size > 0) {
+    encoding = true;
+    ctx.drawImage(video, 0, 0, 224, 224);
+    canvas.convertToBlob({ type: 'image/jpeg', quality: 0.85 }).then(b => {
+      subscribers.forEach(fn => fn(b));
+      encoding = false;
+    });
+  }
   video.requestVideoFrameCallback(tick);
 };
 video.requestVideoFrameCallback(tick);
 ```
 
 WS handler subscribes / unsubscribes on client connect / close.
+
+**`requestVideoFrameCallback` fallback**: Safari < 17 doesn't have it.
+If `'requestVideoFrameCallback' in HTMLVideoElement.prototype` is false,
+fall back to `setInterval(tick, 33)`. The demo target is desktop Chrome /
+Firefox / Safari 17+, so this is a safety net rather than a primary
+path.
 
 ### `frontend/src/demo/setup.ts`
 
@@ -202,9 +245,13 @@ import { restHandlers } from './rest-handlers';
 import { wsHandler } from './ws-handlers';
 
 export async function start() {
-  const worker = setupWorker(...restHandlers, wsHandler);
+  const worker = setupWorker(...restHandlers, ...wsHandlers);
   await worker.start({
-    serviceWorker: { url: `${import.meta.env.BASE_URL}mockServiceWorker.js` },
+    serviceWorker: {
+      url: `${import.meta.env.BASE_URL}mockServiceWorker.js`,
+      options: { scope: import.meta.env.BASE_URL },
+    },
+    waitUntilReady: true,    // MSW defers requests until SW is active
     onUnhandledRequest: 'bypass',
   });
 }
@@ -213,14 +260,17 @@ export async function start() {
 ### `frontend/src/main.tsx` — minimal edit
 
 ```ts
-if (import.meta.env.VITE_DEMO) {
+if (import.meta.env.VITE_DEMO === 'true') {
   const { start } = await import('./demo/setup');
   await start();
 }
 createRoot(document.getElementById('root')!).render(<App />);
 ```
 
-The dynamic `import()` keeps demo code out of production bundles.
+`VITE_DEMO` is exposed by Vite as a string ("true" / undefined) when set
+in the environment, so use strict equality. The static comparison
+guarantees Rollup eliminates the dynamic `import()` branch in
+production builds; verify with `grep -r 'msw\|demo/setup' frontend/dist`.
 
 ### Demo banner
 
