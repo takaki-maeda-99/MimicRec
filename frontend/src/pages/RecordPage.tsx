@@ -7,7 +7,6 @@ import CameraPreview from "../components/CameraPreview.tsx";
 import RecordingControls from "../components/RecordingControls.tsx";
 import KeyboardTeleop from "../components/KeyboardTeleop.tsx";
 import EEMonitor from "../components/EEMonitor.tsx";
-import EStopButton from "../components/EStopButton.tsx";
 import IdlePoseCaptureButton from "../components/IdlePoseCaptureButton.tsx";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
@@ -144,12 +143,6 @@ export default function RecordPage() {
       <div className="mb-md">
         <EEMonitor enabled />
       </div>
-
-      {robot === "rebotarm" && (
-        <div className="mb-md">
-          <EStopButton />
-        </div>
-      )}
 
       <div className="mb-md">
         <IdlePoseCaptureButton />
