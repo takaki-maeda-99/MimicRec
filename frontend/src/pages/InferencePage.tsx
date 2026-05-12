@@ -65,9 +65,6 @@ export function InferencePage() {
             </span>
           )}
         </div>
-        <Button variant="destructive" size="lg" onClick={() => s.emergencyStop()}>
-          E-STOP
-        </Button>
       </header>
 
       {s.error && (
@@ -111,12 +108,6 @@ export function InferencePage() {
               <>The page is rehydrating from the backend — refresh if it stays stuck.</>
             )}
           </div>
-        </div>
-      )}
-
-      {isLive && (
-        <div className="rounded-md border border-brand-warn/40 bg-brand-warn/15 px-3 py-2 text-sm font-semibold text-brand-warn">
-          ⚠ Robot under model control — use E-STOP to halt
         </div>
       )}
 
