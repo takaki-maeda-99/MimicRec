@@ -86,6 +86,7 @@ from pathlib import Path
 from scipy.spatial.transform import Rotation as R
 
 from mimicrec.kinematics.fk import FKService, KinematicsConfig
+from mimicrec.adapters.types import GripperConvention, ProprioLayout
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -194,4 +195,65 @@ def test_gripper_without_convention_or_layout_raises():
     client = InferenceClient(spec=spec, fk=fk)  # no convention/layout
     state = _make_state(joint_pos=np.zeros(6))
     with pytest.raises(ValueError, match="gripper_convention / proprio_layout"):
+        client._encode_state(state)
+
+
+def test_gripper_normalized_from_joint_pos_column():
+    """SO101: gripper raw 0..100 packed at joint_pos[5]. raw=50 → 0.5."""
+    client = _make_client_so101()
+    joint_pos = np.zeros(6); joint_pos[5] = 50.0
+    state = _make_state(joint_pos=joint_pos)
+    out = client._encode_state(state)
+    assert out[6] == pytest.approx(0.5, abs=1e-6)
+
+
+@pytest.mark.parametrize("raw,expected", [(-10.0, 0.0), (0.0, 0.0), (50.0, 0.5), (100.0, 1.0), (200.0, 1.0)])
+def test_gripper_normalization_clips_to_unit_interval(raw, expected):
+    client = _make_client_so101()
+    joint_pos = np.zeros(6); joint_pos[5] = raw
+    state = _make_state(joint_pos=joint_pos)
+    assert client._encode_state(state)[6] == pytest.approx(expected, abs=1e-6)
+
+
+def test_gripper_from_state_gripper_pos_column():
+    """reBot-style: raw gripper lives in state.gripper_pos. With convention
+    closed_at=0, open_at=1, raw value passes through normalization."""
+    pl = ProprioLayout(
+        columns=("observation.state.joint_pos", "observation.state.gripper_pos"),
+        output_names=("j0","j1","j2","j3","j4","gripper"),
+        gripper_via_column="observation.state.gripper_pos",
+        gripper_index_in_column=0,
+    )
+    gc = GripperConvention(closed_at=0.0, open_at=1.0)
+    client = _make_client_so101(gripper_convention=gc, proprio_layout=pl)
+
+    state = _make_state(joint_pos=np.zeros(6), gripper_pos=0.7)
+    assert client._encode_state(state)[6] == pytest.approx(0.7, abs=1e-6)
+
+
+def test_gripper_from_state_gripper_pos_column_raises_when_none():
+    pl = ProprioLayout(
+        columns=("observation.state.joint_pos", "observation.state.gripper_pos"),
+        output_names=("j0","j1","j2","j3","j4","gripper"),
+        gripper_via_column="observation.state.gripper_pos",
+        gripper_index_in_column=0,
+    )
+    gc = GripperConvention(closed_at=0.0, open_at=1.0)
+    client = _make_client_so101(gripper_convention=gc, proprio_layout=pl)
+    state = _make_state(joint_pos=np.zeros(6), gripper_pos=None)
+    with pytest.raises(ValueError, match="state.gripper_pos is None"):
+        client._encode_state(state)
+
+
+def test_gripper_index_out_of_range_raises():
+    pl = ProprioLayout(
+        columns=("observation.state.joint_pos",),
+        output_names=("j0","j1","j2","j3","j4","gripper"),
+        gripper_via_column="observation.state.joint_pos",
+        gripper_index_in_column=99,
+    )
+    gc = GripperConvention(closed_at=0.0, open_at=100.0)
+    client = _make_client_so101(gripper_convention=gc, proprio_layout=pl)
+    state = _make_state(joint_pos=np.zeros(6))
+    with pytest.raises(ValueError, match="out of range"):
         client._encode_state(state)
