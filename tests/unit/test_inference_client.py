@@ -257,3 +257,22 @@ def test_gripper_index_out_of_range_raises():
     state = _make_state(joint_pos=np.zeros(6))
     with pytest.raises(ValueError, match="out of range"):
         client._encode_state(state)
+
+
+def test_build_request_body_raises_when_required_image_missing():
+    """The so101_v46 contract requires both front and wrist; missing one
+    must raise, not silently drop the field."""
+    yaml_two_cams = _EE_YAML.replace(
+        "images: { front: { field: image_primary, encoding: jpeg_base64, resize: [16,16], jpeg_quality: 90 } }",
+        "images:\n    front: { field: image_primary, encoding: jpeg_base64, resize: [16,16], jpeg_quality: 90 }\n"
+        "    wrist: { field: image_wrist, encoding: jpeg_base64, resize: [16,16], jpeg_quality: 90 }",
+    )
+    spec = ContractSpec.from_yaml_text(yaml_two_cams)
+    client = _make_client_so101(spec=spec)
+
+    img = np.zeros((16, 16, 3), dtype=np.uint8)
+    frames = {"front": Stamped(value=Frame(image=img, t_mono_ns=0), t_mono_ns=0)}
+    state = _make_state(joint_pos=np.zeros(6))
+
+    with pytest.raises(ValueError, match="image role 'wrist'"):
+        client._build_request_body(frames, state, "pick", {})
