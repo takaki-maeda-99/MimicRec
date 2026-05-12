@@ -31,7 +31,6 @@ export async function start() {
       url: `${import.meta.env.BASE_URL}mockServiceWorker.js`,
       options: { scope: import.meta.env.BASE_URL },
     },
-    waitUntilReady: true,
     onUnhandledRequest: "bypass",
   });
   startGlobalSessionWs();
