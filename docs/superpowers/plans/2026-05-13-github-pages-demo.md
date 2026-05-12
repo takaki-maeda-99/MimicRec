@@ -201,7 +201,15 @@ EOF
 
 ---
 
-## Task 3: Demo fixture — `meta.json` and `cam_front.mp4`
+## Task 3: Demo fixture — synthetic `meta.json` and `cam_front.mp4`
+
+**Prerequisites (one-time, dev machine only — CI does not need these):**
+- `ffmpeg` available on PATH. Install with `sudo apt-get install -y ffmpeg` (Ubuntu), `brew install ffmpeg` (macOS), etc.
+- `uv` (already a repo-wide convention). The script is also runnable with plain `python3 scripts/gen_demo_fixture.py`.
+
+The generated `meta.json` and `cam_front.mp4` are **checked into git** so that GitHub Actions / contributors who don't run the generator still get a working demo. The script exists so the fixture is reproducible and easy to regenerate.
+
+**Note on fixture realism**: this task generates a **synthetic placeholder** (sinusoidal joint trajectory + ffmpeg `testsrc` test pattern). The spec discusses bundling a real recorded episode, and that's the long-term goal; for now the synthetic fixture lets the demo ship without needing a fresh hardware capture. Swap in a real recording by overwriting these two files later.
 
 **Files:**
 - Create: `scripts/gen_demo_fixture.py`
@@ -730,7 +738,7 @@ export const dataHandlers = [
     return HttpResponse.json(names.map((name) => ({ name, content: {} })));
   }),
 
-  http.get("/api/session/gopro_pending", () => HttpResponse.json([])),
+  http.get("/api/session/gopro_pending", () => HttpResponse.json({ pending: 0 })),
 ];
 ```
 
@@ -889,12 +897,15 @@ async function ensureStarted() {
     });
   }
 
-  const canvas: OffscreenCanvas | HTMLCanvasElement =
-    typeof OffscreenCanvas !== "undefined" ? new OffscreenCanvas(224, 224) : document.createElement("canvas");
-  if (canvas instanceof HTMLCanvasElement) {
-    canvas.width = 224;
-    canvas.height = 224;
-  }
+  const hasOffscreen = typeof OffscreenCanvas !== "undefined";
+  const canvas: OffscreenCanvas | HTMLCanvasElement = hasOffscreen
+    ? new OffscreenCanvas(224, 224)
+    : (() => {
+        const c = document.createElement("canvas");
+        c.width = 224;
+        c.height = 224;
+        return c;
+      })();
   const ctx = (canvas as any).getContext("2d") as
     | CanvasRenderingContext2D
     | OffscreenCanvasRenderingContext2D;
@@ -906,11 +917,11 @@ async function ensureStarted() {
     encoding = true;
     ctx.drawImage(video, 0, 0, 224, 224);
     let blob: Blob;
-    if (canvas instanceof OffscreenCanvas) {
-      blob = await canvas.convertToBlob({ type: "image/jpeg", quality: 0.85 });
+    if (hasOffscreen) {
+      blob = await (canvas as OffscreenCanvas).convertToBlob({ type: "image/jpeg", quality: 0.85 });
     } else {
       blob = await new Promise<Blob>((resolve) =>
-        canvas.toBlob((b) => resolve(b!), "image/jpeg", 0.85),
+        (canvas as HTMLCanvasElement).toBlob((b) => resolve(b!), "image/jpeg", 0.85),
       );
     }
     subscribers.forEach((fn) => fn(blob));
@@ -977,11 +988,11 @@ Create `frontend/src/demo/ws-handlers.ts`:
 
 ```ts
 import { ws } from "msw";
-import { demoEvents, demoStore } from "./store";
+import { demoEvents, demoStore, emit as emitEvent, setSession } from "./store";
 import { getMeta } from "./rest-handlers";
 import { subscribeFrames } from "./camera-player";
 
-const STATE_HZ = 15;
+const STATE_HZ = 30;
 const SESSION_HZ = 30;
 
 const sessionWs = ws.link(/.*\/ws\/session$/);
@@ -1024,8 +1035,7 @@ sessionWs.addEventListener("connection", ({ client }) => {
         }));
         demoStore.replayFrameIndex += 1;
         if (demoStore.replayFrameIndex >= 240) {
-          // Auto-stop replay
-          stopProgress();
+          autoStopReplay();
         }
       }
     }, 1000 / SESSION_HZ);
@@ -1035,6 +1045,14 @@ sessionWs.addEventListener("connection", ({ client }) => {
       clearInterval(progressTimer);
       progressTimer = null;
     }
+  };
+  const autoStopReplay = () => {
+    // Replay finished — update store state, emit event, and tell the
+    // frontend via session_state so ReplayPage flips back to "ready".
+    demoStore.replayFrameIndex = null;
+    setSession({ state: "ready", sub_state: null });
+    emitEvent("replay-stop");
+    stopProgress();
   };
 
   demoEvents.addEventListener("recording-start", startProgress);
@@ -1136,6 +1154,28 @@ Create `frontend/src/demo/setup.ts`:
 import { setupWorker } from "msw/browser";
 import { restHandlers } from "./rest-handlers";
 import { wsHandlers } from "./ws-handlers";
+import { WsConnection } from "../api/ws";
+import { useSessionStore } from "../state/session-store";
+import type { EpisodeProgress, ReplayProgress } from "../api/types";
+
+// Open a permanent /ws/session subscriber so progress messages reach the
+// global session-store regardless of which page is mounted. RecordPage
+// also opens its own connection; multiple subscribers are fine.
+function startGlobalSessionWs() {
+  const conn = new WsConnection("/ws/session");
+  conn.onMessage((raw) => {
+    const m = raw as { type?: string; data?: unknown };
+    const store = useSessionStore.getState();
+    if (m.type === "session_state" && m.data) {
+      store.setSessionState(m.data as Record<string, unknown>);
+    } else if (m.type === "episode_progress" && m.data) {
+      store.setEpisodeProgress(m.data as EpisodeProgress);
+    } else if (m.type === "replay_progress" && m.data) {
+      store.setReplayProgress(m.data as ReplayProgress);
+    }
+  });
+  conn.connect();
+}
 
 export async function start() {
   const worker = setupWorker(...restHandlers, ...wsHandlers);
@@ -1147,8 +1187,11 @@ export async function start() {
     waitUntilReady: true,
     onUnhandledRequest: "bypass",
   });
+  startGlobalSessionWs();
 }
 ```
+
+**Why the global subscriber**: in production, `RecordPage` is the only component that opens `/ws/session`. When the user navigates to Replay without first visiting Record, the WebSocket never opens and `replay_progress` messages are dropped — the Replay-page progress widget would stay empty. The demo-only global subscriber sidesteps this by keeping a connection open for the lifetime of the page session. This is a demo-only behavior change; production code is untouched.
 
 - [ ] **Step 2: Wire the bootstrap into `main.tsx`**
 
@@ -1332,16 +1375,24 @@ Open `http://localhost:4173/MimicRec/`.
 
 - [ ] **Step 2: Walk the core flow**
 
-Verify in order, with the browser DevTools console open:
+Verify in order, with the browser DevTools console open. **The session config form on the Record page does not have built-in defaults — you must fill it in.**
 
 1. **Datasets page** — `demo_dataset` row appears with `num_episodes=1`.
-2. **Record page** — click through Start session form with defaults; "Start session" button responds; state badge in sidebar transitions `idle → ready`.
-3. **Camera preview** — the camera widget shows the looping test-pattern video. No `WebSocket connection failed` errors in console.
-4. **Episode start** — click Start episode; badge transitions `ready → recording`; episode-progress widget shows growing `num_frames`.
-5. **Episode stop** — click Stop; badge transitions to `review`.
-6. **Save** — click Save; badge transitions back to `ready`; navigate to Episodes — the freshly saved fake episode appears at the top of the list.
-7. **Episodes review** — open the just-saved episode. JointPlot / EndEffectorPlot render (data from `/api/.../frames`). Video player loads the embedded MP4.
-8. **Replay page** — pick the episode, click Replay. State transitions `ready → recording` with `sub_state="replaying"`; replay-progress widget counts up to 240; auto-stops.
+2. **Record page — fill the form** (the Start button is disabled until required fields are picked):
+   - **Dataset**: type or select `demo_dataset`
+   - **Task**: type or select `demo_task`
+   - **Robot**: pick `so101` (or `mock`)
+   - **Teleop**: pick `so_leader`
+   - **Mapper**: pick `identity`
+   - **Slot assignments / camera**: pick the `front` slot → `mock_front` device
+   - **FPS**: 30
+3. **Start session** — click; sidebar state badge transitions `idle → ready`. No `WebSocket connection failed` errors in console.
+4. **Camera preview** — the camera widget shows the looping test-pattern video. No errors.
+5. **Episode start** — click Start episode; badge transitions `ready → recording`; episode-progress widget shows growing `num_frames`.
+6. **Episode stop** — click Stop after a few seconds; badge transitions to `review`.
+7. **Save** — click Save; badge transitions back to `ready`; navigate to Episodes — the freshly saved fake episode appears at the top of the list.
+8. **Episodes review** — open the just-saved episode. JointPlot / EndEffectorPlot render (data from `/api/.../frames`). Video player loads the embedded MP4.
+9. **Replay page** — pick an episode, click Replay. State transitions `ready → recording` with `sub_state="replaying"`; the replay-progress widget on Replay counts up to 240; auto-stops back to `ready` after ~8 s.
 
 Acceptable non-issues:
 - Settings, Inference pages show "Not available in demo" banners or 503 toasts. ✅
@@ -1350,7 +1401,8 @@ Acceptable non-issues:
 Hard fails:
 - Any uncaught console error referring to `apiFetch`, `WsConnection`, or unhandled MSW request.
 - Camera preview stays black.
-- Replay never advances past frame 0.
+- Replay never advances past frame 0, or does not auto-stop.
+- After Save, the new episode does not appear in the Episodes list.
 
 - [ ] **Step 2: If a hard fail surfaces, fix it before the next task**
 
