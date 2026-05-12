@@ -4,7 +4,7 @@ from typing import Protocol
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 
-from mimicrec.inference.contract import ContractSpec
+from mimicrec.inference.contract import ContractSpec, _expected_dim
 from mimicrec.inference.types import StepAction
 from mimicrec.types import RobotState
 
@@ -72,10 +72,16 @@ class ActionDecoder:
 
     def decode(self, response_body: dict, current_state: RobotState) -> list[StepAction]:
         actions = self._extract_actions(response_body)
+        expected_action_dim = _expected_dim(self.spec.response.action.components)
         seed_q = current_state.joint_pos[:self.narm].copy()
         T_curr = self.fk.matrix(seed_q)
         chunk: list[StepAction] = []
         for raw in actions:
+            if len(raw) != expected_action_dim:
+                raise ValueError(
+                    f"action row length {len(raw)} != expected {expected_action_dim} "
+                    f"from components {self.spec.response.action.components}"
+                )
             arr = np.asarray(raw, dtype=np.float64)
             arr_phys = self._de_normalize(arr)             # <- critical: de-normalize FIRST
             ee_delta_phys = arr_phys[:6]

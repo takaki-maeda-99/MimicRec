@@ -235,3 +235,14 @@ def test_ik_failure_does_not_drift_t_curr():
     assert step1_T[0, 3] == pytest.approx(1.007, abs=1e-9), \
         f"step 1 T_target.x should be 1.007 (FK(seed)+delta), got {step1_T[0, 3]:.6f} " \
         f"— the bug case would produce ~2.007 (compounded from failed step)"
+
+
+def test_decode_rejects_wrong_row_length():
+    spec = ContractSpec.from_yaml_text(YAML_CONTRACT)
+    dec = ActionDecoder(spec=spec, fk=FakeFK(), ik=FakeIK(), narm=5, action_stats=None)
+
+    state = _state()
+    bad = {"actions": [[0.0] * 6]}  # 6 floats instead of 7 (missing gripper)
+
+    with pytest.raises(ValueError, match="action row length 6 != expected 7"):
+        dec.decode(bad, state)
