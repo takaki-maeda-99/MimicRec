@@ -352,6 +352,9 @@ async def test_inference_client_receives_fk_convention_layout(make_inference_ses
     assert sm._inference_client is not None
     # fk must be the exact same stub FK that SessionManager holds
     assert sm._inference_client.fk is sm._fk
+    # gripper_convention and proprio_layout must be wired in (not None)
+    assert sm._inference_client.gripper_convention is not None
+    assert sm._inference_client.proprio_layout is not None
 
 
 async def test_action_decoder_narm_equals_fk_n_kin_joints(
