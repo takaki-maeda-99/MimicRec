@@ -12,6 +12,32 @@ const cameraWs  = ws.link(/.*\/ws\/cameras\/[^/]+$/);
 const teleopWs  = ws.link(/.*\/ws\/teleop$/);
 const inferWs   = ws.link(/.*\/ws\/inference$/);
 
+// Singleton replay engine — advances replayFrameIndex at most once per tick
+// regardless of how many WS clients are connected.
+let replayTimer: number | null = null;
+
+function startReplayEngine() {
+  if (replayTimer != null) return;
+  replayTimer = window.setInterval(() => {
+    if (demoStore.replayFrameIndex == null) return;
+    demoStore.replayFrameIndex += 1;
+    if (demoStore.replayFrameIndex >= 240) {
+      demoStore.replayFrameIndex = null;
+      setSession({ state: "ready", sub_state: null });
+      emitEvent("replay-stop");
+    }
+  }, 1000 / SESSION_HZ);
+}
+function stopReplayEngine() {
+  if (replayTimer != null) {
+    clearInterval(replayTimer);
+    replayTimer = null;
+  }
+}
+
+demoEvents.addEventListener("replay-start", startReplayEngine);
+demoEvents.addEventListener("replay-stop", stopReplayEngine);
+
 const sessionHandler = sessionWs.addEventListener("connection", ({ client }) => {
   const sendState = () => client.send(JSON.stringify({ type: "session_state", data: demoStore.session }));
   sendState();
@@ -36,6 +62,7 @@ const sessionHandler = sessionWs.addEventListener("connection", ({ client }) => 
           },
         }));
       } else if (demoStore.replayFrameIndex != null) {
+        // Read-only: the singleton engine owns mutation of replayFrameIndex.
         client.send(JSON.stringify({
           type: "replay_progress",
           data: {
@@ -44,10 +71,6 @@ const sessionHandler = sessionWs.addEventListener("connection", ({ client }) => 
             speed: 1.0,
           },
         }));
-        demoStore.replayFrameIndex += 1;
-        if (demoStore.replayFrameIndex >= 240) {
-          autoStopReplay();
-        }
       }
     }, 1000 / SESSION_HZ);
   };
@@ -56,14 +79,6 @@ const sessionHandler = sessionWs.addEventListener("connection", ({ client }) => 
       clearInterval(progressTimer);
       progressTimer = null;
     }
-  };
-  const autoStopReplay = () => {
-    // Replay finished — update store state, emit event, and tell the
-    // frontend via session_state so ReplayPage flips back to "ready".
-    demoStore.replayFrameIndex = null;
-    setSession({ state: "ready", sub_state: null });
-    emitEvent("replay-stop");
-    stopProgress();
   };
 
   demoEvents.addEventListener("recording-start", startProgress);
@@ -82,7 +97,10 @@ const sessionHandler = sessionWs.addEventListener("connection", ({ client }) => 
 });
 
 const stateHandler = stateWs.addEventListener("connection", async ({ client }) => {
+  let closed = false;
+  client.addEventListener("close", () => { closed = true; });
   const meta = await getMeta();
+  if (closed) return;
   let frameIdx = 0;
   const timer = window.setInterval(() => {
     const f = meta.frames[frameIdx % meta.frames.length];
@@ -97,7 +115,6 @@ const stateHandler = stateWs.addEventListener("connection", async ({ client }) =
     }));
     frameIdx += 1;
   }, 1000 / STATE_HZ);
-
   client.addEventListener("close", () => clearInterval(timer));
 });
 
