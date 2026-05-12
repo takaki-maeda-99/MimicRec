@@ -246,3 +246,70 @@ def test_decode_rejects_wrong_row_length():
 
     with pytest.raises(ValueError, match="action row length 6 != expected 7"):
         dec.decode(bad, state)
+
+
+def test_t_curr_chains_from_achieved_fk_not_ideal():
+    """When IK returns an approximate q_next, step 2's seed-pose must equal
+    FK(q_next_step1) — the achieved pose — not the idealized T_next_step1.
+
+    The bug: `T_curr = T_next` advances T_curr to the idealized target
+    regardless of whether IK actually reached it. The fix replaces that line
+    with `T_curr = self.fk.matrix(q_next)` so subsequent steps chain from
+    the joint vector IK actually returned.
+
+    We force the discrepancy by making CapturingIK return a fixed forced_q1
+    that is far from the zero seed. FakeFK is q-dependent (T[:3,3] = q[:3]*0.001),
+    so FK(forced_q1) != FK(seed_q), letting us distinguish the two paths."""
+    from mimicrec.inference.action_decoder import _to_T
+
+    spec = ContractSpec.from_yaml_text(YAML_CONTRACT)
+    fk = FakeFK()
+
+    # forced_q1: the joint vector IK will return for step 1. Far from zeros so
+    # FK(forced_q1) is clearly distinct from FK(zero_seed)=identity.
+    forced_q1 = np.array([10.0, 10.0, 10.0, 10.0, 10.0], dtype=np.float64)
+
+    ik_targets: list[np.ndarray] = []
+
+    class CapturingIK:
+        def solve(self, T, seed):
+            ik_targets.append(T.copy())
+            return forced_q1.copy(), True  # always succeed, always return forced_q1
+
+    dec = ActionDecoder(spec=spec, fk=fk, ik=CapturingIK(), narm=5, action_stats=None)
+
+    # Two identical delta rows; non-zero x so T_delta is not identity.
+    delta_row = [0.001, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5]
+    raw = {"actions": [delta_row, delta_row]}
+    dec.decode(raw, current_state=_state())
+
+    assert len(ik_targets) == 2, f"Expected 2 IK calls, got {len(ik_targets)}"
+
+    # Compute what T_delta looks like (same for both steps since rows are identical).
+    pos = np.array(delta_row[:3])
+    axisangle = np.array(delta_row[3:6])
+    T_delta = _to_T(pos, axisangle)
+
+    # FIX path: step 2's target = FK(forced_q1) @ T_delta (ee_local frame).
+    # FK(forced_q1)[:3,3] = [0.01, 0.01, 0.01] (forced_q1[:3]*0.001).
+    achieved_T1 = fk.matrix(forced_q1)
+    expected_step2_fix = achieved_T1 @ T_delta
+
+    # BUG path: step 2's target = T_next_step1 @ T_delta = (I @ T_delta) @ T_delta.
+    # (seed_q = zeros => FK(zeros)[:3,3] = [0,0,0] = identity, so T_next1 = T_delta.)
+    seed_T = fk.matrix(np.zeros(5))
+    buggy_step2 = (seed_T @ T_delta) @ T_delta
+
+    # They must differ for this test to be meaningful.
+    assert not np.allclose(expected_step2_fix, buggy_step2), \
+        "Test setup error: fix path and bug path produce the same T — test cannot discriminate"
+
+    np.testing.assert_allclose(
+        ik_targets[1], expected_step2_fix, atol=1e-9,
+        err_msg=(
+            "Step 2 IK target does not match FK(achieved_q1)@T_delta.\n"
+            f"  Got:      {ik_targets[1]}\n"
+            f"  Expected: {expected_step2_fix}\n"
+            f"  Buggy would give: {buggy_step2}"
+        ),
+    )

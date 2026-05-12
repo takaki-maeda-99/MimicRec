@@ -105,7 +105,10 @@ class ActionDecoder:
                 q_next = seed_q
                 T_curr = self.fk.matrix(seed_q)
             else:
-                T_curr = T_next
+                # Chain step N+1 from the pose the robot will actually reach,
+                # not the idealized T_next. IK may converge approximately;
+                # using T_next compounds residuals across the 8-step chunk.
+                T_curr = self.fk.matrix(q_next)
             gripper_cmd = self._decode_gripper(gripper_raw, current_state.gripper_pos)
             chunk.append(StepAction(q=q_next, gripper=gripper_cmd, ik_failed=not ok))
             seed_q = q_next
