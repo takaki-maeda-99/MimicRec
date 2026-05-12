@@ -31,6 +31,7 @@ import threading
 import numpy as np
 
 from mimicrec.adapters.robot import RobotMode
+from mimicrec.adapters.types import GripperConvention, ProprioLayout
 from mimicrec.types import RobotState
 
 
@@ -43,6 +44,27 @@ class SimBridgeAdapter:
     """
 
     name = "sim_bridge"
+
+    @classmethod
+    def default_gripper_convention(cls) -> GripperConvention:
+        """SimBridge mirrors SO-101's gripper convention by default (0..100,
+        0=closed, 100=open). Override via subclassing if pointed at a sim with
+        different units."""
+        return GripperConvention(closed_at=0.0, open_at=100.0)
+
+    @classmethod
+    def proprio_layout(cls) -> ProprioLayout:
+        """Mirrors SO-101: joint_pos column already includes the packed
+        gripper at the last index (index 5 for the default 6-DoF config)."""
+        return ProprioLayout(
+            columns=("observation.state.joint_pos",),
+            output_names=(
+                "shoulder_pan", "shoulder_lift", "elbow_flex",
+                "wrist_flex", "wrist_roll", "gripper",
+            ),
+            gripper_via_column="observation.state.joint_pos",
+            gripper_index_in_column=5,
+        )
 
     def __init__(
         self,

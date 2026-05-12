@@ -131,6 +131,8 @@ class LoopSpec(BaseModel):
 _COMPONENT_DIM: dict[str, int | str] = {
     "joint_pos": "Narm",
     "gripper_pos": 1,
+    "ee_pos": 3,
+    "ee_rotvec": 3,
     "ee_delta": 6,
     "gripper": 1,
 }

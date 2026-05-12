@@ -931,6 +931,47 @@ class SessionManager:
         # missing/malformed stats file.
         action_stats = contract.resolve_action_stats()
 
+        # --- Phase 1 validation: contract ↔ adapter wiring sanity ---
+        # Check before the generic FK guard below so we get component-specific
+        # error messages when applicable.
+        state_components = set(contract.request.state.components)
+
+        _EE_COMPONENTS = {"ee_pos", "ee_rotvec"}
+        ee_needed = _EE_COMPONENTS & state_components
+        if ee_needed and self._fk is None:
+            raise InvalidTransitionError(
+                f"contract requires {sorted(ee_needed)} in state but "
+                f"FKService is not configured for this robot"
+            )
+
+        if "gripper_pos" in state_components:
+            pl = (
+                self._robot.proprio_layout()
+                if hasattr(self._robot, "proprio_layout")
+                else None
+            )
+            if pl is not None:
+                _SUPPORTED_GRIPPER_COLS = {
+                    "observation.state.joint_pos",
+                    "observation.state.gripper_pos",
+                }
+                if pl.gripper_via_column not in _SUPPORTED_GRIPPER_COLS:
+                    raise InvalidTransitionError(
+                        f"adapter's gripper_via_column={pl.gripper_via_column!r} is not "
+                        f"supported for inference encoding; supported: "
+                        f"{sorted(_SUPPORTED_GRIPPER_COLS)}"
+                    )
+
+        required_image_keys = set(contract.request.images.keys())
+        configured_cameras = set(self._cameras._cameras.keys())
+        missing = required_image_keys - configured_cameras
+        if missing:
+            raise InvalidTransitionError(
+                f"contract requires image roles {sorted(missing)} but those camera "
+                f"slots are not configured (got {sorted(configured_cameras)})"
+            )
+        # --- end Phase 1 validation ---
+
         # FK/IK: FKService is already constructed in __init__ (self._fk).
         # IKService construction can fail if URDF load / placo init fails.
         if self._fk is None:
@@ -938,10 +979,21 @@ class SessionManager:
         new_ik = IKService(self._fk.cfg)
         new_decoder = ActionDecoder(
             spec=contract, fk=self._fk, ik=new_ik,
-            narm=self._robot.dof,
+            narm=self._fk.n_kin_joints,  # NOT self._robot.dof — FK excludes the packed gripper
             action_stats=action_stats,
         )
-        new_client = InferenceClient(spec=contract)
+        new_client = InferenceClient(
+            spec=contract,
+            fk=self._fk,
+            gripper_convention=(
+                self._robot.default_gripper_convention()
+                if hasattr(self._robot, "default_gripper_convention") else None
+            ),
+            proprio_layout=(
+                self._robot.proprio_layout()
+                if hasattr(self._robot, "proprio_layout") else None
+            ),
+        )
         new_chunk_buffer = ChunkBuffer.create(
             prefetch_threshold=contract.loop.prefetch_threshold,
         )

@@ -167,3 +167,19 @@ def test_resolve_returns_none_when_method_is_none():
     """method=none → no stats needed; lifecycle can call unconditionally."""
     spec = ContractSpec.from_yaml_text(_yaml_with_overrides(normalization_method="none"))
     assert spec.resolve_action_stats() is None
+
+
+def test_component_registry_includes_ee_pose():
+    from mimicrec.inference.contract import _COMPONENT_DIM, _expected_dim
+    assert _COMPONENT_DIM["ee_pos"] == 3
+    assert _COMPONENT_DIM["ee_rotvec"] == 3
+    assert _expected_dim(["ee_pos", "ee_rotvec", "gripper_pos"]) == 7
+
+
+def test_contract_loads_with_ee_pose_components():
+    yaml_with_ee = YAML_OK.replace(
+        "components: [joint_pos, gripper_pos]",
+        "components: [ee_pos, ee_rotvec, gripper_pos]",
+    )
+    spec = ContractSpec.from_yaml_text(yaml_with_ee)
+    assert spec.request.state.components == ["ee_pos", "ee_rotvec", "gripper_pos"]
