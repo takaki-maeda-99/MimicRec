@@ -127,7 +127,14 @@ export function getMeta() {
 }
 
 export const dataHandlers = [
-  http.get("/api/datasets", () => HttpResponse.json(SEED_DATASETS)),
+  http.get("/api/datasets", () => {
+    const list = SEED_DATASETS.map((d) => ({
+      ...d,
+      num_episodes: demoStore.episodes.length,
+      total_frames: demoStore.episodes.length * 240,
+    }));
+    return HttpResponse.json(list);
+  }),
 
   http.get("/api/datasets/:ds/tasks", () => HttpResponse.json(SEED_TASKS)),
 
@@ -225,9 +232,12 @@ export const stubHandlers = [
   http.put("/api/datasets/:ds/hub", demoUnsupported),
   http.post("/api/datasets/:ds/hub/push", demoUnsupported),
 
+  http.get("/api/settings/devices/serial", demoUnsupported),
   http.get("/api/settings/devices/cameras", () => HttpResponse.json([])),
   http.get("/api/settings/devices/cameras/:id/capabilities", () => HttpResponse.json([])),
-  http.put("/api/settings/configs/cameras/:name", demoUnsupported),
+  http.get("/api/settings/calibration", demoUnsupported),
+  http.put("/api/settings/calibration", demoUnsupported),
+  http.put("/api/settings/configs/:group/:name", demoUnsupported),
 ];
 
 export const restHandlers = [...lifecycleHandlers, ...dataHandlers, ...stubHandlers];
