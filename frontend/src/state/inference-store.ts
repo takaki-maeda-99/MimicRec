@@ -35,6 +35,7 @@ export interface InferenceStoreState {
     nextAction: { ee_delta: number[]; gripper: number } | null;
     modelDoneSignal: "waiting" | "received" | "unsupported";
     clampsLastChunk: number | null;
+    cameras: { name: string; ageMs: number | null }[];
   };
   episodeElapsedSec: number;
   reviewEpisode: { index: number; durationSec: number } | null;
@@ -92,6 +93,7 @@ export const useInferenceStore = create<InferenceStoreState>((set, get) => ({
     nextAction: null,
     modelDoneSignal: "waiting",
     clampsLastChunk: null,
+    cameras: [],
   },
   episodeElapsedSec: 0,
   reviewEpisode: null,
@@ -261,6 +263,15 @@ export const useInferenceStore = create<InferenceStoreState>((set, get) => ({
       case "next_action_preview":
         if (Array.isArray(e.ee_delta) && typeof e.gripper === "number") {
           set({ telemetry: { ...t, nextAction: { ee_delta: e.ee_delta, gripper: e.gripper } } });
+        }
+        break;
+      case "camera_health":
+        if (Array.isArray(e.cameras)) {
+          const cams = e.cameras.map((c: { name: string; age_ms: number | null }) => ({
+            name: c.name,
+            ageMs: c.age_ms,
+          }));
+          set({ telemetry: { ...t, cameras: cams } });
         }
         break;
       case "episode_phase":
