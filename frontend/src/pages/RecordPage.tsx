@@ -273,7 +273,7 @@ function EpisodeProgressBlock({
   return (
     <section className="bg-canvas border border-hairline rounded-md p-md flex flex-col">
       <header className="mb-2 flex items-baseline justify-between">
-        <SectionMark code="§02.B" name="episode progress" />
+        <SectionMark code="§02.C" name="episode progress" />
         <span className="font-mono text-micro text-stone">
           capturing ep <span className="text-ink">{inProgressIndex}</span>
         </span>
@@ -357,7 +357,7 @@ function JointBlock({ enabled }: { enabled: boolean }) {
   return (
     <section className="flex-[1.4] min-h-0 bg-canvas border border-hairline rounded-md p-md flex flex-col">
       <header className="mb-xs flex items-baseline gap-xs">
-        <SectionMark code="§02.B" name="joint positions" />
+        <SectionMark code="§02.B.1" name="joint positions" />
         <span className="font-mono text-micro text-stone">rad · 100 Hz</span>
       </header>
       <table className="w-full text-caption">
@@ -424,7 +424,7 @@ function EEBlock({ enabled }: { enabled: boolean }) {
   return (
     <section className="flex-1 min-h-0 bg-canvas border border-hairline rounded-md p-md flex flex-col">
       <header className="mb-xs">
-        <SectionMark code="§02.B" name="end-effector pose" />
+        <SectionMark code="§02.B.2" name="end-effector pose" />
       </header>
       <table className="w-full text-caption">
         <tbody>
