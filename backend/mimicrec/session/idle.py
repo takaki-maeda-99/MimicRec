@@ -133,14 +133,6 @@ async def move_to_idle(
             f"idle pose dof {q_goal.shape} != adapter dof {q_start.shape}"
         )
 
-    has_gripper_api = hasattr(adapter, "send_gripper_command")
-    g_goal = idle_pose.gripper_pos
-    g_start = start.gripper_pos
-    do_gripper = has_gripper_api and g_goal is not None
-    # If we have a goal but no live reading, hold the goal throughout.
-    if do_gripper and g_start is None:
-        g_start = g_goal
-
     await adapter.set_mode(RobotMode.POSITION)
 
     n_steps = max(1, int(round(duration_sec * fps)))
@@ -151,7 +143,7 @@ async def move_to_idle(
     logger.info(
         "[idle] start: q_start=%s q_goal=%s gripper=%s steps=%d hold=%d (~%.2fs ramp + %.2fs hold @ %dHz) after=%s",
         q_start.tolist(), q_goal.tolist(),
-        f"{g_start}->{g_goal}" if do_gripper else "skip",
+        "skip",
         n_steps, n_hold, duration_sec, hold_sec, fps, after_mode.value,
     )
 
@@ -159,9 +151,6 @@ async def move_to_idle(
         alpha = i / n_steps
         q_cmd = (q_start + (q_goal - q_start) * alpha).astype(np.float32)
         await adapter.send_joint_command(q_cmd)
-        if do_gripper:
-            g_cmd = float(g_start + (g_goal - g_start) * alpha)
-            await adapter.send_gripper_command(g_cmd)
         await clock.sleep_until(next_tick_ns)
         next_tick_ns += tick_interval_ns
 
@@ -169,8 +158,6 @@ async def move_to_idle(
     # against the rigid controller before releasing to after_mode.
     for _ in range(n_hold):
         await adapter.send_joint_command(q_goal)
-        if do_gripper:
-            await adapter.send_gripper_command(float(g_goal))
         await clock.sleep_until(next_tick_ns)
         next_tick_ns += tick_interval_ns
 
