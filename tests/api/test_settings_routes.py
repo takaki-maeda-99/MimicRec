@@ -1,4 +1,5 @@
 from httpx import AsyncClient, ASGITransport
+from unittest.mock import MagicMock
 
 
 async def test_serial_devices_has_no_store_cache_control(app):
@@ -240,3 +241,121 @@ async def test_put_non_camera_config_skips_validation(app, tmp_path):
         )
     assert r.status_code == 200
     assert "dof: 7" in (robot_dir / "mock.yaml").read_text()
+
+
+def _stub_active_session(app, *, robot=None, teleop=None, mapper=None, image_sources=None):
+    """Install a stub session_manager + session_meta on the app so
+    the DELETE handler's `active` check reads as non-idle."""
+    sm = MagicMock()
+    sm.session.state.value = "recording"
+    sm.session.stopped.is_set.return_value = False
+    sm.session.sub_state = None
+    sm.session.mode.value = "teleop"
+    app.state.session_manager = sm
+    app.state.session_meta = {
+        "robot": robot,
+        "teleop": teleop,
+        "mapper": mapper,
+        "slot_assignments": image_sources or [],
+    }
+
+
+def _stub_idle_manager(app):
+    """Install a stale session_manager left over from a previous run that
+    transitioned to IDLE on FatalHardwareError. The DELETE handler must
+    treat this as logically gone and allow the delete."""
+    sm = MagicMock()
+    sm.session.state.value = "idle"
+    sm.session.stopped.is_set.return_value = True
+    app.state.session_manager = sm
+    app.state.session_meta = {}
+
+
+async def test_delete_config_refuses_409_when_robot_in_use(app, tmp_path):
+    app.state.configs_root = tmp_path
+    (tmp_path / "robot").mkdir()
+    (tmp_path / "robot" / "so101.yaml").write_text("_target_: x\n")
+    _stub_active_session(app, robot="so101")
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        r = await ac.delete("/api/settings/configs/robot/so101")
+
+    assert r.status_code == 409
+    assert "active session" in r.json().get("detail", "").lower()
+    assert (tmp_path / "robot" / "so101.yaml").exists()
+
+
+async def test_delete_config_allowed_when_no_active_session(app, tmp_path):
+    app.state.configs_root = tmp_path
+    (tmp_path / "robot").mkdir()
+    (tmp_path / "robot" / "so101.yaml").write_text("_target_: x\n")
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        r = await ac.delete("/api/settings/configs/robot/so101")
+
+    assert r.status_code == 204
+    assert not (tmp_path / "robot" / "so101.yaml").exists()
+
+
+async def test_delete_config_allowed_when_manager_is_stale_idle(app, tmp_path):
+    # FatalHardwareError can leave session_manager attached but in IDLE
+    # state with stopped.is_set() == True (see session.py:81-86). Treat
+    # this as logically gone and allow the delete.
+    app.state.configs_root = tmp_path
+    (tmp_path / "robot").mkdir()
+    (tmp_path / "robot" / "so101.yaml").write_text("_target_: x\n")
+    _stub_idle_manager(app)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        r = await ac.delete("/api/settings/configs/robot/so101")
+
+    assert r.status_code == 204
+    assert not (tmp_path / "robot" / "so101.yaml").exists()
+
+
+async def test_delete_camera_config_refuses_409_when_in_image_sources(app, tmp_path):
+    app.state.configs_root = tmp_path
+    (tmp_path / "cameras").mkdir()
+    (tmp_path / "cameras" / "front.yaml").write_text("_target_: y\n")
+    _stub_active_session(
+        app,
+        image_sources=[{"slot": "observation.images.front", "device": "front", "kind": "camera"}],
+    )
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        r = await ac.delete("/api/settings/configs/cameras/front")
+
+    assert r.status_code == 409
+    assert (tmp_path / "cameras" / "front.yaml").exists()
+
+
+async def test_delete_gopro_config_refuses_409_when_in_image_sources(app, tmp_path):
+    app.state.configs_root = tmp_path
+    (tmp_path / "gopros").mkdir()
+    (tmp_path / "gopros" / "hero11.yaml").write_text("_target_: y\n")
+    _stub_active_session(
+        app,
+        image_sources=[{"slot": "observation.images.wrist", "device": "hero11", "kind": "gopro"}],
+    )
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        r = await ac.delete("/api/settings/configs/gopros/hero11")
+
+    assert r.status_code == 409
+    assert (tmp_path / "gopros" / "hero11.yaml").exists()
+
+
+async def test_delete_camera_config_ignores_unrelated_image_source(app, tmp_path):
+    # An image_source pointing at `wrist` must NOT block deleting `front`.
+    app.state.configs_root = tmp_path
+    (tmp_path / "cameras").mkdir()
+    (tmp_path / "cameras" / "front.yaml").write_text("_target_: y\n")
+    _stub_active_session(
+        app,
+        image_sources=[{"slot": "observation.images.wrist", "device": "wrist", "kind": "camera"}],
+    )
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        r = await ac.delete("/api/settings/configs/cameras/front")
+
+    assert r.status_code == 204

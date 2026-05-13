@@ -208,7 +208,48 @@ async def create_config(request: Request, group: str, name: str, body: ConfigUpd
 
 @router.delete("/settings/configs/{group}/{name}", status_code=204)
 async def delete_config(request: Request, group: str, name: str):
-    """Delete a config file."""
+    """Delete a config file. Refuses with 409 if the config is currently
+    bound to an active recording session — deleting it would leave the
+    writer holding a path that no longer exists on disk.
+    """
+    # Active-session guard. Match against session_meta with the same
+    # shape build_state_payload() produces at session.py:42-61.
+    # A stale manager left in IDLE after FatalHardwareError is treated
+    # as logically gone (matches the session_start path at session.py:81-86).
+    meta = getattr(request.app.state, "session_meta", None) or {}
+    sm = getattr(request.app.state, "session_manager", None)
+    active = (
+        sm is not None
+        and getattr(sm.session, "state", None) is not None
+        and sm.session.state.value != "idle"
+        and not sm.session.stopped.is_set()
+    )
+    if active:
+        if group in ("robot", "teleop", "mapper"):
+            if meta.get(group) == name:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"active session uses this config (group={group}, name={name})",
+                )
+        elif group == "cameras":
+            for src in meta.get("slot_assignments", []):
+                src_kind = src.get("kind") if isinstance(src, dict) else getattr(src, "kind", None)
+                src_device = src.get("device") if isinstance(src, dict) else getattr(src, "device", None)
+                if src_kind == "camera" and src_device == name:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"active session uses this camera config (name={name})",
+                    )
+        elif group == "gopros":
+            for src in meta.get("slot_assignments", []):
+                src_kind = src.get("kind") if isinstance(src, dict) else getattr(src, "kind", None)
+                src_device = src.get("device") if isinstance(src, dict) else getattr(src, "device", None)
+                if src_kind == "gopro" and src_device == name:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"active session uses this gopro config (name={name})",
+                    )
+
     root = get_configs_root(request.app)
     path = root / group / f"{name}.yaml"
     if not path.exists():
