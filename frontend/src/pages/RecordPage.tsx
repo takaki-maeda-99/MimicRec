@@ -435,47 +435,123 @@ function EEBlock({ enabled }: { enabled: boolean }) {
   );
 }
 
+// Window options for the EE trajectory plot. The hook buffers the
+// maximum here so changing the chip doesn't lose history.
+const XY_WINDOWS_SEC = [3, 5, 8, 15] as const;
+const XY_WINDOW_MAX_SEC = 15;
+const XY_HZ = 100;
+const XY_Z_TIERS = 6; // segment count for the Z color ramp
+
 function XYPlot() {
-  const { xs, ys } = useEeXyHistory(true);
+  const [windowSec, setWindowSec] = useState<number>(8);
+  const { xs, ys, zs } = useEeXyHistory(true, XY_WINDOW_MAX_SEC, XY_HZ);
   const W = 360;
   const H = 110;
   const PAD = 6;
+
+  // Slice to the visible window without re-allocating the buffer.
+  const visibleN = Math.min(xs.length, windowSec * XY_HZ);
+  const sx = xs.slice(xs.length - visibleN);
+  const sy = ys.slice(ys.length - visibleN);
+  const sz = zs.slice(zs.length - visibleN);
 
   // Top-down view from above the robot:
   //   world +x → SVG up    (in front of the base)
   //   world -x → SVG down  (behind the base)
   //   world +y → SVG left  (robot's left side)
   //   world -y → SVG right (robot's right side)
-  // Auto-fit bounds with a small floor so a near-stationary EE doesn't
-  // render as a single zero-area dot at the centre of the well.
-  let pts = "";
-  let head: { cx: number; cy: number } | null = null;
-  if (xs.length > 0) {
-    const xMin = Math.min(...xs);
-    const xMax = Math.max(...xs);
-    const yMin = Math.min(...ys);
-    const yMax = Math.max(...ys);
-    const xRange = Math.max(xMax - xMin, 0.05); // ≥ 5 cm
+  // Z is encoded as a lightness ramp on a single hue, bundled into a
+  // small number of tier-paths so React reconciles ~6 SVG nodes per
+  // refresh instead of one per sample.
+  let zMinOut = 0;
+  let zMaxOut = 0;
+  let pathsByTier: string[] = Array(XY_Z_TIERS).fill("");
+  let head: { cx: number; cy: number; color: string } | null = null;
+
+  if (sx.length >= 2) {
+    const xMin = Math.min(...sx);
+    const xMax = Math.max(...sx);
+    const yMin = Math.min(...sy);
+    const yMax = Math.max(...sy);
+    const zMin = Math.min(...sz);
+    const zMax = Math.max(...sz);
+    const xRange = Math.max(xMax - xMin, 0.05);
     const yRange = Math.max(yMax - yMin, 0.05);
+    const zRange = Math.max(zMax - zMin, 0.02);
     const xMid = (xMin + xMax) / 2;
     const yMid = (yMin + yMax) / 2;
-    // World y spans the horizontal axis; world x spans the vertical axis.
     const scaleH = (W - 2 * PAD) / yRange;
     const scaleV = (H - 2 * PAD) / xRange;
     const scale = Math.min(scaleH, scaleV);
-    // SVG x: subtract (y - yMid) so larger world-y → smaller SVG-x (left).
     const toSx = (y: number) => W / 2 - (y - yMid) * scale;
-    // SVG y: subtract (x - xMid) so larger world-x → smaller SVG-y (up).
     const toSy = (x: number) => H / 2 - (x - xMid) * scale;
-    pts = xs.map((x, i) => `${toSx(ys[i]).toFixed(1)},${toSy(x).toFixed(1)}`).join(" ");
-    const lastIdx = xs.length - 1;
-    head = { cx: toSx(ys[lastIdx]), cy: toSy(xs[lastIdx]) };
+    const tierOf = (z: number) => {
+      const t = (z - zMin) / zRange;
+      return Math.min(XY_Z_TIERS - 1, Math.max(0, Math.floor(t * XY_Z_TIERS)));
+    };
+    const tierColor = (tier: number) => {
+      const t = tier / (XY_Z_TIERS - 1);
+      // 38% (low z, dark teal) → 72% (high z, light green).
+      return `hsl(155 55% ${(38 + t * 34).toFixed(1)}%)`;
+    };
+
+    for (let i = 1; i < sx.length; i++) {
+      const zAvg = (sz[i - 1] + sz[i]) / 2;
+      const tier = tierOf(zAvg);
+      const x1 = toSx(sy[i - 1]).toFixed(1);
+      const y1 = toSy(sx[i - 1]).toFixed(1);
+      const x2 = toSx(sy[i]).toFixed(1);
+      const y2 = toSy(sx[i]).toFixed(1);
+      pathsByTier[tier] += `M ${x1},${y1} L ${x2},${y2} `;
+    }
+    const last = sx.length - 1;
+    head = {
+      cx: toSx(sy[last]),
+      cy: toSy(sx[last]),
+      color: tierColor(tierOf(sz[last])),
+    };
+    zMinOut = zMin;
+    zMaxOut = zMax;
   }
+
+  const haveData = sx.length >= 2;
+  const tierColor = (tier: number) => {
+    const t = tier / (XY_Z_TIERS - 1);
+    return `hsl(155 55% ${(38 + t * 34).toFixed(1)}%)`;
+  };
 
   return (
     <InstrumentWell
-      header="EE · XY TRAJECTORY · LAST 8 s"
+      header={
+        <span className="flex items-baseline gap-2">
+          <span>EE · XYZ TRAJECTORY</span>
+          <span className="inline-flex gap-0.5">
+            {XY_WINDOWS_SEC.map((s) => (
+              <button
+                key={s}
+                type="button"
+                onClick={() => setWindowSec(s)}
+                className={
+                  "px-1.5 py-[1px] rounded-xs transition-colors " +
+                  (windowSec === s
+                    ? "bg-on-dark text-canvas-dark"
+                    : "text-on-dark-dim hover:text-on-dark")
+                }
+              >
+                {s}s
+              </button>
+            ))}
+          </span>
+        </span>
+      }
       live
+      caption={
+        haveData && (
+          <span className="font-mono">
+            z: {zMinOut.toFixed(2)} – {zMaxOut.toFixed(2)} m
+          </span>
+        )
+      }
     >
       <svg
         viewBox={`0 0 ${W} ${H}`}
@@ -488,22 +564,21 @@ function XYPlot() {
           </pattern>
         </defs>
         <rect width={W} height={H} fill="url(#xy-grid)" />
-        {pts && (
-          <polyline
-            points={pts}
-            fill="none"
-            stroke="var(--color-brand-green)"
-            strokeWidth="1.25"
-            vectorEffect="non-scaling-stroke"
-          />
+        {pathsByTier.map((d, tier) =>
+          d ? (
+            <path
+              key={tier}
+              d={d}
+              fill="none"
+              stroke={tierColor(tier)}
+              strokeWidth="1.25"
+              strokeLinecap="round"
+              vectorEffect="non-scaling-stroke"
+            />
+          ) : null,
         )}
         {head && (
-          <circle
-            cx={head.cx}
-            cy={head.cy}
-            r="2.5"
-            fill="var(--color-brand-green)"
-          />
+          <circle cx={head.cx} cy={head.cy} r="2.5" fill={head.color} />
         )}
       </svg>
     </InstrumentWell>
