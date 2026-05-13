@@ -8,6 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card"
 import { Select } from "../components/ui/select";
 import { Input } from "../components/ui/input";
 import { Badge } from "../components/ui/badge";
+import { PageHeader } from "../components/ui/page-header";
 
 export function InferencePage() {
   const s = useInferenceStore();
@@ -53,19 +54,25 @@ export function InferencePage() {
   })();
 
   return (
-    <div className="p-6 max-w-5xl mx-auto space-y-4">
-      <header className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <h1 className="text-2xl font-semibold">Inference</h1>
-          {isLive && <Badge variant="success">● live</Badge>}
-          {sessionRobot && (
-            <span className="text-xs text-steel">
-              robot: <code>{sessionRobot}</code>
-              {sessionMode && <> · mode: <code>{sessionMode}</code></>}
+    <>
+      <PageHeader
+        code="§03"
+        title={
+          <span className="flex items-baseline gap-md">
+            Inference
+            {isLive && <Badge variant="success">● live</Badge>}
+          </span>
+        }
+        meta={
+          sessionRobot && (
+            <span className="font-mono text-micro text-stone">
+              robot {sessionRobot}{sessionMode && ` · mode ${sessionMode}`}
             </span>
-          )}
-        </div>
-      </header>
+          )
+        }
+      />
+      <div className="flex-1 overflow-auto">
+      <div className="max-w-[1100px] mx-auto px-xl py-xl space-y-4">
 
       {s.error && (
         <div className="rounded-md border border-brand-error/30 bg-brand-error/10 p-3 flex items-start justify-between gap-3">
@@ -120,7 +127,9 @@ export function InferencePage() {
       {s.phase === "ready" && <ReadyPanel />}
       {s.phase === "recording" && <RecordingPanel />}
       {s.phase === "review" && <ReviewPanel />}
-    </div>
+      </div>
+      </div>
+    </>
   );
 }
 
