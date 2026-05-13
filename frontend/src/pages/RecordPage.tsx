@@ -12,6 +12,7 @@ import { Badge } from "../components/ui/badge";
 import { InstrumentWell } from "../components/ui/instrument-well";
 import { Sparkline } from "../components/ui/sparkline";
 import { useJointHistory } from "../hooks/useJointHistory";
+import { useEeXyHistory } from "../hooks/useEeXyHistory";
 import { SectionMark } from "../components/ui/section-mark";
 import { ConfigEditorModal, type ConfigEntry as ModalConfigEntry, type ConfigEditorMode } from "../components/ConfigEditorModal";
 import type { ConfigGroup } from "../components/ConfigCard";
@@ -435,21 +436,68 @@ function EEBlock({ enabled }: { enabled: boolean }) {
 }
 
 function XYPlot() {
-  // TODO follow-up: add a rolling EE XY buffer hook similar to useJointHistory.
-  // For now, render the well with an empty-state grid so the visual lands.
+  const { xs, ys } = useEeXyHistory(true);
+  const W = 360;
+  const H = 110;
+  const PAD = 6;
+
+  // Auto-fit bounds with a small floor so a near-stationary EE doesn't
+  // render as a single zero-area dot at the centre of the well.
+  let pts = "";
+  let head: { cx: number; cy: number } | null = null;
+  if (xs.length > 0) {
+    const xMin = Math.min(...xs);
+    const xMax = Math.max(...xs);
+    const yMin = Math.min(...ys);
+    const yMax = Math.max(...ys);
+    const xRange = Math.max(xMax - xMin, 0.05); // ≥ 5 cm
+    const yRange = Math.max(yMax - yMin, 0.05);
+    const xMid = (xMin + xMax) / 2;
+    const yMid = (yMin + yMax) / 2;
+    const scaleX = (W - 2 * PAD) / xRange;
+    const scaleY = (H - 2 * PAD) / yRange;
+    const scale = Math.min(scaleX, scaleY);
+    const toX = (x: number) => W / 2 + (x - xMid) * scale;
+    // SVG y grows downward; flip so +world-y points up.
+    const toY = (y: number) => H / 2 - (y - yMid) * scale;
+    pts = xs.map((x, i) => `${toX(x).toFixed(1)},${toY(ys[i]).toFixed(1)}`).join(" ");
+    const lastIdx = xs.length - 1;
+    head = { cx: toX(xs[lastIdx]), cy: toY(ys[lastIdx]) };
+  }
+
   return (
     <InstrumentWell
       header="EE · XY TRAJECTORY · LAST 8 s"
       live
     >
-      <svg viewBox="0 0 360 110" preserveAspectRatio="none" className="w-full h-full">
+      <svg
+        viewBox={`0 0 ${W} ${H}`}
+        preserveAspectRatio="none"
+        className="w-full h-full"
+      >
         <defs>
           <pattern id="xy-grid" width="24" height="22" patternUnits="userSpaceOnUse">
             <path d="M 24 0 L 0 0 0 22" fill="none" stroke="var(--color-hairline-dark)" strokeWidth="0.5" />
           </pattern>
         </defs>
-        <rect width="360" height="110" fill="url(#xy-grid)" />
-        {/* Empty — wired up in follow-up */}
+        <rect width={W} height={H} fill="url(#xy-grid)" />
+        {pts && (
+          <polyline
+            points={pts}
+            fill="none"
+            stroke="var(--color-brand-green)"
+            strokeWidth="1.25"
+            vectorEffect="non-scaling-stroke"
+          />
+        )}
+        {head && (
+          <circle
+            cx={head.cx}
+            cy={head.cy}
+            r="2.5"
+            fill="var(--color-brand-green)"
+          />
+        )}
       </svg>
     </InstrumentWell>
   );
