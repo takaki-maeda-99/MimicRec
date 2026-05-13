@@ -10,6 +10,7 @@ import { Input } from "../components/ui/input";
 import { CodeInline } from "../components/ui/code-inline";
 import { ExportDatasetModal } from "../components/ExportDatasetModal";
 import { CreateDatasetModal } from "../components/CreateDatasetModal";
+import { PageHeader } from "../components/ui/page-header";
 
 interface AnnotateProgress {
   done: number;
@@ -91,66 +92,108 @@ export default function DatasetsPage() {
   };
 
   return (
-    <div>
-      <header className="flex items-center justify-between pb-sm mb-lg border-b border-hairline gap-md">
-        <div className="flex items-center gap-md">
-          <h2 className="text-heading-3 text-ink">Datasets</h2>
-          <HubAuthPill auth={auth} loading={authLoading} onRefresh={refreshAuth} />
-        </div>
-        <Button onClick={() => setCreating(true)}>+ New Dataset</Button>
-      </header>
+    <>
+      <PageHeader
+        code="§01"
+        title="Catalogue"
+        meta={
+          <span className="font-mono text-micro text-stone">
+            {datasets?.length ?? 0} collections
+          </span>
+        }
+        actions={
+          <>
+            <HubAuthPill auth={auth} loading={authLoading} onRefresh={refreshAuth} />
+            <Button size="sm" onClick={() => setCreating(true)}>+ New dataset</Button>
+          </>
+        }
+      />
 
-      {isLoading ? (
-        <p className="text-steel">Loading...</p>
-      ) : !datasets?.length ? (
-        <p className="text-steel">No datasets yet. Click "+ New Dataset" to create one.</p>
-      ) : (
-        <div className="flex flex-col gap-md">
-          {datasets.map((ds) => (
-            <DatasetCard
-              key={ds.name}
-              ds={ds}
-              auth={auth}
-              isAnnotating={annotating === ds.name}
-              annotatingAny={annotating !== null}
-              annotateProgress={annotating === ds.name ? progress : null}
-              onAnnotate={() => handleAnnotateAll(ds.name)}
-              onExport={() => setExportingDataset(ds.name)}
-              onDelete={() => {
-                if (confirm(`Delete dataset "${ds.name}" and all its episodes?`)) {
-                  deleteMutation.mutate(ds.name);
-                }
-              }}
-            />
-          ))}
-        </div>
-      )}
+      <div className="flex-1 overflow-auto">
+        <div className="max-w-[1240px] mx-auto px-xl py-xl">
+          <SummaryBlock datasets={datasets ?? []} />
 
-      {annotating && progress && progress.total > 0 && (
-        <div className="mt-xl rounded-lg border border-hairline bg-canvas p-md">
-          <div className="flex items-center justify-between mb-xs">
-            <span className="text-body-sm-medium text-ink">Annotating {annotating}</span>
-            <span className="text-body-sm text-steel">
-              {progress.done} / {progress.total} episodes
-              {progress.current_episode !== null && ` (processing ep ${progress.current_episode})`}
-            </span>
-          </div>
-          <div className="w-full bg-surface rounded-full h-2 overflow-hidden">
-            <div
-              className="bg-brand-tag h-2 transition-all"
-              style={{ width: `${(progress.done / progress.total) * 100}%` }}
-            />
-          </div>
-          {progress.status === "done" && (
-            <p className="mt-xs text-body-sm text-brand-green-deep">Complete!</p>
+          {isLoading ? (
+            <p className="text-steel">Loading...</p>
+          ) : !datasets?.length ? (
+            <p className="text-steel">No datasets yet. Click "+ New dataset" to create one.</p>
+          ) : (
+            <div className="flex flex-col gap-md">
+              {datasets.map((ds) => (
+                <DatasetCard
+                  key={ds.name}
+                  ds={ds}
+                  auth={auth}
+                  isAnnotating={annotating === ds.name}
+                  annotatingAny={annotating !== null}
+                  annotateProgress={annotating === ds.name ? progress : null}
+                  onAnnotate={() => handleAnnotateAll(ds.name)}
+                  onExport={() => setExportingDataset(ds.name)}
+                  onDelete={() => {
+                    if (confirm(`Delete dataset "${ds.name}" and all its episodes?`)) {
+                      deleteMutation.mutate(ds.name);
+                    }
+                  }}
+                />
+              ))}
+            </div>
+          )}
+
+          {annotating && progress && progress.total > 0 && (
+            <div className="mt-xl rounded-lg border border-hairline bg-canvas p-md">
+              <div className="flex items-center justify-between mb-xs">
+                <span className="text-body-sm-medium text-ink">Annotating {annotating}</span>
+                <span className="text-body-sm text-steel">
+                  {progress.done} / {progress.total} episodes
+                  {progress.current_episode !== null && ` (processing ep ${progress.current_episode})`}
+                </span>
+              </div>
+              <div className="w-full bg-surface rounded-full h-2 overflow-hidden">
+                <div
+                  className="bg-brand-tag h-2 transition-all"
+                  style={{ width: `${(progress.done / progress.total) * 100}%` }}
+                />
+              </div>
+              {progress.status === "done" && (
+                <p className="mt-xs text-body-sm text-brand-green-deep">Complete!</p>
+              )}
+            </div>
           )}
         </div>
-      )}
+      </div>
 
       {creating && <CreateDatasetModal onClose={() => setCreating(false)} />}
       {exportingDataset && (
         <ExportDatasetModal ds={exportingDataset} onClose={() => setExportingDataset(null)} />
       )}
+    </>
+  );
+}
+
+function SummaryBlock({ datasets }: { datasets: Array<{ name: string; num_episodes: number; total_frames: number }> }) {
+  const totalEp = datasets.reduce((s, d) => s + d.num_episodes, 0);
+  const totalFr = datasets.reduce((s, d) => s + d.total_frames, 0);
+  return (
+    <div className="flex items-end justify-between gap-xl pb-xl border-b border-hairline mb-xl">
+      <div>
+        <h2 className="text-heading-2 text-ink leading-tight">Recorded data, sorted by recency.</h2>
+        <p className="text-body-sm text-steel mt-2 max-w-[640px]">
+          {datasets.length} active datasets — review status, push to Hub, export, or annotate.
+        </p>
+      </div>
+      <div className="flex gap-xl items-baseline text-right">
+        <Stat label="datasets" value={datasets.length} />
+        <Stat label="episodes" value={totalEp} />
+        <Stat label="frames" value={totalFr.toLocaleString()} />
+      </div>
+    </div>
+  );
+}
+function Stat({ label, value }: { label: string; value: React.ReactNode }) {
+  return (
+    <div className="flex flex-col items-end gap-0.5">
+      <span className="font-mono text-heading-3 text-ink tabular-nums leading-none">{value}</span>
+      <span className="text-micro-uppercase uppercase tracking-[0.18em] text-stone font-semibold">{label}</span>
     </div>
   );
 }
