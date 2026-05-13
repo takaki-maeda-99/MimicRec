@@ -11,6 +11,7 @@ import { CodeInline } from "../components/ui/code-inline";
 import { ExportDatasetModal } from "../components/ExportDatasetModal";
 import { CreateDatasetModal } from "../components/CreateDatasetModal";
 import { PageHeader } from "../components/ui/page-header";
+import { CornerTicks } from "../components/ui/corner-ticks";
 
 interface AnnotateProgress {
   done: number;
@@ -119,10 +120,11 @@ export default function DatasetsPage() {
             <p className="text-steel">No datasets yet. Click "+ New dataset" to create one.</p>
           ) : (
             <div className="flex flex-col gap-md">
-              {datasets.map((ds) => (
+              {datasets.map((ds, i) => (
                 <DatasetCard
                   key={ds.name}
                   ds={ds}
+                  index={i + 1}
                   auth={auth}
                   isAnnotating={annotating === ds.name}
                   annotatingAny={annotating !== null}
@@ -240,6 +242,7 @@ function HubAuthPill({
 
 interface DatasetCardProps {
   ds: { name: string; num_episodes: number; total_frames: number };
+  index: number;
   auth: AuthStatus | null;
   isAnnotating: boolean;
   annotatingAny: boolean;
@@ -251,6 +254,7 @@ interface DatasetCardProps {
 
 function DatasetCard({
   ds,
+  index,
   auth,
   isAnnotating,
   annotatingAny,
@@ -328,90 +332,68 @@ function DatasetCard({
     hub?.progress.status === "uploading" || hub?.progress.status === "queued";
 
   return (
-    <div className="rounded-lg border border-hairline bg-canvas hover:border-stone transition-colors overflow-hidden">
-      <Link
-        to={`/datasets/${ds.name}/episodes`}
-        className="flex items-center gap-sm flex-wrap px-lg py-md bg-surface/40 hover:bg-surface transition-colors border-b border-hairline-soft group"
-        title={`Open episodes for ${ds.name}`}
-      >
-        <span className="text-heading-5 text-ink group-hover:underline">
-          {ds.name}
-        </span>
-        <span className="text-stone group-hover:text-ink transition-colors">→</span>
-        <HubStatusBadge hub={hub} />
-      </Link>
-      <div className="p-lg">
+    <div className="relative rounded-lg border border-hairline bg-canvas hover:border-stone transition-colors px-xl py-md">
+      <CornerTicks tone="light" inset={6} size={8} />
 
-      <div className="text-body-sm text-slate mb-md flex flex-wrap items-center gap-sm">
-        <span>
-          {ds.num_episodes} episode{ds.num_episodes === 1 ? "" : "s"} ·{" "}
-          {ds.total_frames.toLocaleString()} frames
+      {/* Head row */}
+      <div className="relative flex items-center gap-md mb-1">
+        <span className="font-mono text-micro text-stone tracking-wide">
+          {String(index).padStart(2, "0")}
         </span>
-        {hubConfigured && hub.config && (
-          <span className="flex items-center gap-1">
-            · <CodeInline>{hub.config.repo_id}</CodeInline>
-            {hub.config.private && (
-              <span className="text-caption text-stone">private</span>
-            )}
-            {hub.config.auto_push && (
-              <Badge variant="tag">auto-push</Badge>
-            )}
-          </span>
+        <Link to={`/datasets/${ds.name}/episodes`} className="text-heading-5 text-ink hover:text-brand-warn">
+          {ds.name}
+        </Link>
+        <span className="flex-1" />
+        <HubStatusBadge hub={hub} />
+      </div>
+
+      {/* Fact strip */}
+      <div className="relative flex flex-wrap items-baseline gap-x-lg gap-y-1 py-2 border-y border-hairline-soft text-caption">
+        <Fact k="Episodes" v={ds.num_episodes} mono />
+        <Fact k="Frames" v={ds.total_frames.toLocaleString()} mono />
+        {hubConfigured && hub?.config && (
+          <Fact k="Hub" v={<CodeInline>{hub.config.repo_id}</CodeInline>} />
+        )}
+        {hubConfigured && hub?.config?.private && (
+          <Fact k="Visibility" v="private" />
+        )}
+        {hubConfigured && hub?.config?.auto_push && (
+          <Fact k="Auto-push" v="on" />
         )}
       </div>
 
-      <div className="flex flex-wrap items-center gap-sm">
+      {/* Actions */}
+      <div className="relative flex flex-wrap items-center gap-2 mt-md">
         <Link to={`/datasets/${ds.name}/episodes`}>
-          <Button variant="primary" size="lg">Episodes →</Button>
+          <Button size="sm">Open episodes →</Button>
         </Link>
-
         {!hubConfigured && (
-          <Button
-            variant="secondary"
-            size="lg"
-            className="!bg-surface hover:!bg-hairline"
-            onClick={() => setEditing(true)}
-          >
-            ☁ Configure Hub
+          <Button variant="secondary" size="sm" onClick={() => setEditing(true)}>
+            Configure Hub
           </Button>
         )}
         {hubConfigured && (
           <>
             <Button
               variant="secondary"
-              size="lg"
-              className="!bg-surface hover:!bg-hairline"
+              size="sm"
               onClick={onPush}
               disabled={!auth?.authenticated || isPushing}
               title={!auth?.authenticated ? "Run huggingface-cli login first" : undefined}
             >
-              {isPushing ? "Pushing…" : "↑ Push to Hub"}
+              {isPushing ? "Pushing…" : "↑ Push"}
             </Button>
-            <Button
-              variant="secondary"
-              size="lg"
-              className="!bg-surface hover:!bg-hairline"
-              onClick={() => setEditing(true)}
-            >
+            <Button variant="secondary" size="sm" onClick={() => setEditing(true)}>
               Edit Hub
             </Button>
           </>
         )}
-
+        <Button variant="secondary" size="sm" onClick={onExport}>Export</Button>
         <Button
           variant="secondary"
-          size="lg"
-          className="!bg-surface hover:!bg-hairline"
-          onClick={onExport}
-        >
-          Export
-        </Button>
-        <Button
-          variant="secondary"
-          size="lg"
+          size="sm"
           onClick={onAnnotate}
           disabled={annotatingAny}
-          className={`!bg-surface hover:!bg-hairline ${isAnnotating ? "!text-brand-tag" : ""}`}
         >
           {isAnnotating && annotateProgress
             ? `Annotating ${annotateProgress.done}/${annotateProgress.total}`
@@ -419,17 +401,8 @@ function DatasetCard({
             ? "Starting…"
             : "Annotate"}
         </Button>
-
-        <div className="grow" />
-
-        <Button
-          variant="secondary"
-          size="lg"
-          className="!bg-brand-error/10 !text-brand-error hover:!bg-brand-error/20"
-          onClick={onDelete}
-        >
-          🗑 Delete
-        </Button>
+        <span className="flex-1" />
+        <Button variant="destructive" size="sm" onClick={onDelete}>Delete</Button>
       </div>
 
       {editing && (
@@ -484,30 +457,29 @@ function DatasetCard({
           )}
         </div>
       )}
-      </div>
     </div>
   );
 }
 
 function HubStatusBadge({ hub }: { hub: HubResponse | null }) {
   if (!hub) return null;
-  if (!hub.config) {
-    return <Badge variant="outline">Hub: not configured</Badge>;
-  }
-  if (hub.progress.status === "uploading") {
-    return <Badge variant="tag">Pushing…</Badge>;
-  }
-  if (hub.progress.status === "queued") {
-    return <Badge variant="tag">Queued</Badge>;
-  }
-  if (hub.progress.status === "error" || hub.state?.last_push_error) {
-    return <Badge variant="destructive">Push failed</Badge>;
-  }
-  if (!hub.state?.last_pushed_commit_sha) {
-    return <Badge variant="outline">Not pushed</Badge>;
-  }
-  if (!hub.state.last_pushed_manifest_hash) {
-    return <Badge variant="warning">Stale</Badge>;
-  }
-  return <Badge variant="success">✓ Synced</Badge>;
+  if (!hub.config) return <Badge variant="status" state="unconfigured" />;
+  if (hub.progress.status === "uploading" || hub.progress.status === "queued")
+    return <Badge variant="status" state="pushing" />;
+  if (hub.progress.status === "error" || hub.state?.last_push_error)
+    return <Badge variant="status" state="error" />;
+  if (!hub.state?.last_pushed_commit_sha)
+    return <Badge variant="status" state="pending" />;
+  if (!hub.state.last_pushed_manifest_hash)
+    return <Badge variant="status" state="stale" />;
+  return <Badge variant="status" state="synced" />;
+}
+
+function Fact({ k, v, mono }: { k: string; v: React.ReactNode; mono?: boolean }) {
+  return (
+    <span className="inline-flex items-baseline gap-1.5">
+      <span className="text-micro-uppercase uppercase tracking-[0.18em] text-stone font-semibold">{k}</span>
+      <span className={mono ? "font-mono text-caption text-ink" : "text-ink"}>{v}</span>
+    </span>
+  );
 }
