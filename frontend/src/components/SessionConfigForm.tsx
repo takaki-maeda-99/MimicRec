@@ -262,8 +262,12 @@ export default function SessionConfigForm({ onStarted, onEditConfig }: Props) {
                     }}
                   />
                 ))}
-                {!datasetExists && availableRoles.length > 0 && (
-                  <AddSlotButton roles={availableRoles} onAdd={addSlot} />
+                {!datasetExists && (
+                  <AddSlotButton
+                    roles={availableRoles}
+                    existingSlots={formSlots}
+                    onAdd={addSlot}
+                  />
                 )}
               </div>
             </Field>
