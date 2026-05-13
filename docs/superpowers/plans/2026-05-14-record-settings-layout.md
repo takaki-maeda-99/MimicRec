@@ -2043,10 +2043,16 @@ function DevicePickerButton({
         // Slot 0 = "none", slots 1..N = options
         if (highlight === 0) {
           onChange("");
-        } else {
-          const item = options[highlight - 1];
-          if (item) onChange(item.name);
+          setOpen(false);
+          triggerRef.current?.focus();
+          return;
         }
+        const item = options[highlight - 1];
+        if (!item) return;
+        // Mirror the mouse-click in-use guard so Enter doesn't bypass it.
+        const inUse = usedDevices.has(item.name) && device !== item.name;
+        if (inUse) return;
+        onChange(item.name);
         setOpen(false);
         triggerRef.current?.focus();
       }
@@ -2057,7 +2063,7 @@ function DevicePickerButton({
       document.removeEventListener("mousedown", onDown);
       document.removeEventListener("keydown", onKey);
     };
-  }, [open, options, highlight, onChange]);
+  }, [open, options, highlight, onChange, usedDevices, device]);
 
   const label = device
     ? `${device} (${options.find(o => o.name === device)?.kind ?? "?"})`
