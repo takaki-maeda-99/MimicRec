@@ -29,7 +29,7 @@ export function HardwareStatusBlock({
         </Button>
       </header>
       <div className="rounded-md border border-hairline bg-canvas p-md grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-xl">
-        <Column label={`Serial · ${serial.length}`}>
+        <Column label={`Serial${serial.length ? ` · ${serial.length}` : ""}`}>
           {serial.length === 0
             ? <Empty>No serial ports found</Empty>
             : serial.map(p => (
@@ -39,7 +39,7 @@ export function HardwareStatusBlock({
                 </Row>
               ))}
         </Column>
-        <Column label={`Cameras · ${cameras.length}`}>
+        <Column label={`Cameras${cameras.length ? ` · ${cameras.length}` : ""}`}>
           {cameras.length === 0
             ? <Empty>No cameras found</Empty>
             : cameras.map(c => (

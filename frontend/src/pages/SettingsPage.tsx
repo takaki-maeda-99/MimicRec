@@ -27,9 +27,9 @@ export default function SettingsPage() {
     setRefreshing(true);
     try {
       const [serial, cams, cal, ...groups] = await Promise.all([
-        apiFetch<SerialDevice[]>("/api/settings/devices/serial"),
-        apiFetch<CameraDevice[]>("/api/settings/devices/cameras"),
-        apiFetch<Record<string, Record<string, string[]>>>("/api/settings/calibration"),
+        apiFetch<SerialDevice[]>("/api/settings/devices/serial").catch(() => [] as SerialDevice[]),
+        apiFetch<CameraDevice[]>("/api/settings/devices/cameras").catch(() => [] as CameraDevice[]),
+        apiFetch<Record<string, Record<string, string[]>>>("/api/settings/calibration").catch(() => ({} as Record<string, Record<string, string[]>>)),
         ...CONFIG_GROUPS.map(g =>
           apiFetch<ConfigCardEntry[]>(`/api/settings/configs/${g}`).catch(() => [] as ConfigCardEntry[])
         ),
