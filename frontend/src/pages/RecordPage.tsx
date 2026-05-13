@@ -441,6 +441,11 @@ function XYPlot() {
   const H = 110;
   const PAD = 6;
 
+  // Top-down view from above the robot:
+  //   world +x → SVG up    (in front of the base)
+  //   world -x → SVG down  (behind the base)
+  //   world +y → SVG left  (robot's left side)
+  //   world -y → SVG right (robot's right side)
   // Auto-fit bounds with a small floor so a near-stationary EE doesn't
   // render as a single zero-area dot at the centre of the well.
   let pts = "";
@@ -454,15 +459,17 @@ function XYPlot() {
     const yRange = Math.max(yMax - yMin, 0.05);
     const xMid = (xMin + xMax) / 2;
     const yMid = (yMin + yMax) / 2;
-    const scaleX = (W - 2 * PAD) / xRange;
-    const scaleY = (H - 2 * PAD) / yRange;
-    const scale = Math.min(scaleX, scaleY);
-    const toX = (x: number) => W / 2 + (x - xMid) * scale;
-    // SVG y grows downward; flip so +world-y points up.
-    const toY = (y: number) => H / 2 - (y - yMid) * scale;
-    pts = xs.map((x, i) => `${toX(x).toFixed(1)},${toY(ys[i]).toFixed(1)}`).join(" ");
+    // World y spans the horizontal axis; world x spans the vertical axis.
+    const scaleH = (W - 2 * PAD) / yRange;
+    const scaleV = (H - 2 * PAD) / xRange;
+    const scale = Math.min(scaleH, scaleV);
+    // SVG x: subtract (y - yMid) so larger world-y → smaller SVG-x (left).
+    const toSx = (y: number) => W / 2 - (y - yMid) * scale;
+    // SVG y: subtract (x - xMid) so larger world-x → smaller SVG-y (up).
+    const toSy = (x: number) => H / 2 - (x - xMid) * scale;
+    pts = xs.map((x, i) => `${toSx(ys[i]).toFixed(1)},${toSy(x).toFixed(1)}`).join(" ");
     const lastIdx = xs.length - 1;
-    head = { cx: toX(xs[lastIdx]), cy: toY(ys[lastIdx]) };
+    head = { cx: toSx(ys[lastIdx]), cy: toSy(xs[lastIdx]) };
   }
 
   return (
