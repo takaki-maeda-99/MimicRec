@@ -15,13 +15,15 @@ import { useJointHistory } from "../hooks/useJointHistory";
 import { SectionMark } from "../components/ui/section-mark";
 import type { EpisodeProgress, ReplayProgress } from "../api/types.ts";
 
-function RecBadge({ elapsedSec }: { elapsedSec: number }) {
-  const m = Math.floor(elapsedSec / 60).toString().padStart(2, "0");
-  const s = Math.floor(elapsedSec % 60).toString().padStart(2, "0");
+function RecBadge({ elapsedSec }: { elapsedSec: number | null }) {
+  const text =
+    elapsedSec === null
+      ? "--:--"
+      : `${Math.floor(elapsedSec / 60).toString().padStart(2, "0")}:${Math.floor(elapsedSec % 60).toString().padStart(2, "0")}`;
   return (
     <span className="inline-flex items-center gap-2 px-2.5 py-1 rounded-sm border border-brand-error/40 bg-brand-error/10 text-brand-error font-mono text-micro tracking-[0.08em]">
       <span className="w-1.5 h-1.5 rounded-full bg-brand-error animate-pulse" />
-      REC {m}:{s}
+      REC {text}
     </span>
   );
 }
@@ -116,9 +118,10 @@ export default function RecordPage() {
 
   // EpisodeProgress only carries num_frames + writer counters
   // (frontend/src/api/types.ts:43-49). Derive elapsed from frames / fps;
-  // when fps is unknown, fall back to showing —.
-  const elapsedSec =
-    progress && fps && fps > 0 ? progress.num_frames / fps : 0;
+  // when progress or fps is missing, return null so the badge renders
+  // `--:--` instead of misleadingly showing `00:00` as if we're 0 s in.
+  const elapsedSec: number | null =
+    progress && fps && fps > 0 ? progress.num_frames / fps : null;
 
   const inProgressIndex = (episodes?.length ?? 0) + 1;
 
@@ -258,10 +261,14 @@ function EpisodeProgressBlock({
 
   // Derive elapsed from frames / fps (the backend doesn't ship an explicit
   // elapsed_sec — keep this consistent with the top-bar RecBadge).
-  const elapsedSec =
-    progress && fps && fps > 0 ? progress.num_frames / fps : 0;
-  const m = Math.floor(elapsedSec / 60).toString().padStart(2, "0");
-  const s = Math.floor(elapsedSec % 60).toString().padStart(2, "0");
+  const elapsedSec: number | null =
+    progress && fps && fps > 0 ? progress.num_frames / fps : null;
+  const m = elapsedSec === null
+    ? "--"
+    : Math.floor(elapsedSec / 60).toString().padStart(2, "0");
+  const s = elapsedSec === null
+    ? "--"
+    : Math.floor(elapsedSec % 60).toString().padStart(2, "0");
 
   return (
     <section className="bg-canvas border border-hairline rounded-md p-md flex flex-col">
