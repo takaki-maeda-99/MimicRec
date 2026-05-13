@@ -120,6 +120,8 @@ export default function RecordPage() {
   const elapsedSec =
     progress && fps && fps > 0 ? progress.num_frames / fps : 0;
 
+  const inProgressIndex = (episodes?.length ?? 0) + 1;
+
   // Merge cameras + gopros so GoPro previews are included in the two cells.
   const previewSources = [...cameras, ...gopros];
 
@@ -217,10 +219,8 @@ export default function RecordPage() {
           <JointBlock enabled />
           <EEBlock enabled />
         </aside>
-        {/* Row 2, col 1 — episode progress placeholder */}
-        <div className="bg-canvas border border-hairline rounded-md p-md text-caption text-steel">
-          episode progress (placeholder)
-        </div>
+        {/* Row 2, col 1 — episode progress */}
+        <EpisodeProgressBlock inProgressIndex={inProgressIndex} />
         {/* Row 2, col 2 — xy plot placeholder */}
         <div className="bg-canvas-dark rounded-md min-h-[140px] grid place-items-center text-on-dark-dim text-caption">
           xy trajectory (placeholder)
@@ -243,6 +243,94 @@ function Brief({ k, v, mono }: { k: string; v: React.ReactNode; mono?: boolean }
       </span>
       <span className={mono ? "font-mono text-caption text-ink" : "text-ink"}>{v}</span>
     </span>
+  );
+}
+
+function EpisodeProgressBlock({
+  inProgressIndex,
+}: {
+  inProgressIndex: number;
+}) {
+  const progress = useSessionStore((s) => s.episodeProgress);
+  const fps = useSessionStore((s) => s.fps);
+
+  // Derive elapsed from frames / fps (the backend doesn't ship an explicit
+  // elapsed_sec — keep this consistent with the top-bar RecBadge).
+  const elapsedSec =
+    progress && fps && fps > 0 ? progress.num_frames / fps : 0;
+  const m = Math.floor(elapsedSec / 60).toString().padStart(2, "0");
+  const s = Math.floor(elapsedSec % 60).toString().padStart(2, "0");
+
+  return (
+    <section className="bg-canvas border border-hairline rounded-md p-md flex flex-col">
+      <header className="mb-2 flex items-baseline justify-between">
+        <SectionMark code="§02.B" name="episode progress" />
+        <span className="font-mono text-micro text-stone">
+          capturing ep <span className="text-ink">{inProgressIndex}</span>
+        </span>
+      </header>
+      <div className="flex items-baseline gap-2">
+        <span className="text-heading-2 font-semibold tracking-tight tabular-nums">
+          {m}:{s}
+        </span>
+        <span className="text-caption text-steel">elapsed</span>
+      </div>
+      <div className="grid grid-cols-3 gap-x-md gap-y-1 mt-md text-caption">
+        <Cell k="Frames" v={progress?.num_frames ?? "—"} mono />
+        <Cell k="FPS tgt." v={fps?.toFixed(2) ?? "—"} mono tone="ok" />
+        <Cell k="Ticks skipped" v={progress?.ticks_skipped ?? 0} mono />
+        <Cell
+          k="Writer lag"
+          v={
+            typeof progress?.writer_lag_ms === "number"
+              ? `${progress.writer_lag_ms.toFixed(0)} ms`
+              : "—"
+          }
+          mono
+          tone={(progress?.writer_lag_ms ?? 0) > 50 ? "warn" : "ok"}
+        />
+        <Cell
+          k="Queue"
+          v={progress?.writer_queue_depth ?? 0}
+          mono
+          tone={(progress?.writer_queue_depth ?? 0) > 5 ? "warn" : "ok"}
+        />
+        <Cell k="Stale samples" v={progress?.stale_sample_count ?? 0} mono />
+      </div>
+    </section>
+  );
+}
+
+function Cell({
+  k,
+  v,
+  mono,
+  tone,
+}: {
+  k: string;
+  v: React.ReactNode;
+  mono?: boolean;
+  tone?: "ok" | "warn";
+}) {
+  const color =
+    tone === "ok"
+      ? "text-brand-green-deep"
+      : tone === "warn"
+      ? "text-brand-warn"
+      : "text-ink";
+  return (
+    <>
+      <span className="text-micro-uppercase uppercase tracking-[0.18em] text-stone font-semibold">
+        {k}
+      </span>
+      <span
+        className={
+          (mono ? "font-mono text-caption tabular-nums " : "text-caption ") + color
+        }
+      >
+        {String(v)}
+      </span>
+    </>
   );
 }
 
