@@ -8,6 +8,7 @@ import { ConfigCard } from "./ConfigCard";
 import { SegmentedTab, SegmentedTabBar } from "./ui/segmented-tab";
 import { SectionMark } from "./ui/section-mark";
 import { CameraSlotRow, AddSlotButton } from "./CameraSlotRow";
+import type { DeviceOption } from "./CameraSlotRow";
 
 interface Props {
   onStarted: () => void;
@@ -33,7 +34,7 @@ export default function SessionConfigForm({ onStarted }: Props) {
   const { data: schema } = useDatasetSchema(datasetExists ? dataset : undefined);
   const cameraConfigs = useConfigsWithContent("cameras").data ?? [];
   const goproConfigs = useConfigsWithContent("gopros", { optional: true }).data ?? [];
-  const deviceOptions = [
+  const deviceOptions: DeviceOption[] = [
     ...cameraConfigs.map(c => ({ name: c.name, kind: "camera" as const })),
     ...goproConfigs.map(g => ({ name: g.name, kind: "gopro" as const })),
   ];

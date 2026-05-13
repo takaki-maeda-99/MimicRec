@@ -20,7 +20,6 @@ interface CameraSlotRowProps {
 export function CameraSlotRow({
   slot,
   device,
-  locked,
   legacy,
   deviceOptions,
   usedDevices,
@@ -35,7 +34,7 @@ export function CameraSlotRow({
       <span className="flex-1" />
       <select
         value={device}
-        disabled={locked && !device}
+        aria-label={`Device for ${slot}`}
         onChange={e => onChange(e.target.value)}
         className="border border-hairline rounded px-2 py-1 text-body-sm bg-canvas min-w-[200px]"
       >
