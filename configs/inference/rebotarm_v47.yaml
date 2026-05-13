@@ -1,0 +1,69 @@
+# configs/inference/rebotarm_v47.yaml
+#
+# Pairs with HF ckpt: takaki99/x-vla-adapter-v47-arch-v3-step95000
+# (OXE + LIBERO pretrain, 13 domains, action_chunk_len=8, action_dim=7,
+# proprio_dim=8). Bring up the X-VLA-Adapter server pointing at this ckpt
+# with a RebotArm-shaped deploy YAML (request_fields + proprio.adapt that
+# pads our 7-float proprio to 8) before starting inference here.
+#
+# Smoke-only, strongly. v47 has NOT seen RebotArm data; the underlying
+# datasets are OXE manipulation + LIBERO (Franka). Action chunks are
+# expected to be unphysical for the RebotArm — this contract verifies HTTP
+# wire + decode + dispatch only. Run against the daemon in a safe pose
+# with the deadman released or against a sim bridge; do NOT trust the
+# command stream to move the real arm correctly.
+#
+# RebotArm-specific differences vs configs/inference/so101_v46.yaml:
+#   - state.ee_pos / state.ee_rotvec are populated directly by the daemon
+#     (RebotArmZmqAdapter.read_state); the client skips FK.
+#   - gripper raw source is state.gripper_pos (raw motor rad), per
+#     ReBotArmZmqAdapter.proprio_layout.gripper_via_column.
+#   - RebotArm has CMD_SEND_GRIPPER_COMMAND, so unlike SO101 the gripper
+#     channel actually reaches the hardware.
+#
+# Known caveat: ReBotArmZmqAdapter.default_gripper_convention() currently
+# returns (closed_at=1.0, open_at=0.0), inferred from the
+# configs/mapper/so_to_rebotarm_ee.yaml output convention rather than
+# measured against the raw motor-rad range (~[-5.7, -0.8] open-to-closed).
+# The client's _normalized_gripper(state) therefore saturates raw daemon
+# values at 1.0. Training-side export used the same convention, so the
+# inference-time mismatch is symmetric with training; the model simply
+# learned gripper as a near-constant feature. Fixing the convention to
+# real hardware bounds is a separate task — see the
+# 2026-05-06-vla-export-ee-delta-design.md "reBot gripper convention"
+# row in the risks table.
+
+name: rebotarm_v47
+description: "X-VLA-Adapter v47 arch_v3 step 95000 (OXE+LIBERO pretrain; wire_only_smoke against RebotArm — actions not validated on real arm)."
+
+endpoint:
+  url: "http://localhost:8001/predict"
+  method: POST
+  timeout_s: 5.0
+  retry: { max_attempts: 0 }
+
+request:
+  images:
+    front: { field: image_primary, encoding: jpeg_base64, resize: [224, 224], jpeg_quality: 90 }
+    wrist: { field: image_wrist,   encoding: jpeg_base64, resize: [224, 224], jpeg_quality: 90 }
+  state:
+    field: proprio
+    components: [ee_pos, ee_rotvec, gripper_pos]
+    normalization: { method: none }   # server normalizes via q99
+  instruction:
+    field: instruction
+  extra_fields:
+    model_version: x_vla_rebotarm_v47
+
+response:
+  actions_path: actions
+  chunk:
+    expected_size: 8
+    on_size_mismatch: reject           # fixed-8 ckpt; refuse any mismatch
+  action:
+    type: ee_delta
+    frame: world                       # matches v47's OXE/LIBERO native frame
+    pose: { units: meter_axisangle_rad }
+    gripper: { kind: absolute, units: normalized_0_1 }
+    components: [ee_delta, gripper]
+    normalization: { method: none }    # server denormalizes via q99
