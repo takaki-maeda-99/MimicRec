@@ -226,7 +226,11 @@ export default function RecordPage() {
       </div>
 
       {/* Controls bar */}
-      <div className="border-t border-hairline bg-canvas px-xl py-2 flex items-center gap-2 flex-shrink-0">
+      <div className="border-t border-hairline bg-canvas px-xl py-2 flex items-center gap-3 flex-shrink-0 min-h-[52px]">
+        <span className="font-mono text-caption text-steel">
+          capturing episode <span className="text-ink">{inProgressIndex}</span>
+        </span>
+        <span className="w-px h-5 bg-hairline" />
         <RecordingControls />
       </div>
     </>
