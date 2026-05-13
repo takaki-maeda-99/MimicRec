@@ -81,10 +81,18 @@ export function ConfigPickerRow({
     );
   }
 
+  const toggleOpen = () => {
+    setOpen(o => {
+      if (!o) setHighlight(0);
+      return !o;
+    });
+  };
+
   const onRowKey = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
-      setOpen(o => !o);
+      e.stopPropagation();
+      toggleOpen();
     }
   };
 
@@ -94,7 +102,7 @@ export function ConfigPickerRow({
         ref={triggerRef}
         role="button"
         tabIndex={0}
-        onClick={() => setOpen(o => !o)}
+        onClick={toggleOpen}
         onKeyDown={onRowKey}
         className={cn(
           "w-full rounded-md border-2 bg-canvas px-md py-sm transition-colors text-left",

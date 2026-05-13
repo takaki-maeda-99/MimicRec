@@ -489,10 +489,10 @@ function RecordIdle() {
         onClose={() => setEditing(null)}
         onSaved={() => {
           setEditing(null);
-          // Invalidate BOTH cache keys: useConfigsWithContent feeds the form,
-          // useConfigs feeds the schema lookup. See queries.ts:97,107.
+          // Refresh the form's picker rows so the saved/new config is reflected
+          // without a hard reload. The schema lookup uses a separate key
+          // (["dataset-schema", ...]) and doesn't need invalidation here.
           queryClient.invalidateQueries({ queryKey: ["configs-with-content"] });
-          queryClient.invalidateQueries({ queryKey: ["configs"] });
         }}
       />
     </>
