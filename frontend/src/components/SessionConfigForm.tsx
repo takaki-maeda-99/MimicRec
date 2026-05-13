@@ -79,7 +79,7 @@ export default function SessionConfigForm({ onStarted }: Props) {
   };
 
   return (
-    <div className="max-w-[760px] flex flex-col gap-xl">
+    <div className="max-w-[1200px] flex flex-col gap-xl">
 
       {/* §02.idle.A — Mode */}
       <Section code="§02.idle.A" name="Mode">
@@ -95,9 +95,9 @@ export default function SessionConfigForm({ onStarted }: Props) {
         </Field>
       </Section>
 
-      {/* §02.idle.B — Dataset & task */}
-      <Section code="§02.idle.B" name="Dataset & task">
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-md">
+      {/* §02.idle.B — Dataset, task, fps (3-column) */}
+      <Section code="§02.idle.B" name="Dataset, task, fps">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-md">
           <Field label="Dataset">
             <Input
               list="existing-datasets"
@@ -128,6 +128,13 @@ export default function SessionConfigForm({ onStarted }: Props) {
               ))}
             </datalist>
           </Field>
+          <Field label="FPS">
+            <Input
+              type="number"
+              value={fps}
+              onChange={(e) => form.set({ fps: Number(e.target.value) })}
+            />
+          </Field>
         </div>
       </Section>
 
@@ -151,32 +158,34 @@ export default function SessionConfigForm({ onStarted }: Props) {
       {/* §02.idle.D — Teleop & mapper (only shown when mode === "teleop") */}
       {mode === "teleop" && (
         <Section code="§02.idle.D" name="Teleop & mapper">
-          <Field label="Teleop">
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-              {teleops?.map(t => (
-                <ConfigCard
-                  key={t.name}
-                  config={t}
-                  group="teleop"
-                  selected={teleop === t.name}
-                  onClick={() => form.set({ teleop: t.name })}
-                />
-              ))}
-            </div>
-          </Field>
-          <Field label="Mapper">
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-              {mappers?.map(m => (
-                <ConfigCard
-                  key={m.name}
-                  config={m}
-                  group="mapper"
-                  selected={mapper === m.name}
-                  onClick={() => form.set({ mapper: m.name })}
-                />
-              ))}
-            </div>
-          </Field>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-md">
+            <Field label="Teleop">
+              <div className="grid grid-cols-1 gap-2">
+                {teleops?.map(t => (
+                  <ConfigCard
+                    key={t.name}
+                    config={t}
+                    group="teleop"
+                    selected={teleop === t.name}
+                    onClick={() => form.set({ teleop: t.name })}
+                  />
+                ))}
+              </div>
+            </Field>
+            <Field label="Mapper">
+              <div className="grid grid-cols-1 gap-2">
+                {mappers?.map(m => (
+                  <ConfigCard
+                    key={m.name}
+                    config={m}
+                    group="mapper"
+                    selected={mapper === m.name}
+                    onClick={() => form.set({ mapper: m.name })}
+                  />
+                ))}
+              </div>
+            </Field>
+          </div>
         </Section>
       )}
 
@@ -239,11 +248,8 @@ export default function SessionConfigForm({ onStarted }: Props) {
         </Field>
       </Section>
 
-      {/* §02.idle.F — Parameters */}
-      <Section code="§02.idle.F" name="Parameters">
-        <Field label="FPS">
-          <Input type="number" className="w-20" value={fps} onChange={e => form.set({ fps: Number(e.target.value) })} />
-        </Field>
+      {/* §02.idle.F — Run parameters */}
+      <Section code="§02.idle.F" name="Run parameters">
         <div className="border border-hairline rounded-md p-md gap-sm flex flex-col bg-surface-soft">
           <label className="flex items-center gap-2 text-sm font-medium text-charcoal">
             <input
@@ -316,6 +322,14 @@ export default function SessionConfigForm({ onStarted }: Props) {
 
       {/* Start button footer */}
       <div className="flex items-center gap-md border-t border-hairline pt-lg">
+        {(!robot || !dataset || !task) ? (
+          <span className="text-caption text-steel">
+            Pick a robot, dataset, and task to enable start.
+          </span>
+        ) : (
+          <span className="text-caption text-steel">Ready to start.</span>
+        )}
+        <span className="flex-1" />
         <Button
           variant="primary"
           size="lg"
@@ -324,11 +338,6 @@ export default function SessionConfigForm({ onStarted }: Props) {
         >
           {startSession.isPending ? "Starting..." : "Start session"}
         </Button>
-        {(!robot || !dataset || !task) && (
-          <span className="text-caption text-steel">
-            Pick a robot, dataset, and task to enable start.
-          </span>
-        )}
       </div>
 
     </div>
