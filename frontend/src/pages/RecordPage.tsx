@@ -12,6 +12,7 @@ import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { PageHeader } from "../components/ui/page-header";
 import { Badge } from "../components/ui/badge";
+import { InstrumentWell } from "../components/ui/instrument-well";
 import type { EpisodeProgress, ReplayProgress } from "../api/types.ts";
 
 function RecBadge({ elapsedSec }: { elapsedSec: number }) {
@@ -119,6 +120,9 @@ export default function RecordPage() {
   const elapsedSec =
     progress && fps && fps > 0 ? progress.num_frames / fps : 0;
 
+  // Merge cameras + gopros so GoPro previews are included in the two cells.
+  const previewSources = [...cameras, ...gopros];
+
   return (
     <>
       <PageHeader
@@ -169,16 +173,45 @@ export default function RecordPage() {
             : "grid-cols-1 overflow-auto")
         }
       >
-        {/* Row 1, col 1 — cam front placeholder */}
-        <div className="bg-canvas-dark rounded-md min-h-[200px] grid place-items-center text-on-dark-dim text-caption">
-          cam · front (placeholder)
-          {cameras[0] && previewEnabled && <CameraPreview camName={cameras[0]} />}
-        </div>
-        {/* Row 1, col 2 — cam wrist placeholder */}
-        <div className="bg-canvas-dark rounded-md min-h-[200px] grid place-items-center text-on-dark-dim text-caption">
-          cam · wrist (placeholder)
-          {cameras[1] && previewEnabled && <CameraPreview camName={cameras[1]} />}
-        </div>
+        {/* Row 1, col 1 — cam 01 */}
+        <InstrumentWell
+          header={`CAM · 01 · ${previewSources[0] ?? "—"}`}
+          live={!!previewSources[0] && previewEnabled}
+          caption={
+            previewSources[0] && (
+              <div className="flex justify-between">
+                <span>{cameras.includes(previewSources[0]) ? "fixed" : "gopro"}</span>
+                <span className="font-mono text-brand-green">live</span>
+              </div>
+            )
+          }
+        >
+          {previewSources[0] && previewEnabled ? (
+            <CameraPreview camName={previewSources[0]} />
+          ) : (
+            <div className="grid place-items-center h-full text-on-dark-dim">no stream</div>
+          )}
+        </InstrumentWell>
+
+        {/* Row 1, col 2 — cam 02 */}
+        <InstrumentWell
+          header={`CAM · 02 · ${previewSources[1] ?? "—"}`}
+          live={!!previewSources[1] && previewEnabled}
+          caption={
+            previewSources[1] && (
+              <div className="flex justify-between">
+                <span>{cameras.includes(previewSources[1]) ? "wrist" : "gopro"}</span>
+                <span className="font-mono text-brand-green">live</span>
+              </div>
+            )
+          }
+        >
+          {previewSources[1] && previewEnabled ? (
+            <CameraPreview camName={previewSources[1]} />
+          ) : (
+            <div className="grid place-items-center h-full text-on-dark-dim">no stream</div>
+          )}
+        </InstrumentWell>
         {/* Right rail spans both rows — telemetry placeholder */}
         <div className="row-span-2 bg-canvas border border-hairline rounded-md p-md flex flex-col gap-md">
           <div className="text-caption text-steel">telemetry (placeholder)</div>
