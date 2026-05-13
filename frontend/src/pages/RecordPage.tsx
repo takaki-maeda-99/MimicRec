@@ -1,18 +1,18 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useSessionStore } from "../state/session-store.ts";
 import { useEndSession, useEpisodes, useSessionState } from "../api/queries.ts";
 import { WsConnection } from "../api/ws.ts";
 import SessionConfigForm from "../components/SessionConfigForm.tsx";
 import CameraPreview from "../components/CameraPreview.tsx";
 import RecordingControls from "../components/RecordingControls.tsx";
-import KeyboardTeleop from "../components/KeyboardTeleop.tsx";
-import EEMonitor from "../components/EEMonitor.tsx";
-import IdlePoseCaptureButton from "../components/IdlePoseCaptureButton.tsx";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { PageHeader } from "../components/ui/page-header";
 import { Badge } from "../components/ui/badge";
 import { InstrumentWell } from "../components/ui/instrument-well";
+import { Sparkline } from "../components/ui/sparkline";
+import { useJointHistory } from "../hooks/useJointHistory";
+import { SectionMark } from "../components/ui/section-mark";
 import type { EpisodeProgress, ReplayProgress } from "../api/types.ts";
 
 function RecBadge({ elapsedSec }: { elapsedSec: number }) {
@@ -212,15 +212,11 @@ export default function RecordPage() {
             <div className="grid place-items-center h-full text-on-dark-dim">no stream</div>
           )}
         </InstrumentWell>
-        {/* Right rail spans both rows — telemetry placeholder */}
-        <div className="row-span-2 bg-canvas border border-hairline rounded-md p-md flex flex-col gap-md">
-          <div className="text-caption text-steel">telemetry (placeholder)</div>
-          <EEMonitor enabled />
-          {teleop === "web_keyboard" && (
-            <KeyboardTeleop enabled={sessionState !== "review"} />
-          )}
-          <IdlePoseCaptureButton />
-        </div>
+        {/* Right rail spans both rows — telemetry */}
+        <aside className="row-span-2 flex flex-col gap-sm min-h-0">
+          <JointBlock enabled />
+          <EEBlock enabled />
+        </aside>
         {/* Row 2, col 1 — episode progress placeholder */}
         <div className="bg-canvas border border-hairline rounded-md p-md text-caption text-steel">
           episode progress (placeholder)
@@ -247,5 +243,103 @@ function Brief({ k, v, mono }: { k: string; v: React.ReactNode; mono?: boolean }
       </span>
       <span className={mono ? "font-mono text-caption text-ink" : "text-ink"}>{v}</span>
     </span>
+  );
+}
+
+function JointBlock({ enabled }: { enabled: boolean }) {
+  // Initial hint; the hook adapts to the actual sample length on the first
+  // WS message and re-allocates buffers if joint count grows.
+  const NUM_JOINTS_HINT = 7;
+  const history = useJointHistory(enabled, NUM_JOINTS_HINT);
+  const numJoints = history.length;
+  const latest = (i: number) => {
+    const s = history[i];
+    return s && s.length > 0 ? s[s.length - 1] : null;
+  };
+
+  return (
+    <section className="flex-[1.4] min-h-0 bg-canvas border border-hairline rounded-md p-md flex flex-col">
+      <header className="mb-xs flex items-baseline gap-xs">
+        <SectionMark code="§02.B" name="joint positions" />
+        <span className="font-mono text-micro text-stone">rad · 100 Hz</span>
+      </header>
+      <table className="w-full text-caption">
+        <tbody>
+          {Array.from({ length: numJoints }).map((_, i) => {
+            const v = latest(i);
+            return (
+              <tr key={i} className="border-b border-dashed border-hairline-soft last:border-b-0">
+                <td className="py-1 font-mono text-micro text-steel w-[36px]">J{i + 1}</td>
+                <td className="py-1 text-right font-mono text-caption text-ink tabular-nums w-[80px]">
+                  {v === null ? "—" : v.toFixed(4)}
+                </td>
+                <td className="py-1 pl-3">
+                  <Sparkline data={history[i] ?? []} tone="ok" />
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </section>
+  );
+}
+
+interface EeSnapshot {
+  pos: number[] | null;
+  rotvec: number[] | null;
+}
+
+function EEBlock({ enabled }: { enabled: boolean }) {
+  const [snap, setSnap] = useState<EeSnapshot>({ pos: null, rotvec: null });
+  const connRef = useRef<WsConnection | null>(null);
+
+  useEffect(() => {
+    if (!enabled) return;
+    const conn = new WsConnection("/ws/state");
+    connRef.current = conn;
+    conn.onMessage((msg) => {
+      const m = msg as { ee_pos?: number[]; ee_rotvec?: number[] };
+      setSnap((prev) => ({
+        pos: m.ee_pos ?? prev.pos,
+        rotvec: m.ee_rotvec ?? prev.rotvec,
+      }));
+    });
+    conn.connect();
+    return () => {
+      conn.disconnect();
+      connRef.current = null;
+    };
+  }, [enabled]);
+
+  const fmt = (n: number | undefined, d = 4) =>
+    typeof n === "number" ? n.toFixed(d) : "—";
+
+  const rows: [string, string, string][] = [
+    ["X", fmt(snap.pos?.[0]), "m"],
+    ["Y", fmt(snap.pos?.[1]), "m"],
+    ["Z", fmt(snap.pos?.[2]), "m"],
+    ["rx", fmt(snap.rotvec?.[0], 3), "rad"],
+    ["ry", fmt(snap.rotvec?.[1], 3), "rad"],
+    ["rz", fmt(snap.rotvec?.[2], 3), "rad"],
+  ];
+
+  return (
+    <section className="flex-1 min-h-0 bg-canvas border border-hairline rounded-md p-md flex flex-col">
+      <header className="mb-xs">
+        <SectionMark code="§02.B" name="end-effector pose" />
+      </header>
+      <table className="w-full text-caption">
+        <tbody>
+          {rows.map(([k, v, u]) => (
+            <tr key={k} className="border-b border-dashed border-hairline-soft last:border-b-0">
+              <td className="py-1 font-mono text-micro text-steel w-[44px]">{k}</td>
+              <td className="py-1 text-right font-mono text-caption text-ink tabular-nums w-[80px]">{v}</td>
+              <td className="py-1 pl-2 font-mono text-micro text-stone">{u}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </section>
   );
 }
