@@ -223,9 +223,6 @@ export const stubHandlers = [
   http.post("/api/datasets", demoUnsupported),
   http.delete("/api/datasets/:ds", demoUnsupported),
   http.post("/api/datasets/:ds/export", demoUnsupported),
-  http.post("/api/datasets/:ds/annotate-all", demoUnsupported),
-  http.get("/api/datasets/:ds/annotate-progress", demoUnsupported),
-  http.post("/api/datasets/:ds/episodes/:idx/annotate", demoUnsupported),
 
   http.get("/api/cloud/auth-status", demoUnsupported),
   http.get("/api/datasets/:ds/hub", demoUnsupported),

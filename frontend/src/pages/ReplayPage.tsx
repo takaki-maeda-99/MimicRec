@@ -4,8 +4,6 @@ import { useSessionStore } from "../state/session-store";
 import VideoPlayer from "../components/VideoPlayer";
 import JointPlot from "../components/JointPlot";
 import EndEffectorPlot from "../components/EndEffectorPlot";
-import SubtaskAnnotator from "../components/SubtaskAnnotator";
-import SubtaskTimeline from "../components/SubtaskTimeline";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { PageHeader } from "../components/ui/page-header";
@@ -118,18 +116,6 @@ export default function ReplayPage() {
           <Card className="mb-md">
             <h3 className="text-heading-5 text-ink mb-md">End-Effector</h3>
             <EndEffectorPlot ds={ds} idx={episodeIdx} />
-          </Card>
-
-          {/* Subtask timeline */}
-          <Card className="mb-md">
-            <h3 className="text-heading-5 text-ink mb-md">Subtask Timeline</h3>
-            <SubtaskTimeline ds={ds} idx={episodeIdx} />
-          </Card>
-
-          {/* Subtask annotation */}
-          <Card>
-            <h3 className="text-heading-5 text-ink mb-md">Subtask Annotation</h3>
-            <SubtaskAnnotator ds={ds} idx={episodeIdx} cameras={episode?.cameras || ["front"]} />
           </Card>
 
         </div>
