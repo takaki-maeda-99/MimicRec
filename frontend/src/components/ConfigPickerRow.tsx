@@ -22,7 +22,11 @@ export function ConfigPickerRow({
   const menuRef = useRef<HTMLDivElement>(null);
 
   const selectedConfig = configs.find(c => c.name === selected);
-  const missing = selected && !selectedConfig;
+  // configs.length > 0 gate: during the React Query loading window
+  // configs is [] and selectedConfig is undefined for every persisted
+  // selection. Without the gate, the useEffect below force-opens every
+  // picker on mount and the popovers stay open after configs arrives.
+  const missing = !!selected && configs.length > 0 && !selectedConfig;
   const count = configs.length;
   const isEmpty = count === 0;
 
