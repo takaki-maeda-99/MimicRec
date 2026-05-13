@@ -166,21 +166,21 @@ export default function DatasetsPage() {
 
           {annotating && progress && progress.total > 0 && (
             <div className="mt-xl rounded-lg border border-hairline bg-canvas p-md">
-              <div className="flex items-center justify-between mb-xs">
-                <span className="text-body-sm-medium text-ink">Annotating {annotating}</span>
-                <span className="text-body-sm text-steel">
+              <div className="text-caption-bold text-ink mb-2">Annotation progress</div>
+              <div className="flex items-baseline justify-between mb-xs">
+                <span className="text-body-sm-medium text-ink">{annotating}</span>
+                <span className="text-body-sm text-steel font-mono tabular-nums">
                   {progress.done} / {progress.total} episodes
-                  {progress.current_episode !== null && ` (processing ep ${progress.current_episode})`}
                 </span>
               </div>
               <div className="w-full bg-surface rounded-full h-2 overflow-hidden">
                 <div
-                  className="bg-brand-tag h-2 transition-all"
+                  className="bg-brand-warn h-2 transition-all"
                   style={{ width: `${(progress.done / progress.total) * 100}%` }}
                 />
               </div>
               {progress.status === "done" && (
-                <p className="mt-xs text-body-sm text-brand-green-deep">Complete!</p>
+                <p className="mt-xs text-body-sm text-brand-green-deep">Complete.</p>
               )}
             </div>
           )}
