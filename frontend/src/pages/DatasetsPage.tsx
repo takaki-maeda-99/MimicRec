@@ -10,6 +10,8 @@ import { Input } from "../components/ui/input";
 import { CodeInline } from "../components/ui/code-inline";
 import { ExportDatasetModal } from "../components/ExportDatasetModal";
 import { CreateDatasetModal } from "../components/CreateDatasetModal";
+import { PageHeader } from "../components/ui/page-header";
+import { CornerTicks } from "../components/ui/corner-ticks";
 
 interface AnnotateProgress {
   done: number;
@@ -27,6 +29,8 @@ export default function DatasetsPage() {
   const [creating, setCreating] = useState(false);
   const [auth, setAuth] = useState<AuthStatus | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
+  const [sort, setSort] = useState<"recency" | "name" | "size">("recency");
+  const [search, setSearch] = useState("");
 
   // Page-level HF auth (always visible at top)
   useEffect(() => {
@@ -90,67 +94,131 @@ export default function DatasetsPage() {
     }
   };
 
+  const filtered = (datasets ?? []).filter((d) =>
+    d.name.toLowerCase().includes(search.toLowerCase()),
+  );
+  const sorted = [...filtered].sort((a, b) => {
+    if (sort === "name") return a.name.localeCompare(b.name);
+    if (sort === "size") return b.num_episodes - a.num_episodes;
+    return 0; // recency = preserve API order
+  });
+
   return (
-    <div>
-      <header className="flex items-center justify-between pb-sm mb-lg border-b border-hairline gap-md">
-        <div className="flex items-center gap-md">
-          <h2 className="text-heading-3 text-ink">Datasets</h2>
-          <HubAuthPill auth={auth} loading={authLoading} onRefresh={refreshAuth} />
-        </div>
-        <Button onClick={() => setCreating(true)}>+ New Dataset</Button>
-      </header>
+    <>
+      <PageHeader
+        code="§01"
+        title="Catalogue"
+        meta={
+          <span className="font-mono text-micro text-stone">
+            {datasets?.length ?? 0} collections
+          </span>
+        }
+        actions={
+          <>
+            <HubAuthPill auth={auth} loading={authLoading} onRefresh={refreshAuth} />
+            <Button size="sm" onClick={() => setCreating(true)}>+ New dataset</Button>
+          </>
+        }
+      />
 
-      {isLoading ? (
-        <p className="text-steel">Loading...</p>
-      ) : !datasets?.length ? (
-        <p className="text-steel">No datasets yet. Click "+ New Dataset" to create one.</p>
-      ) : (
-        <div className="flex flex-col gap-md">
-          {datasets.map((ds) => (
-            <DatasetCard
-              key={ds.name}
-              ds={ds}
-              auth={auth}
-              isAnnotating={annotating === ds.name}
-              annotatingAny={annotating !== null}
-              annotateProgress={annotating === ds.name ? progress : null}
-              onAnnotate={() => handleAnnotateAll(ds.name)}
-              onExport={() => setExportingDataset(ds.name)}
-              onDelete={() => {
-                if (confirm(`Delete dataset "${ds.name}" and all its episodes?`)) {
-                  deleteMutation.mutate(ds.name);
-                }
-              }}
-            />
-          ))}
-        </div>
-      )}
+      <div className="flex-1 overflow-auto">
+        <div className="max-w-[1240px] mx-auto px-xl py-xl">
+          <SummaryBlock datasets={datasets ?? []} />
 
-      {annotating && progress && progress.total > 0 && (
-        <div className="mt-xl rounded-lg border border-hairline bg-canvas p-md">
-          <div className="flex items-center justify-between mb-xs">
-            <span className="text-body-sm-medium text-ink">Annotating {annotating}</span>
-            <span className="text-body-sm text-steel">
-              {progress.done} / {progress.total} episodes
-              {progress.current_episode !== null && ` (processing ep ${progress.current_episode})`}
-            </span>
-          </div>
-          <div className="w-full bg-surface rounded-full h-2 overflow-hidden">
-            <div
-              className="bg-brand-tag h-2 transition-all"
-              style={{ width: `${(progress.done / progress.total) * 100}%` }}
+          <div className="flex items-center gap-2 py-2 mb-md border-b border-hairline-soft">
+            <ToolbarBtn k="SORT" v={sort} onClick={() =>
+              setSort(sort === "recency" ? "name" : sort === "name" ? "size" : "recency")
+            } />
+            <Input
+              placeholder="Search datasets…"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="ml-auto w-[240px]"
             />
           </div>
-          {progress.status === "done" && (
-            <p className="mt-xs text-body-sm text-brand-green-deep">Complete!</p>
+
+          {isLoading ? (
+            <p className="text-steel">Loading...</p>
+          ) : !datasets?.length ? (
+            <p className="text-steel">No datasets yet. Click "+ New dataset" to create one.</p>
+          ) : (
+            <div className="flex flex-col gap-md">
+              {sorted.map((ds, i) => (
+                <DatasetCard
+                  key={ds.name}
+                  ds={ds}
+                  index={i + 1}
+                  auth={auth}
+                  isAnnotating={annotating === ds.name}
+                  annotatingAny={annotating !== null}
+                  annotateProgress={annotating === ds.name ? progress : null}
+                  onAnnotate={() => handleAnnotateAll(ds.name)}
+                  onExport={() => setExportingDataset(ds.name)}
+                  onDelete={() => {
+                    if (confirm(`Delete dataset "${ds.name}" and all its episodes?`)) {
+                      deleteMutation.mutate(ds.name);
+                    }
+                  }}
+                />
+              ))}
+            </div>
+          )}
+
+          {annotating && progress && progress.total > 0 && (
+            <div className="mt-xl rounded-lg border border-hairline bg-canvas p-md">
+              <div className="text-caption-bold text-ink mb-2">Annotation progress</div>
+              <div className="flex items-baseline justify-between mb-xs">
+                <span className="text-body-sm-medium text-ink">{annotating}</span>
+                <span className="text-body-sm text-steel font-mono tabular-nums">
+                  {progress.done} / {progress.total} episodes
+                </span>
+              </div>
+              <div className="w-full bg-surface rounded-full h-2 overflow-hidden">
+                <div
+                  className="bg-brand-warn h-2 transition-all"
+                  style={{ width: `${(progress.done / progress.total) * 100}%` }}
+                />
+              </div>
+              {progress.status === "done" && (
+                <p className="mt-xs text-body-sm text-brand-green-deep">Complete.</p>
+              )}
+            </div>
           )}
         </div>
-      )}
+      </div>
 
       {creating && <CreateDatasetModal onClose={() => setCreating(false)} />}
       {exportingDataset && (
         <ExportDatasetModal ds={exportingDataset} onClose={() => setExportingDataset(null)} />
       )}
+    </>
+  );
+}
+
+function SummaryBlock({ datasets }: { datasets: Array<{ name: string; num_episodes: number; total_frames: number }> }) {
+  const totalEp = datasets.reduce((s, d) => s + d.num_episodes, 0);
+  const totalFr = datasets.reduce((s, d) => s + d.total_frames, 0);
+  return (
+    <div className="flex items-end justify-between gap-xl pb-xl border-b border-hairline mb-xl">
+      <div>
+        <h2 className="text-heading-2 text-ink leading-tight">Recorded data, sorted by recency.</h2>
+        <p className="text-body-sm text-steel mt-2 max-w-[640px]">
+          {datasets.length} active datasets — review status, push to Hub, export, or annotate.
+        </p>
+      </div>
+      <div className="flex gap-xl items-baseline text-right">
+        <Stat label="datasets" value={datasets.length} />
+        <Stat label="episodes" value={totalEp} />
+        <Stat label="frames" value={totalFr.toLocaleString()} />
+      </div>
+    </div>
+  );
+}
+function Stat({ label, value }: { label: string; value: React.ReactNode }) {
+  return (
+    <div className="flex flex-col items-end gap-0.5">
+      <span className="font-mono text-heading-3 text-ink tabular-nums leading-none">{value}</span>
+      <span className="text-micro-uppercase uppercase tracking-[0.18em] text-stone font-semibold">{label}</span>
     </div>
   );
 }
@@ -197,6 +265,7 @@ function HubAuthPill({
 
 interface DatasetCardProps {
   ds: { name: string; num_episodes: number; total_frames: number };
+  index: number;
   auth: AuthStatus | null;
   isAnnotating: boolean;
   annotatingAny: boolean;
@@ -208,6 +277,7 @@ interface DatasetCardProps {
 
 function DatasetCard({
   ds,
+  index,
   auth,
   isAnnotating,
   annotatingAny,
@@ -285,90 +355,68 @@ function DatasetCard({
     hub?.progress.status === "uploading" || hub?.progress.status === "queued";
 
   return (
-    <div className="rounded-lg border border-hairline bg-canvas hover:border-stone transition-colors overflow-hidden">
-      <Link
-        to={`/datasets/${ds.name}/episodes`}
-        className="flex items-center gap-sm flex-wrap px-lg py-md bg-surface/40 hover:bg-surface transition-colors border-b border-hairline-soft group"
-        title={`Open episodes for ${ds.name}`}
-      >
-        <span className="text-heading-5 text-ink group-hover:underline">
-          {ds.name}
-        </span>
-        <span className="text-stone group-hover:text-ink transition-colors">→</span>
-        <HubStatusBadge hub={hub} />
-      </Link>
-      <div className="p-lg">
+    <div className="relative rounded-lg border border-hairline bg-canvas hover:border-stone transition-colors px-xl py-md">
+      <CornerTicks tone="light" inset={6} size={8} />
 
-      <div className="text-body-sm text-slate mb-md flex flex-wrap items-center gap-sm">
-        <span>
-          {ds.num_episodes} episode{ds.num_episodes === 1 ? "" : "s"} ·{" "}
-          {ds.total_frames.toLocaleString()} frames
+      {/* Head row */}
+      <div className="relative flex items-center gap-md mb-1">
+        <span className="font-mono text-micro text-stone tracking-wide">
+          {String(index).padStart(2, "0")}
         </span>
-        {hubConfigured && hub.config && (
-          <span className="flex items-center gap-1">
-            · <CodeInline>{hub.config.repo_id}</CodeInline>
-            {hub.config.private && (
-              <span className="text-caption text-stone">private</span>
-            )}
-            {hub.config.auto_push && (
-              <Badge variant="tag">auto-push</Badge>
-            )}
-          </span>
+        <Link to={`/datasets/${ds.name}/episodes`} className="text-heading-5 text-ink hover:text-brand-warn">
+          {ds.name}
+        </Link>
+        <span className="flex-1" />
+        <HubStatusBadge hub={hub} />
+      </div>
+
+      {/* Fact strip */}
+      <div className="relative flex flex-wrap items-baseline gap-x-lg gap-y-1 py-2 border-y border-hairline-soft text-caption">
+        <Fact k="Episodes" v={ds.num_episodes} mono />
+        <Fact k="Frames" v={ds.total_frames.toLocaleString()} mono />
+        {hubConfigured && hub?.config && (
+          <Fact k="Hub" v={<CodeInline>{hub.config.repo_id}</CodeInline>} />
+        )}
+        {hubConfigured && hub?.config?.private && (
+          <Fact k="Visibility" v="private" />
+        )}
+        {hubConfigured && hub?.config?.auto_push && (
+          <Fact k="Auto-push" v="on" />
         )}
       </div>
 
-      <div className="flex flex-wrap items-center gap-sm">
+      {/* Actions */}
+      <div className="relative flex flex-wrap items-center gap-2 mt-md">
         <Link to={`/datasets/${ds.name}/episodes`}>
-          <Button variant="primary" size="lg">Episodes →</Button>
+          <Button size="sm">Open episodes →</Button>
         </Link>
-
         {!hubConfigured && (
-          <Button
-            variant="secondary"
-            size="lg"
-            className="!bg-surface hover:!bg-hairline"
-            onClick={() => setEditing(true)}
-          >
-            ☁ Configure Hub
+          <Button variant="secondary" size="sm" onClick={() => setEditing(true)}>
+            Configure Hub
           </Button>
         )}
         {hubConfigured && (
           <>
             <Button
               variant="secondary"
-              size="lg"
-              className="!bg-surface hover:!bg-hairline"
+              size="sm"
               onClick={onPush}
               disabled={!auth?.authenticated || isPushing}
               title={!auth?.authenticated ? "Run huggingface-cli login first" : undefined}
             >
-              {isPushing ? "Pushing…" : "↑ Push to Hub"}
+              {isPushing ? "Pushing…" : "↑ Push"}
             </Button>
-            <Button
-              variant="secondary"
-              size="lg"
-              className="!bg-surface hover:!bg-hairline"
-              onClick={() => setEditing(true)}
-            >
+            <Button variant="secondary" size="sm" onClick={() => setEditing(true)}>
               Edit Hub
             </Button>
           </>
         )}
-
+        <Button variant="secondary" size="sm" onClick={onExport}>Export</Button>
         <Button
           variant="secondary"
-          size="lg"
-          className="!bg-surface hover:!bg-hairline"
-          onClick={onExport}
-        >
-          Export
-        </Button>
-        <Button
-          variant="secondary"
-          size="lg"
+          size="sm"
           onClick={onAnnotate}
           disabled={annotatingAny}
-          className={`!bg-surface hover:!bg-hairline ${isAnnotating ? "!text-brand-tag" : ""}`}
         >
           {isAnnotating && annotateProgress
             ? `Annotating ${annotateProgress.done}/${annotateProgress.total}`
@@ -376,17 +424,8 @@ function DatasetCard({
             ? "Starting…"
             : "Annotate"}
         </Button>
-
-        <div className="grow" />
-
-        <Button
-          variant="secondary"
-          size="lg"
-          className="!bg-brand-error/10 !text-brand-error hover:!bg-brand-error/20"
-          onClick={onDelete}
-        >
-          🗑 Delete
-        </Button>
+        <span className="flex-1" />
+        <Button variant="destructive" size="sm" onClick={onDelete}>Delete</Button>
       </div>
 
       {editing && (
@@ -441,30 +480,43 @@ function DatasetCard({
           )}
         </div>
       )}
-      </div>
     </div>
   );
 }
 
 function HubStatusBadge({ hub }: { hub: HubResponse | null }) {
   if (!hub) return null;
-  if (!hub.config) {
-    return <Badge variant="outline">Hub: not configured</Badge>;
-  }
-  if (hub.progress.status === "uploading") {
-    return <Badge variant="tag">Pushing…</Badge>;
-  }
-  if (hub.progress.status === "queued") {
-    return <Badge variant="tag">Queued</Badge>;
-  }
-  if (hub.progress.status === "error" || hub.state?.last_push_error) {
-    return <Badge variant="destructive">Push failed</Badge>;
-  }
-  if (!hub.state?.last_pushed_commit_sha) {
-    return <Badge variant="outline">Not pushed</Badge>;
-  }
-  if (!hub.state.last_pushed_manifest_hash) {
-    return <Badge variant="warning">Stale</Badge>;
-  }
-  return <Badge variant="success">✓ Synced</Badge>;
+  if (!hub.config) return <Badge variant="status" state="unconfigured" />;
+  if (hub.progress.status === "uploading" || hub.progress.status === "queued")
+    return <Badge variant="status" state="pushing" />;
+  if (hub.progress.status === "error" || hub.state?.last_push_error)
+    return <Badge variant="status" state="error" />;
+  if (!hub.state?.last_pushed_commit_sha)
+    return <Badge variant="status" state="pending" />;
+  if (!hub.state.last_pushed_manifest_hash)
+    return <Badge variant="status" state="stale" />;
+  return <Badge variant="status" state="synced" />;
+}
+
+function ToolbarBtn({ k, v, onClick }: { k: string; v: string; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-caption hover:bg-surface"
+    >
+      <span className="font-mono text-micro-uppercase text-stone">{k}</span>
+      <span className="text-ink font-semibold">{v}</span>
+      <span className="text-stone">▾</span>
+    </button>
+  );
+}
+
+function Fact({ k, v, mono }: { k: string; v: React.ReactNode; mono?: boolean }) {
+  return (
+    <span className="inline-flex items-baseline gap-1.5">
+      <span className="text-micro-uppercase uppercase tracking-[0.18em] text-stone font-semibold">{k}</span>
+      <span className={mono ? "font-mono text-caption text-ink" : "text-ink"}>{v}</span>
+    </span>
+  );
 }

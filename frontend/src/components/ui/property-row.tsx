@@ -8,6 +8,10 @@ interface PropertyRowProps extends React.HTMLAttributes<HTMLDivElement> {
   required?: boolean;
   description?: React.ReactNode;
   control?: React.ReactNode;
+  /** "comfortable" (default) = py-md; "compact" = py-1. */
+  density?: "comfortable" | "compact";
+  /** "solid" (default) hairline-soft; "dashed" hairline-soft dashed; "none" for grouped rows. */
+  divider?: "solid" | "dashed" | "none";
 }
 
 export function PropertyRow({
@@ -17,13 +21,19 @@ export function PropertyRow({
   required = false,
   description,
   control,
+  density = "comfortable",
+  divider = "solid",
   ...props
 }: PropertyRowProps) {
+  const dividerCls =
+    divider === "dashed"
+      ? "border-b border-dashed border-hairline-soft last:border-b-0"
+      : divider === "solid"
+      ? "border-b border-hairline-soft last:border-b-0"
+      : "";
+  const pad = density === "compact" ? "py-1" : "py-md";
   return (
-    <div
-      className={cn("py-md border-b border-hairline-soft last:border-b-0", className)}
-      {...props}
-    >
+    <div className={cn(pad, dividerCls, className)} {...props}>
       <div className="flex items-center gap-xs flex-wrap">
         <CodeInline>{name}</CodeInline>
         {type && <Badge variant="type">{type}</Badge>}

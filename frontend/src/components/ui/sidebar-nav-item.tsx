@@ -3,25 +3,42 @@ import { cn } from "../../lib/utils";
 
 interface SidebarNavItemProps {
   to: string;
+  /** Section code prefix, e.g. "§01". Required by the new design. */
+  code?: string;
   children: React.ReactNode;
   className?: string;
 }
 
-export function SidebarNavItem({ to, children, className }: SidebarNavItemProps) {
+export function SidebarNavItem({ to, code, children, className }: SidebarNavItemProps) {
   return (
     <NavLink
       to={to}
+      end={false}
       className={({ isActive }) =>
         cn(
-          "block rounded-sm py-xs pr-md transition-colors border-l-2",
+          "flex items-center gap-sm rounded-sm px-2.5 py-1.5 text-body-sm-medium transition-colors",
           isActive
-            ? "bg-surface text-ink text-body-sm-medium border-brand-green pl-[14px]"
-            : "border-transparent text-steel text-body-sm hover:bg-surface-soft hover:text-ink pl-[14px]",
+            ? "bg-ink text-on-primary"
+            : "text-slate hover:bg-surface-soft hover:text-ink",
           className,
         )
       }
     >
-      {children}
+      {({ isActive }) => (
+        <>
+          {code && (
+            <span
+              className={cn(
+                "font-mono text-micro-uppercase",
+                isActive ? "text-on-dark-mark" : "text-stone",
+              )}
+            >
+              {code}
+            </span>
+          )}
+          <span>{children}</span>
+        </>
+      )}
     </NavLink>
   );
 }

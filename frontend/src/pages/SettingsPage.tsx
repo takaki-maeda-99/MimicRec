@@ -4,6 +4,8 @@ import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { CameraConfigForm } from "../components/CameraConfigForm";
 import { ConfigCard, type ConfigGroup } from "../components/ConfigCard";
+import { PageHeader } from "../components/ui/page-header";
+import { SectionMark } from "../components/ui/section-mark";
 
 interface SerialDevice {
   port: string;
@@ -106,102 +108,147 @@ export default function SettingsPage() {
   };
 
   return (
-    <div>
-      <header className="flex items-center justify-between pb-sm mb-lg border-b border-hairline">
-        <h2 className="text-heading-3 text-ink">Settings</h2>
-      </header>
+    <>
+      <PageHeader code="§04" title="Settings" />
+      <div className="flex-1 overflow-auto">
+        <div className="max-w-[1100px] mx-auto px-xl py-xl flex flex-col gap-xl">
 
-      {/* Devices */}
-      <section className="mb-xl">
-        <div className="flex items-center justify-between mb-md">
-          <h3 className="text-micro-uppercase uppercase tracking-[0.5px] text-steel">Devices</h3>
-          <Button variant="secondary" size="sm" onClick={loadDevices} disabled={refreshingDevices}>
-            {refreshingDevices ? "Refreshing..." : "Refresh"}
-          </Button>
-        </div>
-        <Card className="grid grid-cols-2 gap-xl">
-          <div>
-            <h4 className="text-caption-bold text-steel mb-xs">Serial Ports</h4>
-            {serialPorts.length === 0 ? (
-              <p className="text-body-sm text-stone">No serial ports found</p>
-            ) : (
-              <div className="flex flex-col gap-1">
-                {serialPorts.map((p) => (
-                  <div key={p.port} className="flex items-center gap-xs text-body-sm">
-                    <span
-                      className={`w-2 h-2 rounded-full ${p.available ? "bg-brand-green" : "bg-brand-error"}`}
-                      aria-hidden
-                    />
-                    <span className="font-mono text-code-sm text-charcoal">{p.port}</span>
+          {/* §04.A · Devices */}
+          <section className="flex flex-col gap-md">
+            <header className="flex items-baseline gap-md">
+              <SectionMark code="§04.A" name="Devices" />
+              <span className="flex-1 h-px bg-hairline-soft" />
+              <Button variant="secondary" size="sm" onClick={loadDevices} disabled={refreshingDevices}>
+                {refreshingDevices ? "Refreshing..." : "Refresh"}
+              </Button>
+            </header>
+            <Card className="grid grid-cols-2 gap-xl">
+              <div>
+                <h4 className="text-caption-bold text-steel mb-xs">Serial Ports</h4>
+                {serialPorts.length === 0 ? (
+                  <p className="text-body-sm text-stone">No serial ports found</p>
+                ) : (
+                  <div className="flex flex-col gap-1">
+                    {serialPorts.map((p) => (
+                      <div key={p.port} className="flex items-center gap-xs text-body-sm">
+                        <span
+                          className={`w-2 h-2 rounded-full ${p.available ? "bg-brand-green" : "bg-brand-error"}`}
+                          aria-hidden
+                        />
+                        <span className="font-mono text-code-sm text-charcoal">{p.port}</span>
+                      </div>
+                    ))}
                   </div>
-                ))}
+                )}
               </div>
-            )}
-          </div>
-          <div>
-            <h4 className="text-caption-bold text-steel mb-xs">Cameras</h4>
-            {cameras.length === 0 ? (
-              <p className="text-body-sm text-stone">No cameras found</p>
-            ) : (
-              <div className="flex flex-col gap-1">
-                {cameras.map((c) => (
-                  <div key={c.path} className="flex items-center gap-xs text-body-sm">
-                    <span
-                      className={`w-2 h-2 rounded-full ${c.available ? "bg-brand-green" : "bg-brand-error"}`}
-                      aria-hidden
-                    />
-                    <span className="font-mono text-code-sm text-charcoal">{c.path}</span>
-                    {c.available && (
-                      <span className="text-caption text-stone">
-                        {c.width}x{c.height}
-                      </span>
-                    )}
+              <div>
+                <h4 className="text-caption-bold text-steel mb-xs">Cameras</h4>
+                {cameras.length === 0 ? (
+                  <p className="text-body-sm text-stone">No cameras found</p>
+                ) : (
+                  <div className="flex flex-col gap-1">
+                    {cameras.map((c) => (
+                      <div key={c.path} className="flex items-center gap-xs text-body-sm">
+                        <span
+                          className={`w-2 h-2 rounded-full ${c.available ? "bg-brand-green" : "bg-brand-error"}`}
+                          aria-hidden
+                        />
+                        <span className="font-mono text-code-sm text-charcoal">{c.path}</span>
+                        {c.available && (
+                          <span className="text-caption text-stone">
+                            {c.width}x{c.height}
+                          </span>
+                        )}
+                      </div>
+                    ))}
                   </div>
-                ))}
+                )}
               </div>
-            )}
-          </div>
-        </Card>
-      </section>
+            </Card>
+          </section>
 
-      {/* Configurations */}
-      <section className="mb-xl">
-        <div className="flex items-center justify-between mb-md">
-          <h3 className="text-micro-uppercase uppercase tracking-[0.5px] text-steel">Configurations</h3>
-          <Button variant="secondary" size="sm" onClick={loadConfigs} disabled={refreshingConfigs}>
-            {refreshingConfigs ? "Refreshing..." : "Refresh"}
-          </Button>
-        </div>
-        {CONFIG_GROUPS.map((group) => (
-          <div key={group} className="mb-md">
-            <h4 className="text-caption-bold text-steel mb-xs capitalize">{group}</h4>
-            <div className="flex flex-col gap-2">
-              {(configs[group] || []).map((cfg) => (
-                <ConfigCard
-                  key={cfg.name}
-                  config={cfg}
-                  group={group}
-                  rightSlot={
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      className="!bg-surface hover:!bg-hairline"
-                      onClick={() => {
-                        setEditingConfig({ ...cfg, group });
-                        setEditJson(JSON.stringify(cfg.content, null, 2));
-                      }}
-                    >
-                      ⚙ Edit
-                    </Button>
-                  }
+          {/* §04.B · Configurations */}
+          <section className="flex flex-col gap-md">
+            <header className="flex items-baseline gap-md">
+              <SectionMark code="§04.B" name="Configurations" />
+              <span className="flex-1 h-px bg-hairline-soft" />
+              <Button variant="secondary" size="sm" onClick={loadConfigs} disabled={refreshingConfigs}>
+                {refreshingConfigs ? "Refreshing..." : "Refresh"}
+              </Button>
+            </header>
+            {CONFIG_GROUPS.map((group, i) => (
+              <div key={group} className="flex flex-col gap-xs">
+                <SectionMark
+                  code={`§04.B.${i + 1}`}
+                  name={group}
+                  className="capitalize"
                 />
-              ))}
-            </div>
-          </div>
-        ))}
-      </section>
+                <div className="flex flex-col gap-2">
+                  {(configs[group] || []).map((cfg) => (
+                    <ConfigCard
+                      key={cfg.name}
+                      config={cfg}
+                      group={group}
+                      rightSlot={
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          className="!bg-surface hover:!bg-hairline"
+                          onClick={() => {
+                            setEditingConfig({ ...cfg, group });
+                            setEditJson(JSON.stringify(cfg.content, null, 2));
+                          }}
+                        >
+                          ⚙ Edit
+                        </Button>
+                      }
+                    />
+                  ))}
+                </div>
+              </div>
+            ))}
+          </section>
 
-      {/* Config editor modal */}
+          {/* §04.C · Calibration */}
+          <section className="flex flex-col gap-md">
+            <header className="flex items-baseline gap-md">
+              <SectionMark code="§04.C" name="Calibration" />
+              <span className="flex-1 h-px bg-hairline-soft" />
+              <Button variant="secondary" size="sm" onClick={loadCalibrations} disabled={refreshingCalibrations}>
+                {refreshingCalibrations ? "Refreshing..." : "Refresh"}
+              </Button>
+            </header>
+            {Object.entries(calibrations).map(([category, robots]) => (
+              <div key={category} className="mb-sm">
+                <h4 className="text-caption-bold text-steel mb-xs capitalize">{category}</h4>
+                {Object.entries(robots).length === 0 ? (
+                  <p className="text-body-sm text-stone">No calibrations found</p>
+                ) : (
+                  <div className="flex flex-col gap-1">
+                    {Object.entries(robots).map(([robotType, ids]) => (
+                      <div key={robotType} className="bg-surface rounded-md px-md py-xs text-body-sm">
+                        <span className="text-body-sm-medium text-ink">{robotType}</span>
+                        <span className="ml-xs text-stone">
+                          {ids.length > 0 ? ids.join(", ") : "no calibrations"}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+            <p className="mt-xs text-caption text-stone">
+              Run calibration:{" "}
+              <code className="rounded-xs border border-hairline bg-surface px-1.5 py-0.5 font-mono text-code-inline text-charcoal">
+                python scripts/calibrate_so101.py --port /dev/ttyACM0 --id my_arm --type follower
+              </code>
+            </p>
+          </section>
+
+        </div>
+      </div>
+
+      {/* Config editor modal — rendered outside overflow-auto to cover full viewport */}
       {editingConfig && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-canvas-dark/40"
@@ -248,41 +295,6 @@ export default function SettingsPage() {
           </div>
         </div>
       )}
-
-      {/* Calibration */}
-      <section>
-        <div className="flex items-center justify-between mb-md">
-          <h3 className="text-micro-uppercase uppercase tracking-[0.5px] text-steel">Calibration</h3>
-          <Button variant="secondary" size="sm" onClick={loadCalibrations} disabled={refreshingCalibrations}>
-            {refreshingCalibrations ? "Refreshing..." : "Refresh"}
-          </Button>
-        </div>
-        {Object.entries(calibrations).map(([category, robots]) => (
-          <div key={category} className="mb-sm">
-            <h4 className="text-caption-bold text-steel mb-xs capitalize">{category}</h4>
-            {Object.entries(robots).length === 0 ? (
-              <p className="text-body-sm text-stone">No calibrations found</p>
-            ) : (
-              <div className="flex flex-col gap-1">
-                {Object.entries(robots).map(([robotType, ids]) => (
-                  <div key={robotType} className="bg-surface rounded-md px-md py-xs text-body-sm">
-                    <span className="text-body-sm-medium text-ink">{robotType}</span>
-                    <span className="ml-xs text-stone">
-                      {ids.length > 0 ? ids.join(", ") : "no calibrations"}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        ))}
-        <p className="mt-xs text-caption text-stone">
-          Run calibration:{" "}
-          <code className="rounded-xs border border-hairline bg-surface px-1.5 py-0.5 font-mono text-code-inline text-charcoal">
-            python scripts/calibrate_so101.py --port /dev/ttyACM0 --id my_arm --type follower
-          </code>
-        </p>
-      </section>
-    </div>
+    </>
   );
 }

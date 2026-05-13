@@ -6,11 +6,7 @@ type Variant = VariantNew | VariantLegacy;
 
 interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: Variant;
-  size?: "default" | "sm" | "lg";
-  // Legacy aliases preserved so existing callers don't break.
-  // "default" maps to "primary"; "destructive" is normalized to an internal "destructive" key
-  // that produces a primary-shaped pill with text-brand-error foreground (applied internally,
-  // not at the call site); "outline" maps to "secondary".
+  size?: "default" | "xs" | "sm" | "lg";
 }
 
 export function Button({
@@ -19,20 +15,25 @@ export function Button({
   size = "default",
   ...props
 }: ButtonProps) {
-  // Normalize legacy variants
   const normalized: VariantNew | "destructive" =
-    variant === "default" ? "primary" :
-    variant === "outline" ? "secondary" :
-    variant === "destructive" ? "destructive" :
-    variant;
+    variant === "default"
+      ? "primary"
+      : variant === "outline"
+      ? "secondary"
+      : variant === "destructive"
+      ? "destructive"
+      : variant;
 
-  const base = "inline-flex items-center justify-center font-medium transition-colors disabled:cursor-not-allowed text-button-md";
-  // Explicit heights keep buttons from collapsing when wrapped in
-  // tight flex layouts; padding is horizontal only.
+  const base =
+    "inline-flex items-center justify-center font-medium transition-colors disabled:cursor-not-allowed text-button-md";
   const pillPad =
-    size === "sm" ? "h-8 px-sm" :
-    size === "lg" ? "h-10 px-lg" :
-    "h-9 px-md";
+    size === "xs"
+      ? "h-7 px-2.5 text-micro"
+      : size === "sm"
+      ? "h-8 px-sm"
+      : size === "lg"
+      ? "h-10 px-lg"
+      : "h-9 px-md";
 
   const variants: Record<VariantNew | "destructive", string> = {
     primary:
@@ -47,7 +48,6 @@ export function Button({
       "rounded-full bg-primary text-brand-error " +
       pillPad +
       " hover:bg-charcoal disabled:bg-hairline disabled:text-muted",
-    // Note: ghost and iconCircular have fixed dimensions; the size prop is intentionally ignored.
     ghost:
       "rounded-md bg-transparent text-ink h-9 px-3 hover:bg-surface disabled:text-muted",
     link:
@@ -56,10 +56,5 @@ export function Button({
       "rounded-full bg-canvas text-ink border border-hairline w-8 h-8 hover:bg-surface",
   };
 
-  return (
-    <button
-      className={cn(base, variants[normalized], className)}
-      {...props}
-    />
-  );
+  return <button className={cn(base, variants[normalized], className)} {...props} />;
 }
