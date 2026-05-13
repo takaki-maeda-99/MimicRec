@@ -342,6 +342,7 @@ async def test_delete_gopro_config_refuses_409_when_in_image_sources(app, tmp_pa
         r = await ac.delete("/api/settings/configs/gopros/hero11")
 
     assert r.status_code == 409
+    assert (tmp_path / "gopros" / "hero11.yaml").exists()
 
 
 async def test_delete_camera_config_ignores_unrelated_image_source(app, tmp_path):
