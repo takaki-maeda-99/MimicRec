@@ -29,6 +29,8 @@ export default function DatasetsPage() {
   const [creating, setCreating] = useState(false);
   const [auth, setAuth] = useState<AuthStatus | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
+  const [sort, setSort] = useState<"recency" | "name" | "size">("recency");
+  const [search, setSearch] = useState("");
 
   // Page-level HF auth (always visible at top)
   useEffect(() => {
@@ -92,6 +94,15 @@ export default function DatasetsPage() {
     }
   };
 
+  const filtered = (datasets ?? []).filter((d) =>
+    d.name.toLowerCase().includes(search.toLowerCase()),
+  );
+  const sorted = [...filtered].sort((a, b) => {
+    if (sort === "name") return a.name.localeCompare(b.name);
+    if (sort === "size") return b.num_episodes - a.num_episodes;
+    return 0; // recency = preserve API order
+  });
+
   return (
     <>
       <PageHeader
@@ -114,13 +125,25 @@ export default function DatasetsPage() {
         <div className="max-w-[1240px] mx-auto px-xl py-xl">
           <SummaryBlock datasets={datasets ?? []} />
 
+          <div className="flex items-center gap-2 py-2 mb-md border-b border-hairline-soft">
+            <ToolbarBtn k="SORT" v={sort} onClick={() =>
+              setSort(sort === "recency" ? "name" : sort === "name" ? "size" : "recency")
+            } />
+            <Input
+              placeholder="Search datasets…"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="ml-auto w-[240px]"
+            />
+          </div>
+
           {isLoading ? (
             <p className="text-steel">Loading...</p>
           ) : !datasets?.length ? (
             <p className="text-steel">No datasets yet. Click "+ New dataset" to create one.</p>
           ) : (
             <div className="flex flex-col gap-md">
-              {datasets.map((ds, i) => (
+              {sorted.map((ds, i) => (
                 <DatasetCard
                   key={ds.name}
                   ds={ds}
@@ -473,6 +496,20 @@ function HubStatusBadge({ hub }: { hub: HubResponse | null }) {
   if (!hub.state.last_pushed_manifest_hash)
     return <Badge variant="status" state="stale" />;
   return <Badge variant="status" state="synced" />;
+}
+
+function ToolbarBtn({ k, v, onClick }: { k: string; v: string; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-caption hover:bg-surface"
+    >
+      <span className="font-mono text-micro-uppercase text-stone">{k}</span>
+      <span className="text-ink font-semibold">{v}</span>
+      <span className="text-stone">▾</span>
+    </button>
+  );
 }
 
 function Fact({ k, v, mono }: { k: string; v: React.ReactNode; mono?: boolean }) {
