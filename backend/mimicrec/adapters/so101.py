@@ -5,7 +5,7 @@ import numpy as np
 
 from mimicrec.adapters.robot import RobotMode
 from mimicrec.adapters.types import GripperConvention, ProprioLayout
-from mimicrec.errors import HandTeachNotSupportedError
+from mimicrec.errors import HandTeachNotSupportedError, HardwareError
 from mimicrec.types import RobotState
 
 JOINT_NAMES = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"]
@@ -179,7 +179,32 @@ class SO101Adapter:
 
     async def send_joint_command(self, q: np.ndarray) -> None:
         assert self._follower is not None
-        action = {f"{j}.pos": float(q[i]) for i, j in enumerate(JOINT_NAMES)}
+        # Pack only as many slots as q provides. Inference supplies 5 arm
+        # joints (FK/IK plans for the kinematic chain only); teleop / replay
+        # supply 6 incl. the packed gripper. Omitted keys leave the motor at
+        # its current position on feetech; for inference the gripper is
+        # actuated separately via send_gripper_command.
+        n = int(min(q.shape[0], len(JOINT_NAMES)))
+        action = {f"{JOINT_NAMES[i]}.pos": float(q[i]) for i in range(n)}
+        loop = asyncio.get_running_loop()
+        async with self._bus_lock:
+            await loop.run_in_executor(None, self._follower.send_action, action)
+
+    async def send_gripper_command(self, gripper: float) -> None:
+        """Send a normalized gripper target [0, 1] (0=closed, 1=open).
+
+        SO-101's raw gripper range is 0..100 (lerobot RANGE_0_100); we map
+        normalized via the adapter's default GripperConvention so contracts
+        that emit normalized_0_1 (e.g. so101_v46) actuate correctly. The
+        dispatcher only calls this when StepAction.gripper is non-None,
+        which today comes from the VLA action decoder."""
+        assert self._follower is not None
+        if not np.isfinite(gripper):
+            raise HardwareError("non-finite gripper command")
+        gc = self.default_gripper_convention()
+        clipped = float(np.clip(gripper, 0.0, 1.0))
+        raw = gc.closed_at + clipped * (gc.open_at - gc.closed_at)
+        action = {"gripper.pos": float(raw)}
         loop = asyncio.get_running_loop()
         async with self._bus_lock:
             await loop.run_in_executor(None, self._follower.send_action, action)

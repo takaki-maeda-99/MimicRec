@@ -70,7 +70,8 @@ export type InferenceEvent =
   | { type: "next_action_preview"; ee_delta: number[]; gripper: number }
   | { type: "episode_phase"; phase: "ready" | "recording" | "review" }
   | { type: "model_done"; received: boolean }
-  | { type: "watchdog_timeout"; elapsed_sec: number };
+  | { type: "watchdog_timeout"; elapsed_sec: number }
+  | { type: "camera_health"; cameras: Array<{ name: string; age_ms: number | null }> };
 
 
 // ===== REST =====
