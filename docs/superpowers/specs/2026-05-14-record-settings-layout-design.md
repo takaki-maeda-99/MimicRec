@@ -168,7 +168,12 @@ All four endpoints already exist in `backend/mimicrec/api/routes/settings.py`:
 
 The existing `DELETE` handler at `settings.py:209-217` is a thin file-removal. It needs to learn one new refusal case before the `⌫` button can ship:
 
-- **409 if active session uses it.** The backend already exposes session state (`SessionStateView` / `/api/session/state`). The handler should inspect the current session's `robot` / `teleop` / `mapper` / `cameras[*]` (slot assignments) selection and refuse with `409 active session uses this config` when there's a match. Without this guard, deleting a config bound to a live session would leave the writer holding a path that no longer exists on disk, which is a foot-gun the operator does not deserve.
+- **409 if active session uses it.** The backend already exposes session state (`SessionStateView` / `/api/session/state`). The match check depends on `group`:
+  - `group ∈ {robot, teleop, mapper}` → compare `name` directly against `session.<group>`.
+  - `group == "cameras"` → match against `image_sources[i].device` where `image_sources[i].kind == "camera"`. The session's `cameras` field is the **slot names**, not the device config names — using it would falsely refuse for the wrong reason. See `backend/mimicrec/api/schemas.py:32-35` for the `ImageSource` shape.
+  - `group == "gopros"` → same as cameras but with `kind == "gopro"`.
+
+  When there's a match, refuse with `409 active session uses this config`. Without this guard, deleting a config bound to a live session would leave the writer holding a path that no longer exists on disk, which is a foot-gun the operator does not deserve.
 
 Frontend wiring also has to update the **demo handlers** at `frontend/src/demo/` so the UI keeps working in the browser-only demo build. Otherwise the demo will throw 404s the moment a user clicks `⌫`.
 
