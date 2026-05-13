@@ -223,7 +223,7 @@ export default function SettingsPage() {
             </header>
             {Object.entries(calibrations).map(([category, robots]) => (
               <div key={category} className="mb-sm">
-                <div className="text-micro-uppercase uppercase tracking-[0.18em] text-stone font-semibold mb-xs capitalize">
+                <div className="text-micro-uppercase uppercase tracking-[0.18em] text-stone font-semibold mb-xs">
                   {category}
                 </div>
                 {Object.entries(robots).length === 0 ? (
@@ -236,7 +236,7 @@ export default function SettingsPage() {
                         className="flex items-baseline justify-between gap-md py-1 border-b border-dashed border-hairline-soft last:border-b-0"
                       >
                         <span className="text-body-sm-medium text-ink">{robotType}</span>
-                        <span className="font-mono text-caption text-steel text-right">
+                        <span className="font-mono text-caption text-steel text-right min-w-0 break-words">
                           {ids.length > 0 ? ids.join(", ") : "—"}
                         </span>
                       </div>
