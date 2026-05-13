@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import { apiFetch } from "../api/client";
 import { Button } from "../components/ui/button";
-import { Card } from "../components/ui/card";
 import { CameraConfigForm } from "../components/CameraConfigForm";
 import { ConfigCard, type ConfigGroup } from "../components/ConfigCard";
 import { PageHeader } from "../components/ui/page-header";
@@ -122,9 +121,11 @@ export default function SettingsPage() {
                 {refreshingDevices ? "Refreshing..." : "Refresh"}
               </Button>
             </header>
-            <Card className="grid grid-cols-2 gap-xl">
+            <div className="rounded-md border border-hairline bg-canvas p-md grid grid-cols-1 sm:grid-cols-2 gap-xl">
               <div>
-                <h4 className="text-caption-bold text-steel mb-xs">Serial Ports</h4>
+                <div className="text-micro-uppercase uppercase tracking-[0.18em] text-stone font-semibold mb-xs">
+                  Serial ports
+                </div>
                 {serialPorts.length === 0 ? (
                   <p className="text-body-sm text-stone">No serial ports found</p>
                 ) : (
@@ -142,7 +143,9 @@ export default function SettingsPage() {
                 )}
               </div>
               <div>
-                <h4 className="text-caption-bold text-steel mb-xs">Cameras</h4>
+                <div className="text-micro-uppercase uppercase tracking-[0.18em] text-stone font-semibold mb-xs">
+                  Cameras
+                </div>
                 {cameras.length === 0 ? (
                   <p className="text-body-sm text-stone">No cameras found</p>
                 ) : (
@@ -155,8 +158,8 @@ export default function SettingsPage() {
                         />
                         <span className="font-mono text-code-sm text-charcoal">{c.path}</span>
                         {c.available && (
-                          <span className="text-caption text-stone">
-                            {c.width}x{c.height}
+                          <span className="font-mono text-caption text-stone">
+                            {c.width}×{c.height}
                           </span>
                         )}
                       </div>
@@ -164,7 +167,7 @@ export default function SettingsPage() {
                   </div>
                 )}
               </div>
-            </Card>
+            </div>
           </section>
 
           {/* §04.B · Configurations */}
@@ -220,16 +223,21 @@ export default function SettingsPage() {
             </header>
             {Object.entries(calibrations).map(([category, robots]) => (
               <div key={category} className="mb-sm">
-                <h4 className="text-caption-bold text-steel mb-xs capitalize">{category}</h4>
+                <div className="text-micro-uppercase uppercase tracking-[0.18em] text-stone font-semibold mb-xs capitalize">
+                  {category}
+                </div>
                 {Object.entries(robots).length === 0 ? (
                   <p className="text-body-sm text-stone">No calibrations found</p>
                 ) : (
                   <div className="flex flex-col gap-1">
                     {Object.entries(robots).map(([robotType, ids]) => (
-                      <div key={robotType} className="bg-surface rounded-md px-md py-xs text-body-sm">
+                      <div
+                        key={robotType}
+                        className="flex items-baseline justify-between gap-md py-1 border-b border-dashed border-hairline-soft last:border-b-0"
+                      >
                         <span className="text-body-sm-medium text-ink">{robotType}</span>
-                        <span className="ml-xs text-stone">
-                          {ids.length > 0 ? ids.join(", ") : "no calibrations"}
+                        <span className="font-mono text-caption text-steel text-right">
+                          {ids.length > 0 ? ids.join(", ") : "—"}
                         </span>
                       </div>
                     ))}
