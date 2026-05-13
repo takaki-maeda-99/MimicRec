@@ -440,7 +440,6 @@ function EEBlock({ enabled }: { enabled: boolean }) {
 const XY_WINDOWS_SEC = [3, 5, 8, 15] as const;
 const XY_WINDOW_MAX_SEC = 15;
 const XY_HZ = 100;
-const XY_Z_TIERS = 6; // segment count for the Z color ramp
 
 function XYPlot() {
   const [windowSec, setWindowSec] = useState<number>(8);
@@ -449,35 +448,24 @@ function XYPlot() {
   const H = 110;
   const PAD = 6;
 
-  // Slice to the visible window without re-allocating the buffer.
   const visibleN = Math.min(xs.length, windowSec * XY_HZ);
   const sx = xs.slice(xs.length - visibleN);
   const sy = ys.slice(ys.length - visibleN);
-  const sz = zs.slice(zs.length - visibleN);
 
   // Top-down view from above the robot:
   //   world +x → SVG up    (in front of the base)
   //   world -x → SVG down  (behind the base)
   //   world +y → SVG left  (robot's left side)
   //   world -y → SVG right (robot's right side)
-  // Z is encoded as a lightness ramp on a single hue, bundled into a
-  // small number of tier-paths so React reconciles ~6 SVG nodes per
-  // refresh instead of one per sample.
-  let zMinOut = 0;
-  let zMaxOut = 0;
-  let pathsByTier: string[] = Array(XY_Z_TIERS).fill("");
-  let head: { cx: number; cy: number; color: string } | null = null;
-
+  let pts = "";
+  let head: { cx: number; cy: number } | null = null;
   if (sx.length >= 2) {
     const xMin = Math.min(...sx);
     const xMax = Math.max(...sx);
     const yMin = Math.min(...sy);
     const yMax = Math.max(...sy);
-    const zMin = Math.min(...sz);
-    const zMax = Math.max(...sz);
     const xRange = Math.max(xMax - xMin, 0.05);
     const yRange = Math.max(yMax - yMin, 0.05);
-    const zRange = Math.max(zMax - zMin, 0.02);
     const xMid = (xMin + xMax) / 2;
     const yMid = (yMin + yMax) / 2;
     const scaleH = (W - 2 * PAD) / yRange;
@@ -485,46 +473,18 @@ function XYPlot() {
     const scale = Math.min(scaleH, scaleV);
     const toSx = (y: number) => W / 2 - (y - yMid) * scale;
     const toSy = (x: number) => H / 2 - (x - xMid) * scale;
-    const tierOf = (z: number) => {
-      const t = (z - zMin) / zRange;
-      return Math.min(XY_Z_TIERS - 1, Math.max(0, Math.floor(t * XY_Z_TIERS)));
-    };
-    const tierColor = (tier: number) => {
-      const t = tier / (XY_Z_TIERS - 1);
-      // 38% (low z, dark teal) → 72% (high z, light green).
-      return `hsl(155 55% ${(38 + t * 34).toFixed(1)}%)`;
-    };
-
-    for (let i = 1; i < sx.length; i++) {
-      const zAvg = (sz[i - 1] + sz[i]) / 2;
-      const tier = tierOf(zAvg);
-      const x1 = toSx(sy[i - 1]).toFixed(1);
-      const y1 = toSy(sx[i - 1]).toFixed(1);
-      const x2 = toSx(sy[i]).toFixed(1);
-      const y2 = toSy(sx[i]).toFixed(1);
-      pathsByTier[tier] += `M ${x1},${y1} L ${x2},${y2} `;
-    }
+    pts = sx.map((x, i) => `${toSx(sy[i]).toFixed(1)},${toSy(x).toFixed(1)}`).join(" ");
     const last = sx.length - 1;
-    head = {
-      cx: toSx(sy[last]),
-      cy: toSy(sx[last]),
-      color: tierColor(tierOf(sz[last])),
-    };
-    zMinOut = zMin;
-    zMaxOut = zMax;
+    head = { cx: toSx(sy[last]), cy: toSy(sx[last]) };
   }
 
-  const haveData = sx.length >= 2;
-  const tierColor = (tier: number) => {
-    const t = tier / (XY_Z_TIERS - 1);
-    return `hsl(155 55% ${(38 + t * 34).toFixed(1)}%)`;
-  };
+  const lastZ = zs.length > 0 ? zs[zs.length - 1] : null;
 
   return (
     <InstrumentWell
       header={
         <span className="flex items-baseline gap-2">
-          <span>EE · XYZ TRAJECTORY</span>
+          <span>EE · XY TRAJECTORY</span>
           <span className="inline-flex gap-0.5">
             {XY_WINDOWS_SEC.map((s) => (
               <button
@@ -546,10 +506,8 @@ function XYPlot() {
       }
       live
       caption={
-        haveData && (
-          <span className="font-mono">
-            z: {zMinOut.toFixed(2)} – {zMaxOut.toFixed(2)} m
-          </span>
+        lastZ !== null && (
+          <span className="font-mono">z = {lastZ.toFixed(3)} m</span>
         )
       }
     >
@@ -564,21 +522,18 @@ function XYPlot() {
           </pattern>
         </defs>
         <rect width={W} height={H} fill="url(#xy-grid)" />
-        {pathsByTier.map((d, tier) =>
-          d ? (
-            <path
-              key={tier}
-              d={d}
-              fill="none"
-              stroke={tierColor(tier)}
-              strokeWidth="1.25"
-              strokeLinecap="round"
-              vectorEffect="non-scaling-stroke"
-            />
-          ) : null,
+        {pts && (
+          <polyline
+            points={pts}
+            fill="none"
+            stroke="var(--color-brand-green)"
+            strokeWidth="1.25"
+            strokeLinejoin="round"
+            vectorEffect="non-scaling-stroke"
+          />
         )}
         {head && (
-          <circle cx={head.cx} cy={head.cy} r="2.5" fill={head.color} />
+          <circle cx={head.cx} cy={head.cy} r="2.5" fill="var(--color-brand-green)" />
         )}
       </svg>
     </InstrumentWell>
