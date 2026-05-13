@@ -221,10 +221,8 @@ export default function RecordPage() {
         </aside>
         {/* Row 2, col 1 — episode progress */}
         <EpisodeProgressBlock inProgressIndex={inProgressIndex} />
-        {/* Row 2, col 2 — xy plot placeholder */}
-        <div className="bg-canvas-dark rounded-md min-h-[140px] grid place-items-center text-on-dark-dim text-caption">
-          xy trajectory (placeholder)
-        </div>
+        {/* Row 2, col 2 — xy trajectory */}
+        <XYPlot />
       </div>
 
       {/* Controls bar */}
@@ -429,5 +427,26 @@ function EEBlock({ enabled }: { enabled: boolean }) {
         </tbody>
       </table>
     </section>
+  );
+}
+
+function XYPlot() {
+  // TODO follow-up: add a rolling EE XY buffer hook similar to useJointHistory.
+  // For now, render the well with an empty-state grid so the visual lands.
+  return (
+    <InstrumentWell
+      header="EE · XY TRAJECTORY · LAST 8 s"
+      live
+    >
+      <svg viewBox="0 0 360 110" preserveAspectRatio="none" className="w-full h-full">
+        <defs>
+          <pattern id="xy-grid" width="24" height="22" patternUnits="userSpaceOnUse">
+            <path d="M 24 0 L 0 0 0 22" fill="none" stroke="var(--color-hairline-dark)" strokeWidth="0.5" />
+          </pattern>
+        </defs>
+        <rect width="360" height="110" fill="url(#xy-grid)" />
+        {/* Empty — wired up in follow-up */}
+      </svg>
+    </InstrumentWell>
   );
 }
