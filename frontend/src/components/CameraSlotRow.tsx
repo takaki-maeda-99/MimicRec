@@ -1,6 +1,8 @@
 // frontend/src/components/CameraSlotRow.tsx
-import { Settings } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { ChevronDown, Settings } from "lucide-react";
 import { Badge } from "./ui/badge";
+import { cn } from "../lib/utils";
 
 export interface DeviceOption {
   name: string;
@@ -16,18 +18,12 @@ interface CameraSlotRowProps {
   usedDevices: Set<string>;
   onChange: (device: string) => void;
   onRemove?: () => void;
-  onEdit?: (device: string) => void;
+  onEdit?: (deviceName: string) => void;
 }
 
 export function CameraSlotRow({
-  slot,
-  device,
-  legacy,
-  deviceOptions,
-  usedDevices,
-  onChange,
-  onRemove,
-  onEdit,
+  slot, device, legacy, deviceOptions, usedDevices,
+  onChange, onRemove, onEdit,
 }: CameraSlotRowProps) {
   return (
     <div className="flex items-center gap-sm rounded-md border border-hairline bg-canvas px-md py-2">
@@ -35,23 +31,13 @@ export function CameraSlotRow({
         {slot}{legacy && " (legacy)"}
       </Badge>
       <span className="flex-1" />
-      <select
-        value={device}
-        aria-label={`Device for ${slot}`}
-        onChange={e => onChange(e.target.value)}
-        className="border border-hairline rounded px-2 py-1 text-body-sm bg-canvas min-w-[200px]"
-      >
-        <option value="">— none —</option>
-        {deviceOptions.map(opt => (
-          <option
-            key={opt.name}
-            value={opt.name}
-            disabled={usedDevices.has(opt.name) && device !== opt.name}
-          >
-            {opt.name} ({opt.kind}){usedDevices.has(opt.name) && device !== opt.name ? " (in use)" : ""}
-          </option>
-        ))}
-      </select>
+      <DevicePickerButton
+        slot={slot}
+        device={device}
+        options={deviceOptions}
+        usedDevices={usedDevices}
+        onChange={onChange}
+      />
       {onEdit && device && (
         <button
           type="button"
@@ -93,5 +79,144 @@ export function AddSlotButton({ roles, onAdd }: AddSlotButtonProps) {
         <option key={r} value={r}>{r}</option>
       ))}
     </select>
+  );
+}
+
+interface DevicePickerButtonProps {
+  slot: string;
+  device: string;
+  options: DeviceOption[];
+  usedDevices: Set<string>;
+  onChange: (device: string) => void;
+}
+
+function DevicePickerButton({
+  slot, device, options, usedDevices, onChange,
+}: DevicePickerButtonProps) {
+  const [open, setOpen] = useState(false);
+  const [highlight, setHighlight] = useState(0);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  const toggleOpen = () => {
+    setOpen(o => {
+      if (!o) setHighlight(0);
+      return !o;
+    });
+  };
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (!menuRef.current?.contains(e.target as Node)
+          && !triggerRef.current?.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setOpen(false);
+        triggerRef.current?.focus();
+        return;
+      }
+      // Slot 0 = "— none —", slots 1..N = options
+      const total = options.length + 1;
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setHighlight(h => Math.min(h + 1, total - 1));
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setHighlight(h => Math.max(h - 1, 0));
+      }
+      if (e.key === "Enter") {
+        e.preventDefault();
+        if (highlight === 0) {
+          onChange("");
+          setOpen(false);
+          triggerRef.current?.focus();
+          return;
+        }
+        const item = options[highlight - 1];
+        if (!item) return;
+        // Mirror the mouse-click in-use guard so keyboard doesn't bypass it.
+        const inUse = usedDevices.has(item.name) && device !== item.name;
+        if (inUse) return;
+        onChange(item.name);
+        setOpen(false);
+        triggerRef.current?.focus();
+      }
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open, options, highlight, onChange, usedDevices, device]);
+
+  const selectedKind = options.find(o => o.name === device)?.kind;
+  const label = device ? `${device} (${selectedKind ?? "?"})` : "— none —";
+
+  return (
+    <div className="relative">
+      <button
+        ref={triggerRef}
+        type="button"
+        onClick={toggleOpen}
+        className={cn(
+          "border border-hairline rounded px-2 py-1 text-body-sm bg-canvas min-w-[200px] flex items-center gap-2",
+          "focus:outline-none focus:ring-2 focus:ring-ink",
+        )}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label={`Device for ${slot}`}
+      >
+        <span className="flex-1 text-left truncate">{label}</span>
+        <ChevronDown className="w-3.5 h-3.5 text-stone" />
+      </button>
+      {open && (
+        <div
+          ref={menuRef}
+          role="menu"
+          className="absolute z-40 mt-1 w-full bg-canvas border border-hairline rounded-md shadow-lg p-1 max-h-[200px] overflow-auto"
+        >
+          <div
+            role="menuitem"
+            className={cn(
+              "px-2 py-1 rounded-sm cursor-pointer text-stone",
+              highlight === 0 ? "bg-surface" : "",
+            )}
+            onMouseEnter={() => setHighlight(0)}
+            onClick={() => { onChange(""); setOpen(false); }}
+          >
+            — none —
+          </div>
+          {options.map((opt, i) => {
+            const inUse = usedDevices.has(opt.name) && device !== opt.name;
+            return (
+              <div
+                key={opt.name}
+                role="menuitem"
+                aria-disabled={inUse}
+                className={cn(
+                  "px-2 py-1 rounded-sm",
+                  inUse ? "text-stone cursor-not-allowed" : "cursor-pointer text-ink",
+                  highlight === i + 1 ? "bg-surface" : "",
+                )}
+                onMouseEnter={() => setHighlight(i + 1)}
+                onClick={() => {
+                  if (inUse) return;
+                  onChange(opt.name);
+                  setOpen(false);
+                }}
+              >
+                {opt.name} <span className="text-caption text-stone">({opt.kind}){inUse && " · in use"}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
   );
 }
