@@ -6,7 +6,6 @@ import SessionConfigForm from "../components/SessionConfigForm.tsx";
 import CameraPreview from "../components/CameraPreview.tsx";
 import RecordingControls from "../components/RecordingControls.tsx";
 import { Button } from "../components/ui/button";
-import { Card } from "../components/ui/card";
 import { PageHeader } from "../components/ui/page-header";
 import { Badge } from "../components/ui/badge";
 import { InstrumentWell } from "../components/ui/instrument-well";
@@ -107,10 +106,8 @@ export default function RecordPage() {
     return (
       <>
         <PageHeader code="§02" title="Configure session" />
-        <div className="p-xl overflow-auto">
-          <Card variant="feature">
-            <SessionConfigForm onStarted={() => {}} />
-          </Card>
+        <div className="flex-1 overflow-auto px-xl py-xl">
+          <SessionConfigForm onStarted={() => {}} />
         </div>
       </>
     );
