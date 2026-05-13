@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import { apiFetch } from "../api/client";
 import { Button } from "../components/ui/button";
-import { CameraConfigForm } from "../components/CameraConfigForm";
 import { ConfigCard, type ConfigGroup } from "../components/ConfigCard";
+import { ConfigEditorModal } from "../components/ConfigEditorModal";
 import { PageHeader } from "../components/ui/page-header";
 import { SectionMark } from "../components/ui/section-mark";
 
@@ -32,7 +32,6 @@ export default function SettingsPage() {
   const [cameras, setCameras] = useState<CameraDevice[]>([]);
   const [configs, setConfigs] = useState<Record<string, ConfigEntry[]>>({});
   const [editingConfig, setEditingConfig] = useState<ConfigEntry | null>(null);
-  const [editJson, setEditJson] = useState("");
   const [calibrations, setCalibrations] = useState<Record<string, Record<string, string[]>>>({});
   const [refreshingDevices, setRefreshingDevices] = useState(false);
   const [refreshingConfigs, setRefreshingConfigs] = useState(false);
@@ -90,21 +89,6 @@ export default function SettingsPage() {
     loadConfigs();
     loadCalibrations();
   }, []);
-
-  const handleSaveConfig = async () => {
-    if (!editingConfig) return;
-    try {
-      const content = JSON.parse(editJson);
-      await apiFetch(`/api/settings/configs/${editingConfig.group}/${editingConfig.name}`, {
-        method: "PUT",
-        body: JSON.stringify({ content }),
-      });
-      setEditingConfig(null);
-      loadConfigs();
-    } catch (e) {
-      alert(`Save failed: ${e}`);
-    }
-  };
 
   return (
     <>
@@ -199,7 +183,6 @@ export default function SettingsPage() {
                           className="!bg-surface hover:!bg-hairline"
                           onClick={() => {
                             setEditingConfig({ ...cfg, group });
-                            setEditJson(JSON.stringify(cfg.content, null, 2));
                           }}
                         >
                           ⚙ Edit
@@ -257,52 +240,19 @@ export default function SettingsPage() {
       </div>
 
       {/* Config editor modal — rendered outside overflow-auto to cover full viewport */}
-      {editingConfig && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-canvas-dark/40"
-          onClick={() => setEditingConfig(null)}
-        >
-          <div
-            className="bg-canvas rounded-lg border border-hairline p-xl w-[600px] max-h-[80vh] overflow-auto"
-            onClick={(e) => e.stopPropagation()}
-          >
-            {editingConfig.group === "cameras"
-              && (editingConfig.content as Record<string, unknown>)._target_
-                  === "mimicrec.cameras.opencv_camera.OpenCVCamera" ? (
-              <CameraConfigForm
-                name={editingConfig.name}
-                currentContent={editingConfig.content as Record<string, unknown>}
-                onSave={(validationSkipped) => {
-                  setEditingConfig(null);
-                  if (validationSkipped) {
-                    alert(
-                      "Saved. Camera was busy so the configured parameters " +
-                        "will be validated when the next session starts.",
-                    );
-                  }
-                  loadConfigs();
-                }}
-                onCancel={() => setEditingConfig(null)}
-              />
-            ) : (
-              <>
-                <h3 className="text-heading-5 text-ink mb-xs">
-                  Edit {editingConfig.group}/{editingConfig.name}
-                </h3>
-                <textarea
-                  className="w-full h-64 rounded-md border border-hairline bg-canvas p-md font-mono text-code-sm text-charcoal mb-md focus:outline-none focus:border-2 focus:border-ink"
-                  value={editJson}
-                  onChange={(e) => setEditJson(e.target.value)}
-                />
-                <div className="flex justify-end gap-xs">
-                  <Button variant="secondary" onClick={() => setEditingConfig(null)}>Cancel</Button>
-                  <Button onClick={handleSaveConfig}>Save</Button>
-                </div>
-              </>
-            )}
-          </div>
-        </div>
-      )}
+      <ConfigEditorModal
+        config={
+          editingConfig
+            ? { ...editingConfig, group: editingConfig.group as ConfigGroup }
+            : null
+        }
+        mode="edit"
+        onClose={() => setEditingConfig(null)}
+        onSaved={() => {
+          setEditingConfig(null);
+          loadConfigs();
+        }}
+      />
     </>
   );
 }
