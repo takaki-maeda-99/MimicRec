@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import { apiFetch } from "../api/client";
 import { Button } from "../components/ui/button";
-import { ConfigCard, type ConfigGroup } from "../components/ConfigCard";
-import { ConfigEditorModal } from "../components/ConfigEditorModal";
+import { ConfigCard, type ConfigCardEntry, type ConfigGroup } from "../components/ConfigCard";
+import { ConfigEditorModal, type ConfigEntry } from "../components/ConfigEditorModal";
 import { PageHeader } from "../components/ui/page-header";
 import { SectionMark } from "../components/ui/section-mark";
 
@@ -19,18 +19,12 @@ interface CameraDevice {
   height: number;
 }
 
-interface ConfigEntry {
-  name: string;
-  group: string;
-  content: Record<string, unknown>;
-}
-
 const CONFIG_GROUPS: ConfigGroup[] = ["robot", "teleop", "mapper", "cameras"];
 
 export default function SettingsPage() {
   const [serialPorts, setSerialPorts] = useState<SerialDevice[]>([]);
   const [cameras, setCameras] = useState<CameraDevice[]>([]);
-  const [configs, setConfigs] = useState<Record<string, ConfigEntry[]>>({});
+  const [configs, setConfigs] = useState<Record<string, ConfigCardEntry[]>>({});
   const [editingConfig, setEditingConfig] = useState<ConfigEntry | null>(null);
   const [calibrations, setCalibrations] = useState<Record<string, Record<string, string[]>>>({});
   const [refreshingDevices, setRefreshingDevices] = useState(false);
@@ -58,7 +52,7 @@ export default function SettingsPage() {
     try {
       const results = await Promise.all(
         CONFIG_GROUPS.map(async (group) => {
-          const data = await apiFetch<ConfigEntry[]>(`/api/settings/configs/${group}`);
+          const data = await apiFetch<ConfigCardEntry[]>(`/api/settings/configs/${group}`);
           return [group, data] as const;
         }),
       );
@@ -182,7 +176,7 @@ export default function SettingsPage() {
                           size="sm"
                           className="!bg-surface hover:!bg-hairline"
                           onClick={() => {
-                            setEditingConfig({ ...cfg, group });
+                            setEditingConfig({ name: cfg.name, content: cfg.content, group });
                           }}
                         >
                           ⚙ Edit
@@ -241,11 +235,7 @@ export default function SettingsPage() {
 
       {/* Config editor modal — rendered outside overflow-auto to cover full viewport */}
       <ConfigEditorModal
-        config={
-          editingConfig
-            ? { ...editingConfig, group: editingConfig.group as ConfigGroup }
-            : null
-        }
+        config={editingConfig}
         mode="edit"
         onClose={() => setEditingConfig(null)}
         onSaved={() => {
