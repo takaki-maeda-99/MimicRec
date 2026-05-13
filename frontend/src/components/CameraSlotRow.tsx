@@ -64,21 +64,127 @@ export function CameraSlotRow({
 
 interface AddSlotButtonProps {
   roles: string[];
-  onAdd: (role: string) => void;
+  existingSlots: string[];
+  onAdd: (slot: string) => void;
 }
 
-export function AddSlotButton({ roles, onAdd }: AddSlotButtonProps) {
+export function AddSlotButton({ roles, onAdd, existingSlots }: AddSlotButtonProps) {
+  const [open, setOpen] = useState(false);
+  const [custom, setCustom] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (!menuRef.current?.contains(e.target as Node)
+          && !triggerRef.current?.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setOpen(false);
+        triggerRef.current?.focus();
+      }
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  const submitCustom = () => {
+    const name = custom.trim();
+    if (!name) return;
+    if (existingSlots.includes(name)) {
+      setError(`"${name}" is already added`);
+      return;
+    }
+    onAdd(name);
+    setCustom("");
+    setError(null);
+    setOpen(false);
+    triggerRef.current?.focus();
+  };
+
+  const pickRole = (r: string) => {
+    onAdd(r);
+    setOpen(false);
+    triggerRef.current?.focus();
+  };
+
   return (
-    <select
-      value=""
-      className="border border-dashed border-hairline rounded-md px-md py-2 text-body-sm bg-canvas text-stone"
-      onChange={e => { if (e.target.value) onAdd(e.target.value); }}
-    >
-      <option value="">+ add slot…</option>
-      {roles.map(r => (
-        <option key={r} value={r}>{r}</option>
-      ))}
-    </select>
+    <div className="relative">
+      <button
+        ref={triggerRef}
+        type="button"
+        onClick={() => { setOpen(o => !o); setError(null); }}
+        className="w-full border border-dashed border-hairline rounded-md px-md py-2 text-body-sm bg-canvas text-stone hover:border-stone hover:text-ink transition-colors text-left"
+        aria-haspopup="menu"
+        aria-expanded={open}
+      >
+        + add camera slot…
+      </button>
+      {open && (
+        <div
+          ref={menuRef}
+          role="menu"
+          className="absolute z-40 mt-1 w-full bg-canvas border border-hairline rounded-md shadow-lg p-2 flex flex-col gap-1"
+        >
+          {roles.length > 0 && (
+            <>
+              <div className="px-1 text-micro-uppercase uppercase tracking-[0.18em] text-stone font-semibold">
+                Known roles
+              </div>
+              {roles.map(r => (
+                <button
+                  key={r}
+                  type="button"
+                  role="menuitem"
+                  onClick={() => pickRole(r)}
+                  className="text-left px-2 py-1 rounded-sm text-ink hover:bg-surface"
+                >
+                  {r}
+                </button>
+              ))}
+              <div className="border-t border-hairline-soft mt-1 pt-2" />
+            </>
+          )}
+          <div className="px-1 text-micro-uppercase uppercase tracking-[0.18em] text-stone font-semibold">
+            Custom slot
+          </div>
+          <div className="flex items-center gap-1">
+            <input
+              type="text"
+              placeholder="e.g. wrist_left"
+              value={custom}
+              onChange={e => { setCustom(e.target.value); setError(null); }}
+              onKeyDown={e => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  submitCustom();
+                }
+              }}
+              className="flex-1 border border-hairline rounded px-2 py-1 text-body-sm bg-canvas font-mono"
+              autoFocus
+            />
+            <button
+              type="button"
+              onClick={submitCustom}
+              disabled={!custom.trim()}
+              className="px-2 py-1 rounded text-body-sm bg-ink text-on-dark disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              Add
+            </button>
+          </div>
+          {error && <div className="px-1 text-caption text-brand-error">{error}</div>}
+        </div>
+      )}
+    </div>
   );
 }
 

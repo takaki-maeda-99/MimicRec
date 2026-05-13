@@ -90,7 +90,7 @@ export default function SessionConfigForm({ onStarted, onEditConfig }: Props) {
     >
       {/* Two-column body */}
       <div className="flex-1 min-h-0 overflow-auto px-xl py-lg">
-        <div className="max-w-[1280px] mx-auto grid grid-cols-1 xl:grid-cols-2 gap-2xl">
+        <div className="max-w-[1280px] mx-auto grid grid-cols-1 xl:grid-cols-2 gap-xxxl">
 
           {/* §02.A — RUN SHEET (left column) */}
           <section className="flex flex-col gap-md min-w-0">
@@ -262,8 +262,12 @@ export default function SessionConfigForm({ onStarted, onEditConfig }: Props) {
                     }}
                   />
                 ))}
-                {!datasetExists && availableRoles.length > 0 && (
-                  <AddSlotButton roles={availableRoles} onAdd={addSlot} />
+                {!datasetExists && (
+                  <AddSlotButton
+                    roles={availableRoles}
+                    existingSlots={formSlots}
+                    onAdd={addSlot}
+                  />
                 )}
               </div>
             </Field>

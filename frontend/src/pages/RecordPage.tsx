@@ -12,6 +12,7 @@ import { Badge } from "../components/ui/badge";
 import { InstrumentWell } from "../components/ui/instrument-well";
 import { Sparkline } from "../components/ui/sparkline";
 import { useJointHistory } from "../hooks/useJointHistory";
+import { useEeXyHistory } from "../hooks/useEeXyHistory";
 import { SectionMark } from "../components/ui/section-mark";
 import { ConfigEditorModal, type ConfigEntry as ModalConfigEntry, type ConfigEditorMode } from "../components/ConfigEditorModal";
 import type { ConfigGroup } from "../components/ConfigCard";
@@ -434,22 +435,106 @@ function EEBlock({ enabled }: { enabled: boolean }) {
   );
 }
 
+// Window options for the EE trajectory plot. The hook buffers the
+// maximum here so changing the chip doesn't lose history.
+const XY_WINDOWS_SEC = [3, 5, 8, 15] as const;
+const XY_WINDOW_MAX_SEC = 15;
+const XY_HZ = 100;
+
 function XYPlot() {
-  // TODO follow-up: add a rolling EE XY buffer hook similar to useJointHistory.
-  // For now, render the well with an empty-state grid so the visual lands.
+  const [windowSec, setWindowSec] = useState<number>(8);
+  const { xs, ys, zs } = useEeXyHistory(true, XY_WINDOW_MAX_SEC, XY_HZ);
+  const W = 360;
+  const H = 110;
+  const PAD = 6;
+
+  const visibleN = Math.min(xs.length, windowSec * XY_HZ);
+  const sx = xs.slice(xs.length - visibleN);
+  const sy = ys.slice(ys.length - visibleN);
+
+  // Top-down view from above the robot:
+  //   world +x → SVG up    (in front of the base)
+  //   world -x → SVG down  (behind the base)
+  //   world +y → SVG left  (robot's left side)
+  //   world -y → SVG right (robot's right side)
+  let pts = "";
+  let head: { cx: number; cy: number } | null = null;
+  if (sx.length >= 2) {
+    const xMin = Math.min(...sx);
+    const xMax = Math.max(...sx);
+    const yMin = Math.min(...sy);
+    const yMax = Math.max(...sy);
+    const xRange = Math.max(xMax - xMin, 0.05);
+    const yRange = Math.max(yMax - yMin, 0.05);
+    const xMid = (xMin + xMax) / 2;
+    const yMid = (yMin + yMax) / 2;
+    const scaleH = (W - 2 * PAD) / yRange;
+    const scaleV = (H - 2 * PAD) / xRange;
+    const scale = Math.min(scaleH, scaleV);
+    const toSx = (y: number) => W / 2 - (y - yMid) * scale;
+    const toSy = (x: number) => H / 2 - (x - xMid) * scale;
+    pts = sx.map((x, i) => `${toSx(sy[i]).toFixed(1)},${toSy(x).toFixed(1)}`).join(" ");
+    const last = sx.length - 1;
+    head = { cx: toSx(sy[last]), cy: toSy(sx[last]) };
+  }
+
+  const lastZ = zs.length > 0 ? zs[zs.length - 1] : null;
+
   return (
     <InstrumentWell
-      header="EE · XY TRAJECTORY · LAST 8 s"
+      header={
+        <span className="flex items-baseline gap-2">
+          <span>EE · XY TRAJECTORY</span>
+          <span className="inline-flex gap-0.5">
+            {XY_WINDOWS_SEC.map((s) => (
+              <button
+                key={s}
+                type="button"
+                onClick={() => setWindowSec(s)}
+                className={
+                  "px-1.5 py-[1px] rounded-xs transition-colors " +
+                  (windowSec === s
+                    ? "bg-on-dark text-canvas-dark"
+                    : "text-on-dark-dim hover:text-on-dark")
+                }
+              >
+                {s}s
+              </button>
+            ))}
+          </span>
+        </span>
+      }
       live
+      caption={
+        lastZ !== null && (
+          <span className="font-mono">z = {lastZ.toFixed(3)} m</span>
+        )
+      }
     >
-      <svg viewBox="0 0 360 110" preserveAspectRatio="none" className="w-full h-full">
+      <svg
+        viewBox={`0 0 ${W} ${H}`}
+        preserveAspectRatio="none"
+        className="w-full h-full"
+      >
         <defs>
           <pattern id="xy-grid" width="24" height="22" patternUnits="userSpaceOnUse">
             <path d="M 24 0 L 0 0 0 22" fill="none" stroke="var(--color-hairline-dark)" strokeWidth="0.5" />
           </pattern>
         </defs>
-        <rect width="360" height="110" fill="url(#xy-grid)" />
-        {/* Empty — wired up in follow-up */}
+        <rect width={W} height={H} fill="url(#xy-grid)" />
+        {pts && (
+          <polyline
+            points={pts}
+            fill="none"
+            stroke="var(--color-brand-green)"
+            strokeWidth="1.25"
+            strokeLinejoin="round"
+            vectorEffect="non-scaling-stroke"
+          />
+        )}
+        {head && (
+          <circle cx={head.cx} cy={head.cy} r="2.5" fill="var(--color-brand-green)" />
+        )}
       </svg>
     </InstrumentWell>
   );

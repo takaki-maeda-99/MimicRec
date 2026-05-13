@@ -13,11 +13,23 @@ interface SparklineProps {
 /**
  * Pure: map numeric series → SVG polyline points string.
  * Min / max are inferred from the data; if the series is flat,
- * we draw it on the vertical midline.
+ * we draw it on the vertical midline. The `strokeWidth` is baked
+ * into a top/bottom padding so the line never clips at the viewBox
+ * edges (half the stroke would otherwise extend outside).
  */
-function pointsFor(data: number[], width: number, height: number): string {
+function pointsFor(
+  data: number[],
+  width: number,
+  height: number,
+  strokeWidth: number,
+): string {
   if (data.length === 0) return "";
-  if (data.length === 1) return `0,${height / 2} ${width},${height / 2}`;
+  const pad = strokeWidth / 2;
+  const drawableH = height - 2 * pad;
+  if (data.length === 1) {
+    const mid = pad + drawableH / 2;
+    return `0,${mid} ${width},${mid}`;
+  }
 
   const min = Math.min(...data);
   const max = Math.max(...data);
@@ -28,7 +40,9 @@ function pointsFor(data: number[], width: number, height: number): string {
     .map((v, i) => {
       const x = i * step;
       const y =
-        range === 0 ? height / 2 : height - ((v - min) / range) * height;
+        range === 0
+          ? pad + drawableH / 2
+          : pad + drawableH - ((v - min) / range) * drawableH;
       return `${x.toFixed(1)},${y.toFixed(1)}`;
     })
     .join(" ");
@@ -44,7 +58,7 @@ export function Sparkline({
 }: SparklineProps) {
   const stroke =
     tone === "warn" ? "var(--color-brand-warn)" : "var(--color-brand-green-deep)";
-  const pts = pointsFor(data, width, height);
+  const pts = pointsFor(data, width, height, strokeWidth);
 
   return (
     <svg
