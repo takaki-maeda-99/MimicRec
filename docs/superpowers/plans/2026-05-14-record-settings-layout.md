@@ -237,7 +237,7 @@ Remove `handleSaveConfig` (lines 94-107) and the `editJson` state (line 35) — 
 cd frontend && npm run build
 ```
 
-Expected: build succeeds. If there's a TS error about `ConfigGroup`, import it from `./components/ConfigCard`.
+Expected: build succeeds. If there's a TS error about `ConfigGroup`, import it from `../components/ConfigCard` (note: relative path from `pages/`, not `./`).
 
 - [ ] **Step 4: Manual smoke test**
 
@@ -309,7 +309,7 @@ Replace lines 81-336 (everything from `return (` to the end of the component) wi
     >
       {/* Two-column body */}
       <div className="flex-1 min-h-0 overflow-auto px-xl py-lg">
-        <div className="max-w-[1280px] mx-auto grid grid-cols-1 max-[1279px]:grid-cols-1 min-[1280px]:grid-cols-2 gap-2xl">
+        <div className="max-w-[1280px] mx-auto grid grid-cols-1 xl:grid-cols-2 gap-2xl">
 
           {/* §02.A — RUN SHEET (left column) */}
           <section className="flex flex-col gap-md min-w-0">
@@ -537,18 +537,6 @@ Replace lines 81-336 (everything from `return (` to the end of the component) wi
   );
 }
 
-function Section({ code, name, children }: { code: string; name: string; children: React.ReactNode }) {
-  return (
-    <section className="flex flex-col gap-md">
-      <header className="flex items-baseline gap-md">
-        <SectionMark code={code} name={name} />
-        <span className="flex-1 h-px bg-hairline-soft" />
-      </header>
-      {children}
-    </section>
-  );
-}
-
 function Field({ label, children, hint }: { label: string; children: React.ReactNode; hint?: React.ReactNode }) {
   return (
     <div className="flex flex-col gap-1">
@@ -733,7 +721,7 @@ Replace the Hardware-column grids with `ConfigPickerRow` (selected + count + pop
 // frontend/src/components/ConfigPickerRow.tsx
 import { useEffect, useRef, useState } from "react";
 import { ChevronDown, Settings } from "lucide-react";
-import { ConfigCard, type ConfigGroup, type ConfigCardEntry } from "./ConfigCard";
+import type { ConfigGroup, ConfigCardEntry } from "./ConfigCard";
 import { cn } from "../lib/utils";
 
 interface ConfigPickerRowProps {
@@ -750,7 +738,7 @@ export function ConfigPickerRow({
 }: ConfigPickerRowProps) {
   const [open, setOpen] = useState(false);
   const [highlight, setHighlight] = useState(0);
-  const triggerRef = useRef<HTMLButtonElement>(null);
+  const triggerRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
 
   const selectedConfig = configs.find(c => c.name === selected);
@@ -818,24 +806,34 @@ export function ConfigPickerRow({
     );
   }
 
+  // The trigger row contains nested interactive elements (⚙ Edit button).
+  // Nesting <button> inside <button> is invalid HTML, so the row is a
+  // <div role="button"> and the ⚙ Edit is a real <button> sibling.
+  const onRowKey = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      setOpen(o => !o);
+    }
+  };
+
   return (
     <div className="relative">
-      <button
+      <div
         ref={triggerRef}
-        type="button"
+        role="button"
+        tabIndex={0}
         onClick={() => setOpen(o => !o)}
+        onKeyDown={onRowKey}
         className={cn(
           "w-full rounded-md border-2 bg-canvas px-md py-sm transition-colors text-left",
-          "flex items-center gap-sm",
+          "flex items-center gap-sm cursor-pointer focus:outline-none focus:ring-2 focus:ring-ink",
           missing ? "border-brand-error/60" : "border-ink",
         )}
         aria-haspopup="menu"
         aria-expanded={open}
       >
         {missing ? (
-          <>
-            <span className="text-brand-error font-mono text-body-sm-medium">⚠ {selected} — missing</span>
-          </>
+          <span className="text-brand-error font-mono text-body-sm-medium">⚠ {selected} — missing</span>
         ) : (
           <>
             <span className="w-2 h-2 rounded-full bg-ink" aria-hidden />
@@ -858,7 +856,7 @@ export function ConfigPickerRow({
           </button>
         )}
         <ChevronDown className="w-4 h-4 text-stone" />
-      </button>
+      </div>
 
       {open && (
         <div
@@ -959,9 +957,11 @@ function RecordIdle() {
 
   const openEditor = (group: ConfigGroup, name: string, mode: ConfigEditorMode) => {
     // We need the current content to pre-fill the modal. Re-fetch from the
-    // react-query cache (already populated by useConfigsWithContent).
+    // react-query cache populated by useConfigsWithContent. The key shape
+    // is defined at frontend/src/api/queries.ts:107 as
+    // ["configs-with-content", group] — not ["configs", group, true].
     const cached = queryClient.getQueryData<{ name: string; content: Record<string, unknown> }[]>(
-      ["configs", group, true]
+      ["configs-with-content", group]
     );
     const found = cached?.find(c => c.name === name);
     const content = found?.content ?? {};
@@ -983,6 +983,9 @@ function RecordIdle() {
         onClose={() => setEditing(null)}
         onSaved={() => {
           setEditing(null);
+          // Invalidate BOTH cache keys: useConfigsWithContent feeds the form,
+          // useConfigs feeds the schema lookup. See queries.ts:97,107.
+          queryClient.invalidateQueries({ queryKey: ["configs-with-content"] });
           queryClient.invalidateQueries({ queryKey: ["configs"] });
         }}
       />
@@ -1525,9 +1528,10 @@ from unittest.mock import MagicMock
 
 def _stub_active_session(app, *, robot=None, teleop=None, mapper=None, image_sources=None):
     """Install a stub session_manager + session_meta on the app so
-    build_state_payload() returns a non-idle session matching the args."""
+    the DELETE handler's `active` check (settings.py) reads as non-idle."""
     sm = MagicMock()
     sm.session.state.value = "recording"
+    sm.session.stopped.is_set.return_value = False
     sm.session.sub_state = None
     sm.session.mode.value = "teleop"
     app.state.session_manager = sm
@@ -1537,6 +1541,17 @@ def _stub_active_session(app, *, robot=None, teleop=None, mapper=None, image_sou
         "mapper": mapper,
         "slot_assignments": image_sources or [],
     }
+
+
+def _stub_idle_manager(app):
+    """Install a stale session_manager left over from a previous run that
+    transitioned to IDLE on FatalHardwareError. The DELETE handler must
+    treat this as logically gone and allow the delete."""
+    sm = MagicMock()
+    sm.session.state.value = "idle"
+    sm.session.stopped.is_set.return_value = True
+    app.state.session_manager = sm
+    app.state.session_meta = {}
 
 
 async def test_delete_config_refuses_409_when_robot_in_use(app, tmp_path):
@@ -1599,6 +1614,22 @@ async def test_delete_gopro_config_refuses_409_when_in_image_sources(app, tmp_pa
     assert r.status_code == 409
 
 
+async def test_delete_config_allowed_when_manager_is_stale_idle(app, tmp_path):
+    # A FatalHardwareError can leave session_manager attached but in IDLE
+    # state with stopped.is_set() == True (see session.py:81-86). Treat
+    # this as logically gone and allow the delete.
+    app.state.configs_root = tmp_path
+    (tmp_path / "robot").mkdir()
+    (tmp_path / "robot" / "so101.yaml").write_text("_target_: x\n")
+    _stub_idle_manager(app)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        r = await ac.delete("/api/settings/configs/robot/so101")
+
+    assert r.status_code == 204
+    assert not (tmp_path / "robot" / "so101.yaml").exists()
+
+
 async def test_delete_camera_config_ignores_unrelated_image_source(app, tmp_path):
     # An image_source pointing at `wrist` must not block deleting `front`.
     app.state.configs_root = tmp_path
@@ -1654,9 +1685,18 @@ async def delete_config(request: Request, group: str, name: str):
     """
     # Active-session guard. The session metadata shape is documented in
     # `backend/mimicrec/api/routes/session.py:42-61` (build_state_payload).
+    # A stale manager left in IDLE after FatalHardwareError is treated as
+    # logically gone (matches the session_start path at session.py:81-83),
+    # so we only refuse when the manager is in a non-idle, non-stopped state.
     meta = getattr(request.app.state, "session_meta", None) or {}
     sm = getattr(request.app.state, "session_manager", None)
-    if sm is not None:
+    active = (
+        sm is not None
+        and getattr(sm.session, "state", None) is not None
+        and sm.session.state.value != "idle"
+        and not sm.session.stopped.is_set()
+    )
+    if active:
         if group in ("robot", "teleop", "mapper"):
             if meta.get(group) == name:
                 raise HTTPException(
@@ -1779,17 +1819,24 @@ In `SettingsPage.tsx`, add a delete handler:
 ```tsx
 const handleDelete = async (group: ConfigGroup, name: string) => {
   if (!window.confirm(`Delete ${group}/${name}?`)) return;
-  try {
-    await apiFetch(`/api/settings/configs/${group}/${name}`, { method: "DELETE" });
+  // NOTE: cannot use apiFetch — it calls res.json() unconditionally
+  // (client.ts:38), which fails on the 204 No Content response from a
+  // successful DELETE. Use raw fetch with explicit status handling.
+  const res = await fetch(`/api/settings/configs/${group}/${name}`, {
+    method: "DELETE",
+    cache: "no-store",
+  });
+  if (res.status === 204) {
     loadAll();
-  } catch (e) {
-    const msg = String(e);
-    if (msg.includes("409")) {
-      alert(`Cannot delete: ${group}/${name} is in use by the current session.`);
-    } else {
-      alert(`Delete failed: ${e}`);
-    }
+    return;
   }
+  if (res.status === 409) {
+    const body = await res.json().catch(() => ({ detail: "in use" }));
+    alert(`Cannot delete ${group}/${name}: ${body.detail}`);
+    return;
+  }
+  const body = await res.json().catch(() => ({ detail: res.statusText }));
+  alert(`Delete failed: ${body.detail}`);
 };
 ```
 
@@ -1865,9 +1912,221 @@ Spec sections vs plan tasks — every requirement maps to at least one task:
 **Files:**
 - Modify: `frontend/src/components/CameraSlotRow.tsx`
 
-- [ ] **Step 1: Wrap the existing `ConfigPickerRow` for device choice**
+- [ ] **Step 1: Rewrite `CameraSlotRow` with an inline `DevicePickerButton`**
 
-Replace the `<select>` block in `CameraSlotRow` with a compact picker. Reuse the `ConfigPickerRow` primitive if its shape fits, or inline a smaller popover. The trade-off: `ConfigPickerRow` is sized for full-width rows, the camera slot needs a narrower trigger. Minimal viable change: a `<button>` that opens an absolute-positioned menu listing `deviceOptions`, matching the popover idiom in `ConfigPickerRow.tsx` (`role="menu"`, keyboard nav). The full diff is structurally similar to `ConfigPickerRow` but scoped to the smaller trigger area — copy the popover JSX block, swap the data source.
+Replace the entire `CameraSlotRow` function body. The component now embeds a popover button that mirrors the `ConfigPickerRow` keyboard-nav pattern but renders a narrower trigger inline (not a full-width row).
+
+```tsx
+// frontend/src/components/CameraSlotRow.tsx
+import { useEffect, useRef, useState } from "react";
+import { ChevronDown, Settings } from "lucide-react";
+import { Badge } from "./ui/badge";
+import { cn } from "../lib/utils";
+
+export interface DeviceOption {
+  name: string;
+  kind: "camera" | "gopro";
+}
+
+interface CameraSlotRowProps {
+  slot: string;
+  device: string;
+  locked: boolean;
+  legacy: boolean;
+  deviceOptions: DeviceOption[];
+  usedDevices: Set<string>;
+  onChange: (device: string) => void;
+  onRemove?: () => void;
+  onEdit?: (deviceName: string) => void;
+}
+
+export function CameraSlotRow({
+  slot, device, locked, legacy, deviceOptions, usedDevices,
+  onChange, onRemove, onEdit,
+}: CameraSlotRowProps) {
+  return (
+    <div className="flex items-center gap-sm rounded-md border border-hairline bg-canvas px-md py-2">
+      <Badge variant="type" className="font-mono">
+        {slot}{legacy && " (legacy)"}
+      </Badge>
+      <span className="flex-1" />
+      <DevicePickerButton
+        device={device}
+        options={deviceOptions}
+        usedDevices={usedDevices}
+        disabled={locked && !device}
+        onChange={onChange}
+      />
+      {onEdit && device && (
+        <button
+          type="button"
+          onClick={() => onEdit(device)}
+          className="text-stone hover:text-ink px-1"
+          aria-label={`Edit ${device}`}
+        >
+          <Settings className="w-4 h-4" />
+        </button>
+      )}
+      {onRemove && (
+        <button
+          type="button"
+          onClick={onRemove}
+          className="text-stone hover:text-brand-error px-2"
+          aria-label={`Remove ${slot}`}
+        >
+          ✕
+        </button>
+      )}
+    </div>
+  );
+}
+
+interface AddSlotButtonProps {
+  roles: string[];
+  onAdd: (role: string) => void;
+}
+
+export function AddSlotButton({ roles, onAdd }: AddSlotButtonProps) {
+  return (
+    <select
+      value=""
+      className="border border-dashed border-hairline rounded-md px-md py-2 text-body-sm bg-canvas text-stone"
+      onChange={e => { if (e.target.value) onAdd(e.target.value); }}
+    >
+      <option value="">+ add slot…</option>
+      {roles.map(r => (
+        <option key={r} value={r}>{r}</option>
+      ))}
+    </select>
+  );
+}
+
+interface DevicePickerButtonProps {
+  device: string;
+  options: DeviceOption[];
+  usedDevices: Set<string>;
+  disabled: boolean;
+  onChange: (device: string) => void;
+}
+
+function DevicePickerButton({
+  device, options, usedDevices, disabled, onChange,
+}: DevicePickerButtonProps) {
+  const [open, setOpen] = useState(false);
+  const [highlight, setHighlight] = useState(0);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (!menuRef.current?.contains(e.target as Node)
+          && !triggerRef.current?.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setOpen(false);
+        triggerRef.current?.focus();
+      }
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setHighlight(h => Math.min(h + 1, options.length));
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setHighlight(h => Math.max(h - 1, 0));
+      }
+      if (e.key === "Enter") {
+        e.preventDefault();
+        // Slot 0 = "none", slots 1..N = options
+        if (highlight === 0) {
+          onChange("");
+        } else {
+          const item = options[highlight - 1];
+          if (item) onChange(item.name);
+        }
+        setOpen(false);
+        triggerRef.current?.focus();
+      }
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open, options, highlight, onChange]);
+
+  const label = device
+    ? `${device} (${options.find(o => o.name === device)?.kind ?? "?"})`
+    : "— none —";
+
+  return (
+    <div className="relative">
+      <button
+        ref={triggerRef}
+        type="button"
+        disabled={disabled}
+        onClick={() => setOpen(o => !o)}
+        className={cn(
+          "border border-hairline rounded px-2 py-1 text-body-sm bg-canvas min-w-[200px] flex items-center gap-2",
+          "focus:outline-none focus:ring-2 focus:ring-ink",
+          disabled && "opacity-50 cursor-not-allowed",
+        )}
+        aria-haspopup="menu"
+        aria-expanded={open}
+      >
+        <span className="flex-1 text-left truncate">{label}</span>
+        <ChevronDown className="w-3.5 h-3.5 text-stone" />
+      </button>
+      {open && (
+        <div
+          ref={menuRef}
+          role="menu"
+          className="absolute z-40 mt-1 w-full bg-canvas border border-hairline rounded-md shadow-lg p-1 max-h-[200px] overflow-auto"
+        >
+          <div
+            role="menuitem"
+            className={cn(
+              "px-2 py-1 rounded-sm cursor-pointer text-stone",
+              highlight === 0 ? "bg-surface" : "",
+            )}
+            onMouseEnter={() => setHighlight(0)}
+            onClick={() => { onChange(""); setOpen(false); }}
+          >
+            — none —
+          </div>
+          {options.map((opt, i) => {
+            const inUse = usedDevices.has(opt.name) && device !== opt.name;
+            return (
+              <div
+                key={opt.name}
+                role="menuitem"
+                aria-disabled={inUse}
+                className={cn(
+                  "px-2 py-1 rounded-sm",
+                  inUse ? "text-stone cursor-not-allowed" : "cursor-pointer text-ink",
+                  highlight === i + 1 ? "bg-surface" : "",
+                )}
+                onMouseEnter={() => setHighlight(i + 1)}
+                onClick={() => {
+                  if (inUse) return;
+                  onChange(opt.name);
+                  setOpen(false);
+                }}
+              >
+                {opt.name} <span className="text-caption text-stone">({opt.kind}){inUse && " · in use"}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+```
 
 - [ ] **Step 2: Type-check**
 
@@ -1875,11 +2134,21 @@ Replace the `<select>` block in `CameraSlotRow` with a compact picker. Reuse the
 cd frontend && npm run build
 ```
 
-- [ ] **Step 3: Commit**
+Expected: build succeeds.
+
+- [ ] **Step 3: Manual smoke**
+
+```bash
+cd frontend && npm run dev
+```
+
+At `/record` idle: click a camera slot's device button → popover opens with keyboard nav (↑↓ + Enter + Esc). Selecting a device updates the slot; "— none —" clears it; "in use" devices appear disabled.
+
+- [ ] **Step 4: Commit**
 
 ```bash
 git add frontend/src/components/CameraSlotRow.tsx
-git commit -m "feat(record): replace native <select> in CameraSlotRow with popover device picker"
+git commit -m "feat(record): replace native <select> in CameraSlotRow with keyboard-nav popover"
 ```
 
 ### Placeholder scan
