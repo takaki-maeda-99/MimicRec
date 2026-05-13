@@ -7,6 +7,7 @@ import { Input } from "./ui/input";
 import { ConfigCard } from "./ConfigCard";
 import { SegmentedTab, SegmentedTabBar } from "./ui/segmented-tab";
 import { SectionMark } from "./ui/section-mark";
+import { CameraSlotRow, AddSlotButton } from "./CameraSlotRow";
 
 interface Props {
   onStarted: () => void;
@@ -79,271 +80,237 @@ export default function SessionConfigForm({ onStarted }: Props) {
   };
 
   return (
-    <div className="max-w-[760px] flex flex-col gap-xl">
+    <form
+      className="flex flex-col h-full min-h-0"
+      onSubmit={(e) => { e.preventDefault(); handleStart(); }}
+    >
+      {/* Two-column body */}
+      <div className="flex-1 min-h-0 overflow-auto px-xl py-lg">
+        <div className="max-w-[1280px] mx-auto grid grid-cols-1 xl:grid-cols-2 gap-2xl">
 
-      {/* §02.idle.A — Mode */}
-      <Section code="§02.idle.A" name="Mode">
-        <Field label="Mode">
-          <SegmentedTabBar>
-            <SegmentedTab active={mode === "teleop"} onClick={() => form.set({ mode: "teleop" })}>
-              Teleop
-            </SegmentedTab>
-            <SegmentedTab active={mode === "hand_teach"} onClick={() => form.set({ mode: "hand_teach" })}>
-              Hand Teach
-            </SegmentedTab>
-          </SegmentedTabBar>
-        </Field>
-      </Section>
+          {/* §02.A — RUN SHEET (left column) */}
+          <section className="flex flex-col gap-md min-w-0">
+            <header className="flex items-baseline gap-md">
+              <SectionMark code="§02.A" name="Run sheet" />
+              <span className="flex-1 h-px bg-hairline-soft" />
+            </header>
 
-      {/* §02.idle.B — Dataset & task */}
-      <Section code="§02.idle.B" name="Dataset & task">
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-md">
-          <Field label="Dataset">
-            <Input
-              list="existing-datasets"
-              value={dataset}
-              onChange={e => form.set({ dataset: e.target.value })}
-              placeholder="my_dataset"
-            />
-            <datalist id="existing-datasets">
-              {datasets?.map(d => (
-                <option key={d.name} value={d.name}>
-                  {d.num_episodes} episodes
-                </option>
-              ))}
-            </datalist>
-          </Field>
-          <Field label="Task">
-            <Input
-              list="existing-tasks"
-              value={task}
-              onChange={e => form.set({ task: e.target.value })}
-              placeholder="pick"
-            />
-            <datalist id="existing-tasks">
-              {tasks?.map(t => (
-                <option key={t.task_index} value={t.task}>
-                  {t.instruction ?? ""}
-                </option>
-              ))}
-            </datalist>
-          </Field>
-        </div>
-      </Section>
+            <Field label="Mode">
+              <SegmentedTabBar>
+                <SegmentedTab active={mode === "teleop"} onClick={() => form.set({ mode: "teleop" })}>
+                  Teleop
+                </SegmentedTab>
+                <SegmentedTab active={mode === "hand_teach"} onClick={() => form.set({ mode: "hand_teach" })}>
+                  Hand Teach
+                </SegmentedTab>
+              </SegmentedTabBar>
+            </Field>
 
-      {/* §02.idle.C — Robot */}
-      <Section code="§02.idle.C" name="Robot">
-        <Field label="Robot">
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-            {robots?.map(r => (
-              <ConfigCard
-                key={r.name}
-                config={r}
-                group="robot"
-                selected={robot === r.name}
-                onClick={() => form.set({ robot: r.name })}
+            <Field label="Dataset">
+              <Input
+                list="existing-datasets"
+                value={dataset}
+                onChange={e => form.set({ dataset: e.target.value })}
+                placeholder="my_dataset"
+                className="truncate"
               />
-            ))}
-          </div>
-        </Field>
-      </Section>
+              <datalist id="existing-datasets">
+                {datasets?.map(d => (
+                  <option key={d.name} value={d.name}>{d.num_episodes} episodes</option>
+                ))}
+              </datalist>
+            </Field>
 
-      {/* §02.idle.D — Teleop & mapper (only shown when mode === "teleop") */}
-      {mode === "teleop" && (
-        <Section code="§02.idle.D" name="Teleop & mapper">
-          <Field label="Teleop">
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-              {teleops?.map(t => (
-                <ConfigCard
-                  key={t.name}
-                  config={t}
-                  group="teleop"
-                  selected={teleop === t.name}
-                  onClick={() => form.set({ teleop: t.name })}
-                />
-              ))}
-            </div>
-          </Field>
-          <Field label="Mapper">
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-              {mappers?.map(m => (
-                <ConfigCard
-                  key={m.name}
-                  config={m}
-                  group="mapper"
-                  selected={mapper === m.name}
-                  onClick={() => form.set({ mapper: m.name })}
-                />
-              ))}
-            </div>
-          </Field>
-        </Section>
-      )}
+            <Field label="Task">
+              <Input
+                list="existing-tasks"
+                value={task}
+                onChange={e => form.set({ task: e.target.value })}
+                placeholder="pick"
+                className="truncate"
+              />
+              <datalist id="existing-tasks">
+                {tasks?.map(t => (
+                  <option key={t.task_index} value={t.task}>{t.instruction ?? ""}</option>
+                ))}
+              </datalist>
+            </Field>
 
-      {/* §02.idle.E — Camera assignments */}
-      <Section code="§02.idle.E" name="Camera assignments">
-        <Field label="Camera Assignments">
-          <div className="flex flex-col gap-2">
-            {allSlotsToShow.map(({ slot, device, locked }) => (
-              <div key={slot} className="flex items-center gap-2">
-                <select
-                  disabled={locked}
-                  value={slot}
-                  className="border border-hairline rounded px-2 py-1 text-body-sm bg-canvas"
-                  onChange={() => {}}
-                >
-                  <option value={slot}>{slot}{legacySlots.includes(slot) ? " (legacy)" : ""}</option>
-                </select>
-                <select
-                  value={device}
-                  className="border border-hairline rounded px-2 py-1 text-body-sm bg-canvas flex-1"
-                  onChange={e => setSlotDevice(slot, e.target.value)}
-                >
-                  <option value="">— none —</option>
-                  {deviceOptions.map(opt => (
-                    <option
-                      key={opt.name}
-                      value={opt.name}
-                      disabled={usedDevices.has(opt.name) && device !== opt.name}
-                    >
-                      {opt.name} ({opt.kind}){usedDevices.has(opt.name) && device !== opt.name ? " (in use)" : ""}
-                    </option>
-                  ))}
-                </select>
-                {!locked && (
-                  <button
-                    type="button"
-                    onClick={() => removeSlot(slot)}
-                    className="text-stone hover:text-brand-error px-2"
-                  >
-                    ✕
-                  </button>
+            <Field label="FPS">
+              <Input
+                type="number"
+                className="w-24"
+                value={fps}
+                onChange={e => form.set({ fps: Number(e.target.value) })}
+              />
+            </Field>
+
+            <Field label="Parameters">
+              <div className="border border-hairline rounded-md p-md gap-sm flex flex-col bg-surface-soft">
+                <label className="flex items-center gap-2 text-body-sm-medium text-charcoal">
+                  <input
+                    type="checkbox"
+                    checked={form.autoCycle}
+                    onChange={e => form.set({ autoCycle: e.target.checked })}
+                  />
+                  Auto cycle <span className="text-caption text-steel">— record → save → next</span>
+                </label>
+                {form.autoCycle && (
+                  <>
+                    <div className="flex gap-3 text-body-sm pl-6">
+                      <label className="flex items-center gap-1">
+                        Duration
+                        <Input
+                          type="number"
+                          className="w-20"
+                          value={form.autoDurationSec}
+                          onChange={e => form.set({ autoDurationSec: Math.max(1, Number(e.target.value) || 0) })}
+                        />
+                        <span className="text-steel">s</span>
+                      </label>
+                      <label className="flex items-center gap-1">
+                        Review
+                        <Input
+                          type="number"
+                          className="w-20"
+                          value={form.autoReviewSec}
+                          onChange={e => form.set({ autoReviewSec: Math.max(0, Number(e.target.value) || 0) })}
+                        />
+                        <span className="text-steel">s</span>
+                      </label>
+                    </div>
+                    <p className="text-caption text-steel pl-6">
+                      F = fail · D = discard · Esc = stop
+                    </p>
+                  </>
+                )}
+                <label className="flex items-center gap-2 text-body-sm-medium text-charcoal">
+                  <input
+                    type="checkbox"
+                    checked={previewEnabled}
+                    onChange={e => form.set({ previewEnabled: e.target.checked })}
+                  />
+                  Live preview <span className="text-caption text-steel">— turn off to free USB / CPU</span>
+                </label>
+              </div>
+            </Field>
+          </section>
+
+          {/* §02.B — HARDWARE (right column) */}
+          <section className="flex flex-col gap-md min-w-0">
+            <header className="flex items-baseline gap-md">
+              <SectionMark code="§02.B" name="Hardware" />
+              <span className="flex-1 h-px bg-hairline-soft" />
+            </header>
+
+            <Field label="Robot">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                {robots?.map(r => (
+                  <ConfigCard
+                    key={r.name}
+                    config={r}
+                    group="robot"
+                    selected={robot === r.name}
+                    onClick={() => form.set({ robot: r.name })}
+                  />
+                ))}
+              </div>
+            </Field>
+
+            {mode === "teleop" && (
+              <>
+                <Field label="Teleop">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    {teleops?.map(t => (
+                      <ConfigCard
+                        key={t.name}
+                        config={t}
+                        group="teleop"
+                        selected={teleop === t.name}
+                        onClick={() => form.set({ teleop: t.name })}
+                      />
+                    ))}
+                  </div>
+                </Field>
+                <Field label="Mapper">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    {mappers?.map(m => (
+                      <ConfigCard
+                        key={m.name}
+                        config={m}
+                        group="mapper"
+                        selected={mapper === m.name}
+                        onClick={() => form.set({ mapper: m.name })}
+                      />
+                    ))}
+                  </div>
+                </Field>
+              </>
+            )}
+
+            <Field label="Cameras">
+              <div className="flex flex-col gap-2">
+                {allSlotsToShow.map(({ slot, device, locked }) => (
+                  <CameraSlotRow
+                    key={slot}
+                    slot={slot}
+                    device={device}
+                    locked={locked}
+                    legacy={legacySlots.includes(slot)}
+                    deviceOptions={deviceOptions}
+                    usedDevices={usedDevices}
+                    onChange={(d) => setSlotDevice(slot, d)}
+                    onRemove={!locked ? () => removeSlot(slot) : undefined}
+                  />
+                ))}
+                {!datasetExists && availableRoles.length > 0 && (
+                  <AddSlotButton roles={availableRoles} onAdd={addSlot} />
                 )}
               </div>
-            ))}
-            {!datasetExists && (
-              <div className="flex items-center gap-2">
-                <select
-                  value=""
-                  className="border border-hairline rounded px-2 py-1 text-body-sm bg-canvas"
-                  onChange={e => { if (e.target.value) addSlot(e.target.value); }}
-                >
-                  <option value="">+ Add slot…</option>
-                  {availableRoles.map(r => (
-                    <option key={r} value={r}>{r}</option>
-                  ))}
-                </select>
-              </div>
-            )}
-          </div>
-        </Field>
-      </Section>
+            </Field>
+          </section>
 
-      {/* §02.idle.F — Parameters */}
-      <Section code="§02.idle.F" name="Parameters">
-        <Field label="FPS">
-          <Input type="number" className="w-20" value={fps} onChange={e => form.set({ fps: Number(e.target.value) })} />
-        </Field>
-        <div className="border border-hairline rounded-md p-md gap-sm flex flex-col bg-surface-soft">
-          <label className="flex items-center gap-2 text-sm font-medium text-charcoal">
-            <input
-              type="checkbox"
-              checked={form.autoCycle}
-              onChange={e => form.set({ autoCycle: e.target.checked })}
-            />
-            Auto cycle (record &rarr; auto save &rarr; next)
-          </label>
-          {form.autoCycle && (
-            <div className="flex gap-3 text-sm pl-6">
-              <label className="flex items-center gap-1">
-                Duration
-                <Input
-                  type="number"
-                  className="w-20"
-                  value={form.autoDurationSec}
-                  onChange={e => form.set({ autoDurationSec: Math.max(1, Number(e.target.value) || 0) })}
-                />
-                <span className="text-steel">s</span>
-              </label>
-              <label className="flex items-center gap-1">
-                Review window
-                <Input
-                  type="number"
-                  className="w-20"
-                  value={form.autoReviewSec}
-                  onChange={e => form.set({ autoReviewSec: Math.max(0, Number(e.target.value) || 0) })}
-                />
-                <span className="text-steel">s</span>
-              </label>
+        </div>
+      </div>
+
+      {/* Error block */}
+      {(startSession.isError || (!startSession.isError && lastError)) && (
+        <div className="px-xl pb-2">
+          {startSession.isError && (
+            <pre className="text-brand-error text-sm whitespace-pre-wrap font-mono bg-brand-error/10 border border-brand-error/30 rounded-md p-3">
+              {(startSession.error as Error).message}
+            </pre>
+          )}
+          {!startSession.isError && lastError && (
+            <div className="bg-brand-error/10 border border-brand-error/30 rounded-md p-3 space-y-1">
+              <div className="text-brand-error text-sm font-semibold">
+                Previous session ended with an error: {lastError.error}
+              </div>
+              <pre className="text-brand-error text-sm whitespace-pre-wrap font-mono">
+                {lastError.message}
+              </pre>
             </div>
           )}
-          {form.autoCycle && (
-            <p className="text-xs text-steel pl-6">
-              During review window, press <kbd>F</kbd> to save as failure, <kbd>D</kbd> to discard, <kbd>Esc</kbd> to stop the cycle.
-            </p>
-          )}
-          <label className="flex items-center gap-2 text-sm font-medium text-charcoal">
-            <input
-              type="checkbox"
-              checked={previewEnabled}
-              onChange={e => form.set({ previewEnabled: e.target.checked })}
-            />
-            ライブプレビュー表示（OFF で USB 帯域・CPU を解放）
-          </label>
-        </div>
-      </Section>
-
-      {/* Error blocks — contextual, before the Start button footer */}
-      {startSession.isError && (
-        <pre className="text-brand-error text-sm whitespace-pre-wrap font-mono bg-brand-error/10 border border-brand-error/30 rounded-md p-3">
-          {(startSession.error as Error).message}
-        </pre>
-      )}
-      {/* Errors that arrive AFTER session_start succeeded — e.g. a
-          FatalHardwareError from the reader loop that ended the session
-          on its own. Without this, the session quietly returns to IDLE
-          and the operator is dropped back on this form with no context. */}
-      {!startSession.isError && lastError && (
-        <div className="bg-brand-error/10 border border-brand-error/30 rounded-md p-3 space-y-1">
-          <div className="text-brand-error text-sm font-semibold">
-            Previous session ended with an error: {lastError.error}
-          </div>
-          <pre className="text-brand-error text-sm whitespace-pre-wrap font-mono">
-            {lastError.message}
-          </pre>
         </div>
       )}
 
-      {/* Start button footer */}
-      <div className="flex items-center gap-md border-t border-hairline pt-lg">
-        <Button
-          variant="primary"
-          size="lg"
-          onClick={handleStart}
-          disabled={startSession.isPending || !robot || !dataset || !task}
-        >
-          {startSession.isPending ? "Starting..." : "Start session"}
-        </Button>
+      {/* Footer — Start button anchored at bottom */}
+      <div className="flex-shrink-0 border-t border-hairline bg-canvas px-xl py-md flex items-center justify-end gap-md">
         {(!robot || !dataset || !task) && (
           <span className="text-caption text-steel">
             Pick a robot, dataset, and task to enable start.
           </span>
         )}
+        <Button
+          variant="primary"
+          size="lg"
+          type="submit"
+          disabled={startSession.isPending || !robot || !dataset || !task}
+        >
+          {startSession.isPending ? "Starting..." : "Start session →"}
+        </Button>
       </div>
-
-    </div>
-  );
-}
-
-function Section({ code, name, children }: { code: string; name: string; children: React.ReactNode }) {
-  return (
-    <section className="flex flex-col gap-md">
-      <header className="flex items-baseline gap-md">
-        <SectionMark code={code} name={name} />
-        <span className="flex-1 h-px bg-hairline-soft" />
-      </header>
-      {children}
-    </section>
+    </form>
   );
 }
 
