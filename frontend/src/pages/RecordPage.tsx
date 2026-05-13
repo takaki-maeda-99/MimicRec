@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useSessionStore } from "../state/session-store.ts";
 import { useEndSession, useEpisodes, useSessionState } from "../api/queries.ts";
 import { WsConnection } from "../api/ws.ts";
@@ -12,6 +13,8 @@ import { InstrumentWell } from "../components/ui/instrument-well";
 import { Sparkline } from "../components/ui/sparkline";
 import { useJointHistory } from "../hooks/useJointHistory";
 import { SectionMark } from "../components/ui/section-mark";
+import { ConfigEditorModal, type ConfigEntry as ModalConfigEntry, type ConfigEditorMode } from "../components/ConfigEditorModal";
+import type { ConfigGroup } from "../components/ConfigCard";
 import type { EpisodeProgress, ReplayProgress } from "../api/types.ts";
 
 function RecBadge({ elapsedSec }: { elapsedSec: number | null }) {
@@ -103,14 +106,7 @@ export default function RecordPage() {
 
   // Idle branch
   if (sessionState === "idle") {
-    return (
-      <>
-        <PageHeader code="§02" title="Configure session" />
-        <div className="flex-1 overflow-auto px-xl py-xl">
-          <SessionConfigForm onStarted={() => {}} />
-        </div>
-      </>
-    );
+    return <RecordIdle />;
   }
 
   // EpisodeProgress only carries num_frames + writer counters
@@ -456,5 +452,49 @@ function XYPlot() {
         {/* Empty — wired up in follow-up */}
       </svg>
     </InstrumentWell>
+  );
+}
+
+function RecordIdle() {
+  const [editing, setEditing] = useState<{
+    config: ModalConfigEntry;
+    mode: ConfigEditorMode;
+  } | null>(null);
+  const queryClient = useQueryClient();
+
+  const openEditor = (group: ConfigGroup, name: string, mode: ConfigEditorMode) => {
+    // useConfigsWithContent stores data under ["configs-with-content", group]
+    // — see frontend/src/api/queries.ts:107. Reuse the cached payload so we
+    // don't refetch just to pre-fill the modal.
+    const cached = queryClient.getQueryData<{ name: string; content: Record<string, unknown> }[]>(
+      ["configs-with-content", group]
+    );
+    const found = cached?.find(c => c.name === name);
+    const content = found?.content ?? {};
+    setEditing({ config: { name, group, content }, mode });
+  };
+
+  return (
+    <>
+      <PageHeader code="§02" title="Configure session" />
+      <div className="flex-1 min-h-0 flex flex-col">
+        <SessionConfigForm
+          onStarted={() => {}}
+          onEditConfig={openEditor}
+        />
+      </div>
+      <ConfigEditorModal
+        config={editing?.config ?? null}
+        mode={editing?.mode ?? "edit"}
+        onClose={() => setEditing(null)}
+        onSaved={() => {
+          setEditing(null);
+          // Invalidate BOTH cache keys: useConfigsWithContent feeds the form,
+          // useConfigs feeds the schema lookup. See queries.ts:97,107.
+          queryClient.invalidateQueries({ queryKey: ["configs-with-content"] });
+          queryClient.invalidateQueries({ queryKey: ["configs"] });
+        }}
+      />
+    </>
   );
 }

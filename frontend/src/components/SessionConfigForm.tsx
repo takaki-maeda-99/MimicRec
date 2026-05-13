@@ -4,17 +4,20 @@ import type { SlotAssignmentDraft } from "../state/record-form-store.ts";
 import { useSessionStore } from "../state/session-store.ts";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
-import { ConfigCard } from "./ConfigCard";
 import { SegmentedTab, SegmentedTabBar } from "./ui/segmented-tab";
 import { SectionMark } from "./ui/section-mark";
 import { CameraSlotRow, AddSlotButton } from "./CameraSlotRow";
 import type { DeviceOption } from "./CameraSlotRow";
+import type { ConfigEditorMode } from "./ConfigEditorModal";
+import { ConfigPickerRow } from "./ConfigPickerRow";
+import type { ConfigGroup } from "./ConfigCard";
 
 interface Props {
   onStarted: () => void;
+  onEditConfig?: (group: ConfigGroup, name: string, mode: ConfigEditorMode) => void;
 }
 
-export default function SessionConfigForm({ onStarted }: Props) {
+export default function SessionConfigForm({ onStarted, onEditConfig }: Props) {
   const { data: robots } = useConfigsWithContent("robot");
   const { data: teleops } = useConfigsWithContent("teleop");
   const { data: mappers } = useConfigsWithContent("mapper");
@@ -205,46 +208,37 @@ export default function SessionConfigForm({ onStarted }: Props) {
             </header>
 
             <Field label="Robot">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                {robots?.map(r => (
-                  <ConfigCard
-                    key={r.name}
-                    config={r}
-                    group="robot"
-                    selected={robot === r.name}
-                    onClick={() => form.set({ robot: r.name })}
-                  />
-                ))}
-              </div>
+              <ConfigPickerRow
+                group="robot"
+                selected={robot}
+                configs={robots ?? []}
+                onSelect={(name) => form.set({ robot: name })}
+                onEdit={(name) => onEditConfig?.("robot", name, "edit")}
+                onNew={() => onEditConfig?.("robot", "", "new")}
+              />
             </Field>
 
             {mode === "teleop" && (
               <>
                 <Field label="Teleop">
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                    {teleops?.map(t => (
-                      <ConfigCard
-                        key={t.name}
-                        config={t}
-                        group="teleop"
-                        selected={teleop === t.name}
-                        onClick={() => form.set({ teleop: t.name })}
-                      />
-                    ))}
-                  </div>
+                  <ConfigPickerRow
+                    group="teleop"
+                    selected={teleop}
+                    configs={teleops ?? []}
+                    onSelect={(name) => form.set({ teleop: name })}
+                    onEdit={(name) => onEditConfig?.("teleop", name, "edit")}
+                    onNew={() => onEditConfig?.("teleop", "", "new")}
+                  />
                 </Field>
                 <Field label="Mapper">
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                    {mappers?.map(m => (
-                      <ConfigCard
-                        key={m.name}
-                        config={m}
-                        group="mapper"
-                        selected={mapper === m.name}
-                        onClick={() => form.set({ mapper: m.name })}
-                      />
-                    ))}
-                  </div>
+                  <ConfigPickerRow
+                    group="mapper"
+                    selected={mapper}
+                    configs={mappers ?? []}
+                    onSelect={(name) => form.set({ mapper: name })}
+                    onEdit={(name) => onEditConfig?.("mapper", name, "edit")}
+                    onNew={() => onEditConfig?.("mapper", "", "new")}
+                  />
                 </Field>
               </>
             )}
@@ -262,6 +256,10 @@ export default function SessionConfigForm({ onStarted }: Props) {
                     usedDevices={usedDevices}
                     onChange={(d) => setSlotDevice(slot, d)}
                     onRemove={!locked ? () => removeSlot(slot) : undefined}
+                    onEdit={(d) => {
+                      const kind = deviceOptions.find(o => o.name === d)?.kind ?? "camera";
+                      onEditConfig?.(kind === "gopro" ? "gopros" : "cameras", d, "edit");
+                    }}
                   />
                 ))}
                 {!datasetExists && availableRoles.length > 0 && (

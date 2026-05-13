@@ -1,4 +1,5 @@
 // frontend/src/components/CameraSlotRow.tsx
+import { Settings } from "lucide-react";
 import { Badge } from "./ui/badge";
 
 export interface DeviceOption {
@@ -15,6 +16,7 @@ interface CameraSlotRowProps {
   usedDevices: Set<string>;
   onChange: (device: string) => void;
   onRemove?: () => void;
+  onEdit?: (device: string) => void;
 }
 
 export function CameraSlotRow({
@@ -25,6 +27,7 @@ export function CameraSlotRow({
   usedDevices,
   onChange,
   onRemove,
+  onEdit,
 }: CameraSlotRowProps) {
   return (
     <div className="flex items-center gap-sm rounded-md border border-hairline bg-canvas px-md py-2">
@@ -49,6 +52,16 @@ export function CameraSlotRow({
           </option>
         ))}
       </select>
+      {onEdit && device && (
+        <button
+          type="button"
+          onClick={() => onEdit(device)}
+          className="text-stone hover:text-ink px-1"
+          aria-label={`Edit ${device}`}
+        >
+          <Settings className="w-4 h-4" />
+        </button>
+      )}
       {onRemove && (
         <button
           type="button"
