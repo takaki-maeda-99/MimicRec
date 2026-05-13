@@ -103,10 +103,33 @@ async def run_inference_producer(
                 await _publish({"type": "inference_done",
                                 "latency_ms": latency_ms,
                                 "chunk_size": len(chunk)})
+                # First step of the freshly-decoded chunk: shows the operator
+                # what the model is asking for (ΔEE + gripper) before IK +
+                # safety clamping. Frontend `next_action_preview` handler
+                # displays it in the live status panel.
+                if chunk and chunk[0].ee_delta is not None:
+                    await _publish({
+                        "type": "next_action_preview",
+                        "ee_delta": chunk[0].ee_delta.tolist(),
+                        "gripper": float(chunk[0].gripper) if chunk[0].gripper is not None else 0.0,
+                    })
                 await _publish({"type": "buffer_state",
                                 "depth": buffer.depth(),
                                 "origin_size": buffer.origin_size(),
                                 "generation": buffer.current_generation()})
+                # Per-camera freshness so the UI can show whether the slot
+                # actually has live frames. `peek()` returns the latest
+                # Stamped[Frame] or None if no frame has ever landed.
+                now_ns = time.monotonic_ns()
+                cam_health = []
+                for cam_name, slot in camera_slots.items():
+                    stamped = slot.peek()
+                    cam_health.append({
+                        "name": cam_name,
+                        "age_ms": None if stamped is None
+                                  else max(0, (now_ns - stamped.t_mono_ns) // 1_000_000),
+                    })
+                await _publish({"type": "camera_health", "cameras": cam_health})
                 backoff_s = INITIAL_BACKOFF_S
         except Exception as e:
             metrics.inc("inference_error_count")

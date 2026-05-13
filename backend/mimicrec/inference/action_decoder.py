@@ -116,7 +116,11 @@ class ActionDecoder:
                 # using T_next compounds residuals across the 8-step chunk.
                 T_curr = self.fk.matrix(q_next)
             gripper_cmd = self._decode_gripper(gripper_raw, current_state.gripper_pos)
-            chunk.append(StepAction(q=q_next, gripper=gripper_cmd, ik_failed=not ok))
+            chunk.append(StepAction(
+                q=q_next, gripper=gripper_cmd,
+                ee_delta=ee_delta_phys.astype(np.float32),
+                ik_failed=not ok,
+            ))
             seed_q = q_next
         return chunk
 

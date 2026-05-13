@@ -213,6 +213,7 @@ function ReadyPanel() {
         </Field>
         <TelemetryBlock />
         <ActionPreview />
+        <CameraHealth />
         <div className="flex gap-2">
           <Button onClick={() => s.startEpisode()}>Start episode</Button>
           <Button variant="outline" onClick={() => s.stopSession()}>Stop session</Button>
@@ -246,6 +247,7 @@ function RecordingPanel() {
         </div>
         <TelemetryBlock />
         <ActionPreview />
+        <CameraHealth />
         <div>
           <Button variant="destructive" onClick={() => s.stopEpisode()}>Stop episode</Button>
         </div>
@@ -313,6 +315,32 @@ function Stat({ label, value, warn }: { label: string; value: string; warn?: boo
       <div className={`font-mono ${warn ? "text-brand-error font-semibold" : "text-ink"}`}>
         {value}
       </div>
+    </div>
+  );
+}
+
+
+function CameraHealth() {
+  const cams = useInferenceStore((x) => x.telemetry.cameras);
+  if (cams.length === 0) return null;
+  const dotColor = (age: number | null): string => {
+    if (age == null) return "bg-stone";           // no frame ever
+    if (age > 1000) return "bg-brand-error";      // stale > 1s
+    if (age > 300) return "bg-amber-500";          // sluggish 300ms-1s
+    return "bg-brand-green";                       // fresh
+  };
+  return (
+    <div className="flex items-center gap-3 text-xs">
+      <span className="text-[11px] uppercase tracking-wide text-steel">cameras</span>
+      {cams.map((c) => (
+        <span key={c.name} className="inline-flex items-center gap-1">
+          <span className={`w-2 h-2 rounded-full ${dotColor(c.ageMs)}`} aria-hidden />
+          <span className="font-mono text-charcoal">{c.name}</span>
+          <span className="font-mono text-stone">
+            {c.ageMs == null ? "—" : `${c.ageMs}ms`}
+          </span>
+        </span>
+      ))}
     </div>
   );
 }

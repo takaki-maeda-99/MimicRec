@@ -440,18 +440,30 @@ class SessionManager:
         # HAND_TEACH only; TELEOP/INFERENCE skip (see _move_to_idle_for_session).
         await self._move_to_idle_for_session()
 
-        # Set current_pending to None initially
+        self._spawn_runtime_tasks()
+
+        # Error handler
+        self._error_handler_task = asyncio.create_task(self._handle_errors())
+
+        self.session.state = SessionState.READY
+
+    def _spawn_runtime_tasks(self) -> None:
+        """Spawn readers / control loop / dispatcher / writer for the current
+        session.mode. Called by start() at boot and by stop_inference_session()
+        on the way back to TELEOP so the leader arm regains control of the
+        follower (otherwise the follower holds the last inference-commanded
+        pose and the operator can't drive it again without /session/end)."""
+        # Fresh command goal slot so the new dispatcher doesn't replay
+        # whatever the prior session (e.g. inference) left in it.
+        self._command_goal_slot = LatestValue()
         self._current_pending.set(None, t_mono_ns=0)
 
-        # Spawn readers
         self._robot_reader_task = asyncio.create_task(self._run_robot_reader())
         if self._teleop:
             self._teleop_reader_task = asyncio.create_task(self._run_teleop_reader())
 
-        # Camera slots
         camera_slots = {name: self._cameras.latest(name) for name in self._cameras._cameras}
 
-        # Spawn control loop
         if self.session.mode == SessionMode.TELEOP:
             self._control_loop_task = asyncio.create_task(run_teleop_control_loop(
                 session=self.session, fps=self._fps,
@@ -473,12 +485,10 @@ class SessionManager:
                 clock=RealClock(), metrics=self._metrics,
             ))
 
-        # Spawn dispatcher
         self._dispatcher_task = asyncio.create_task(run_command_dispatcher(
             self._robot, self._command_goal_slot, self._error_bus, self.session.stopped,
         ))
 
-        # Spawn writer
         self._writer_task = asyncio.create_task(run_writer(
             current_pending=self._current_pending,
             queue=self._recorder_queue,
@@ -486,11 +496,6 @@ class SessionManager:
             stopped=self.session.stopped,
             fk=self._fk,
         ))
-
-        # Error handler
-        self._error_handler_task = asyncio.create_task(self._handle_errors())
-
-        self.session.state = SessionState.READY
 
     async def episode_start(self) -> None:
         """READY -> RECORDING. Create PendingEpisode, open video writers."""
@@ -838,11 +843,21 @@ class SessionManager:
     # ------------------------------------------------------------------
 
     def _robot_safety_config(self) -> dict | None:
-        """Read inference_safety: from the active robot's YAML config."""
+        """Read inference_safety: from the active robot's YAML config.
+
+        Joint limits apply to the arm joints only (i.e. those the FK/IK
+        layer plans for). On robots like SO101 the gripper rides as a
+        packed slot in joint_pos but is NOT a kinematic joint, so the
+        robot config's joint_limits_deg block omits it. Iterating over
+        the full adapter joint_names here used to raise KeyError('gripper')
+        before the operator ever saw the contract.
+        """
         cfg = (self._robot_config_dict or {}).get("inference_safety")
         if cfg is None:
             return None
         joint_names = self._robot.joint_names
+        if self._fk is not None:
+            joint_names = list(joint_names)[: self._fk.n_kin_joints]
         limits = cfg["joint_limits_deg"]
         joint_min = np.array([limits[n][0] for n in joint_names])
         joint_max = np.array([limits[n][1] for n in joint_names])
@@ -1162,6 +1177,15 @@ class SessionManager:
         # so the "inference session already active" guard at the top of
         # start_inference_session passes for a clean follow-up start.
         self.session.mode = SessionMode.TELEOP
+
+        # Re-spawn the teleop runtime tasks that start_inference_session
+        # cancelled, so the leader regains control of the follower instead
+        # of holding the last inference-commanded pose. Skip the respawn
+        # when an estop is latched — the operator must clear it before any
+        # further motion, and spawning teleop would let the leader drive
+        # the arm again immediately.
+        if not self._estop_latched:
+            self._spawn_runtime_tasks()
 
     def pause_producer_and_flush(self) -> int:
         """Order-locked: producer_paused FIRST, then flush.
