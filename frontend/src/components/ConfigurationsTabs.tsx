@@ -20,11 +20,11 @@ interface Props {
   onEdit: (group: ConfigGroup, name: string) => void;
   onClone: (group: ConfigGroup, name: string) => void;
   onNew: (group: ConfigGroup) => void;
-  // onDelete is intentionally NOT here in Phase 3 — added in Phase 4.
+  onDelete: (group: ConfigGroup, name: string) => void;
 }
 
 export function ConfigurationsTabs({
-  configs, refreshing, onRefresh, onEdit, onClone, onNew,
+  configs, refreshing, onRefresh, onEdit, onClone, onNew, onDelete,
 }: Props) {
   const [active, setActive] = useState<ConfigGroup>("robot");
   const rows = configs[active] ?? [];
@@ -78,7 +78,15 @@ export function ConfigurationsTabs({
                 >
                   Clone
                 </Button>
-                {/* ⌫ Delete — added in Phase 4 */}
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  className="!bg-surface hover:!bg-brand-error/15 !text-brand-error"
+                  onClick={() => onDelete(active, cfg.name)}
+                  aria-label={`Delete ${cfg.name}`}
+                >
+                  ⌫
+                </Button>
               </span>
             }
           />

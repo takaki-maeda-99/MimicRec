@@ -239,6 +239,7 @@ export const stubHandlers = [
   http.put("/api/settings/calibration", demoUnsupported),
   http.put("/api/settings/configs/:group/:name", demoUnsupported),
   http.post("/api/settings/configs/:group/:name", demoUnsupported),
+  http.delete("/api/settings/configs/:group/:name", demoUnsupported),
 ];
 
 export const restHandlers = [...lifecycleHandlers, ...dataHandlers, ...stubHandlers];

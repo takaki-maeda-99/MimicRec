@@ -49,6 +49,28 @@ export default function SettingsPage() {
 
   useEffect(() => { loadAll(); }, []);
 
+  const handleDelete = async (group: ConfigGroup, name: string) => {
+    if (!window.confirm(`Delete ${group}/${name}?`)) return;
+    // NOTE: cannot use apiFetch — it calls res.json() unconditionally
+    // (client.ts:38), which fails on the 204 No Content response from a
+    // successful DELETE. Use raw fetch with explicit status branches.
+    const res = await fetch(`/api/settings/configs/${group}/${name}`, {
+      method: "DELETE",
+      cache: "no-store",
+    });
+    if (res.status === 204) {
+      loadAll();
+      return;
+    }
+    if (res.status === 409) {
+      const body = await res.json().catch(() => ({ detail: "in use" }));
+      alert(`Cannot delete ${group}/${name}: ${body.detail}`);
+      return;
+    }
+    const body = await res.json().catch(() => ({ detail: res.statusText }));
+    alert(`Delete failed: ${body.detail}`);
+  };
+
   const openEditor = (group: ConfigGroup, name: string, mode: ConfigEditorMode) => {
     const cfg = configs[group]?.find(c => c.name === name);
     setEditing({
@@ -79,6 +101,7 @@ export default function SettingsPage() {
             onEdit={(g, n) => openEditor(g, n, "edit")}
             onClone={(g, n) => openEditor(g, n, "clone")}
             onNew={(g) => setEditing({ config: { name: "", group: g, content: {} }, mode: "new" })}
+            onDelete={handleDelete}
           />
         </div>
       </div>
