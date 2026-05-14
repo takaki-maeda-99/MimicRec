@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { SegmentedTab, SegmentedTabBar } from "./ui/segmented-tab";
 import {
   LineChart,
@@ -9,12 +9,15 @@ import {
   Tooltip,
   Legend,
   ResponsiveContainer,
+  ReferenceLine,
 } from "recharts";
 import { useEpisodeFrames } from "../hooks/useEpisodeFrames";
 
 interface Props {
   ds: string;
   idx: number;
+  cursorTimeSec?: number;
+  onSeek?: (timeSec: number) => void;
 }
 
 const COLORS = [
@@ -22,7 +25,7 @@ const COLORS = [
   "#ea580c", "#0891b2", "#be185d", "#65a30d", "#6d28d9",
 ];
 
-export default function JointPlot({ ds, idx }: Props) {
+export default function JointPlot({ ds, idx, cursorTimeSec, onSeek }: Props) {
   const { data: rows = [], isLoading: loading } = useEpisodeFrames(ds, idx);
   const [mode, setMode] = useState<"position" | "velocity">("position");
 
@@ -67,6 +70,25 @@ export default function JointPlot({ ds, idx }: Props) {
   const prefix = activeMode === "position" ? "pos_" : "vel_";
   const unit = activeMode === "position" ? "rad" : "rad/s";
 
+  const tMin = data[0]?.time ?? 0;
+  const tMax = data[data.length - 1]?.time ?? 0;
+  const overlayRef = useRef<HTMLDivElement | null>(null);
+
+  const handleClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!onSeek || tMax <= tMin) return;
+    const rect = overlayRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    // Recharts 3.x default LineChart left margin is 20 / right is 30. If you've
+    // overridden margins on the LineChart, mirror those here. With unchanged
+    // defaults this gives accurate click-anywhere seek.
+    const LEFT = 20;
+    const RIGHT = 30;
+    const plotWidth = Math.max(1, rect.width - LEFT - RIGHT);
+    const px = e.clientX - rect.left - LEFT;
+    const fraction = Math.min(1, Math.max(0, px / plotWidth));
+    onSeek(tMin + fraction * (tMax - tMin));
+  };
+
   return (
     <div>
       {hasVelocity && (
@@ -79,36 +101,57 @@ export default function JointPlot({ ds, idx }: Props) {
           </SegmentedTab>
         </SegmentedTabBar>
       )}
-      <ResponsiveContainer width="100%" height={300}>
-        <LineChart data={data}>
-          <CartesianGrid strokeDasharray="3 3" stroke="var(--color-hairline)" opacity={0.6} />
-          <XAxis
-            dataKey="time"
-            label={{ value: "Time (s)", position: "insideBottom", offset: -5, fill: "var(--color-steel)" }}
-            tick={{ fontSize: 11, fill: "var(--color-steel)" }}
-          />
-          <YAxis
-            label={{ value: unit, angle: -90, position: "insideLeft", fill: "var(--color-steel)" }}
-            tick={{ fontSize: 11, fill: "var(--color-steel)" }}
-          />
-          <Tooltip
-            contentStyle={{ fontSize: 12, borderColor: "var(--color-hairline)", color: "var(--color-charcoal)" }}
-            formatter={(value) => `${Number(value).toFixed(3)} ${unit}`}
-          />
-          <Legend wrapperStyle={{ fontSize: 11, color: "var(--color-steel)" }} />
-          {jointNames.map((name, i) => (
-            <Line
-              key={name}
-              type="monotone"
-              dataKey={`${prefix}${name}`}
-              name={name}
-              stroke={COLORS[i % COLORS.length]}
-              dot={false}
-              strokeWidth={1.5}
+      <div className="relative w-full h-full">
+        <ResponsiveContainer width="100%" height={300}>
+          <LineChart data={data}>
+            <CartesianGrid strokeDasharray="3 3" stroke="var(--color-hairline)" opacity={0.6} />
+            <XAxis
+              dataKey="time"
+              type="number"
+              domain={["dataMin", "dataMax"]}
+              tickFormatter={(t: number) => `${t.toFixed(1)}s`}
+              label={{ value: "Time (s)", position: "insideBottom", offset: -5, fill: "var(--color-steel)" }}
+              tick={{ fontSize: 11, fill: "var(--color-steel)" }}
             />
-          ))}
-        </LineChart>
-      </ResponsiveContainer>
+            <YAxis
+              label={{ value: unit, angle: -90, position: "insideLeft", fill: "var(--color-steel)" }}
+              tick={{ fontSize: 11, fill: "var(--color-steel)" }}
+            />
+            <Tooltip
+              contentStyle={{ fontSize: 12, borderColor: "var(--color-hairline)", color: "var(--color-charcoal)" }}
+              formatter={(value) => `${Number(value).toFixed(3)} ${unit}`}
+            />
+            <Legend wrapperStyle={{ fontSize: 11, color: "var(--color-steel)" }} />
+            {typeof cursorTimeSec === "number" && (
+              <ReferenceLine
+                x={cursorTimeSec}
+                stroke="var(--color-ink)"
+                strokeOpacity={0.7}
+                ifOverflow="visible"
+              />
+            )}
+            {jointNames.map((name, i) => (
+              <Line
+                key={name}
+                type="monotone"
+                dataKey={`${prefix}${name}`}
+                name={name}
+                stroke={COLORS[i % COLORS.length]}
+                dot={false}
+                strokeWidth={1.5}
+              />
+            ))}
+          </LineChart>
+        </ResponsiveContainer>
+        {onSeek && (
+          <div
+            ref={overlayRef}
+            className="absolute inset-0 cursor-crosshair"
+            onClick={handleClick}
+            aria-hidden
+          />
+        )}
+      </div>
     </div>
   );
 }
