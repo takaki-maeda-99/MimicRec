@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useMemo } from "react";
 import {
   LineChart,
   Line,
@@ -9,16 +9,11 @@ import {
   Legend,
   ResponsiveContainer,
 } from "recharts";
-import { apiFetch } from "../api/client";
+import { useEpisodeFrames } from "../hooks/useEpisodeFrames";
 
 interface Props {
   ds: string;
   idx: number;
-}
-
-interface FrameRow {
-  timestamp: number;
-  [key: string]: unknown;
 }
 
 // Each entry describes one EE-related channel pulled from the parquet rows.
@@ -45,40 +40,25 @@ const CHANNELS: Array<{
 ];
 
 export default function EndEffectorPlot({ ds, idx }: Props) {
-  const [data, setData] = useState<Record<string, number>[]>([]);
-  const [presentChannels, setPresentChannels] = useState<typeof CHANNELS>([]);
-  const [loading, setLoading] = useState(true);
+  const { data: rows = [], isLoading: loading } = useEpisodeFrames(ds, idx);
 
-  useEffect(() => {
-    setLoading(true);
-    apiFetch<FrameRow[]>(`/api/datasets/${ds}/episodes/${idx}/frames`)
-      .then((rows) => {
-        if (!rows.length) {
-          setPresentChannels([]);
-          setData([]);
-          return;
-        }
-        const present = CHANNELS.filter((c) =>
-          rows.some((r) => typeof r[c.key] === "number")
-        );
-        const chartData = rows.map((row) => {
-          const entry: Record<string, number> = {
-            time: Math.round((row.timestamp as number) * 1000) / 1000,
-          };
-          for (const c of present) {
-            const v = row[c.key];
-            if (typeof v === "number") {
-              entry[c.key] = Math.round(v * 1000) / 1000;
-            }
-          }
-          return entry;
-        });
-        setPresentChannels(present);
-        setData(chartData);
-      })
-      .catch(console.error)
-      .finally(() => setLoading(false));
-  }, [ds, idx]);
+  const { data, presentChannels } = useMemo(() => {
+    if (!rows.length) return { data: [] as Record<string, number>[], presentChannels: [] as typeof CHANNELS };
+    const present = CHANNELS.filter((c) =>
+      rows.some((r) => typeof r[c.key] === "number")
+    );
+    const chartData = rows.map((row) => {
+      const entry: Record<string, number> = {
+        time: Math.round((row.timestamp as number) * 1000) / 1000,
+      };
+      for (const c of present) {
+        const v = row[c.key];
+        if (typeof v === "number") entry[c.key] = Math.round(v * 1000) / 1000;
+      }
+      return entry;
+    });
+    return { data: chartData, presentChannels: present };
+  }, [rows]);
 
   if (loading) return <p className="text-stone p-4">Loading chart...</p>;
   if (!presentChannels.length) {

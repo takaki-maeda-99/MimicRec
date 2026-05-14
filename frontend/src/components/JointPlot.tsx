@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { SegmentedTab, SegmentedTabBar } from "./ui/segmented-tab";
 import {
   LineChart,
@@ -10,7 +10,7 @@ import {
   Legend,
   ResponsiveContainer,
 } from "recharts";
-import { apiFetch } from "../api/client";
+import { useEpisodeFrames } from "../hooks/useEpisodeFrames";
 
 interface Props {
   ds: string;
@@ -22,55 +22,46 @@ const COLORS = [
   "#ea580c", "#0891b2", "#be185d", "#65a30d", "#6d28d9",
 ];
 
-interface FrameRow {
-  timestamp: number;
-  "observation.state.joint_pos": number[];
-  "observation.state.joint_vel": number[];
-  [key: string]: unknown;
-}
-
 export default function JointPlot({ ds, idx }: Props) {
-  const [data, setData] = useState<Record<string, number>[]>([]);
-  const [jointNames, setJointNames] = useState<string[]>([]);
-  // hasVelocity is false when the recording is from an adapter that doesn't
-  // report joint velocities (e.g. SO-101) — all values are zero. We hide
-  // the velocity toggle entirely in that case rather than show a flat line.
-  const [hasVelocity, setHasVelocity] = useState(false);
+  const { data: rows = [], isLoading: loading } = useEpisodeFrames(ds, idx);
   const [mode, setMode] = useState<"position" | "velocity">("position");
-  const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    setLoading(true);
-    apiFetch<FrameRow[]>(`/api/datasets/${ds}/episodes/${idx}/frames`)
-      .then((rows) => {
-        if (!rows.length) return;
-
-        const nJoints = (rows[0]["observation.state.joint_pos"] as number[]).length;
-        const names = Array.from({ length: nJoints }, (_, i) => `j${i + 1}`);
-        setJointNames(names);
-
-        let nonzeroVel = false;
-        const chartData = rows.map((row) => {
-          const pos = row["observation.state.joint_pos"] as number[];
-          const vel = row["observation.state.joint_vel"] as number[];
-          const entry: Record<string, number> = {
-            time: Math.round((row.timestamp as number) * 1000) / 1000,
-          };
-          names.forEach((name, i) => {
-            entry[`pos_${name}`] = Math.round(pos[i] * 1000) / 1000;
-            const v = vel?.[i] ?? 0;
-            entry[`vel_${name}`] = Math.round(v * 1000) / 1000;
-            if (v !== 0) nonzeroVel = true;
-          });
-          return entry;
+  const { data, jointNames, hasVelocity } = useMemo(() => {
+    if (!rows.length) {
+      return { data: [] as Record<string, number>[], jointNames: [] as string[], hasVelocity: false };
+    }
+    const firstPos = rows[0]["observation.state.joint_pos"];
+    if (!Array.isArray(firstPos) || firstPos.length === 0) {
+      return { data: [] as Record<string, number>[], jointNames: [] as string[], hasVelocity: false };
+    }
+    const nJoints = firstPos.length;
+    const names = Array.from({ length: nJoints }, (_, i) => `j${i + 1}`);
+    let nonzeroVel = false;
+    const chartData = rows.map((row) => {
+      const pos = row["observation.state.joint_pos"];
+      const vel = row["observation.state.joint_vel"];
+      const entry: Record<string, number> = {
+        time: Math.round((row.timestamp as number) * 1000) / 1000,
+      };
+      if (Array.isArray(pos)) {
+        names.forEach((name, i) => {
+          entry[`pos_${name}`] = Math.round(((pos[i] as number) ?? 0) * 1000) / 1000;
+          const v = (Array.isArray(vel) ? (vel[i] as number) : 0) ?? 0;
+          entry[`vel_${name}`] = Math.round(v * 1000) / 1000;
+          if (v !== 0) nonzeroVel = true;
         });
-        setHasVelocity(nonzeroVel);
-        if (!nonzeroVel) setMode("position");
-        setData(chartData);
-      })
-      .catch(console.error)
-      .finally(() => setLoading(false));
-  }, [ds, idx]);
+      }
+      return entry;
+    });
+    return { data: chartData, jointNames: names, hasVelocity: nonzeroVel };
+  }, [rows]);
+
+  // Clamp mode to position when velocity becomes unavailable. Effect, not
+  // render-phase setState — render-phase writes are an anti-pattern under
+  // React 18+ concurrent rendering.
+  useEffect(() => {
+    if (!hasVelocity && mode !== "position") setMode("position");
+  }, [hasVelocity, mode]);
 
   if (loading) return <p className="text-stone p-4">Loading chart...</p>;
   if (!data.length) return <p className="text-stone p-4">No data</p>;
