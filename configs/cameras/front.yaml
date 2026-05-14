@@ -1,5 +1,7 @@
 _target_: mimicrec.cameras.opencv_camera.OpenCVCamera
 name: front
-device_id: 0
+device_id: 3
 width: 640
 height: 480
+pixel_format: MJPG
+capture_fps: 30

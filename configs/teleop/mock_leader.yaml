@@ -1,2 +1,0 @@
-_target_: mimicrec.adapters.mock_teleop.MockTeleoperator
-dof: 2
