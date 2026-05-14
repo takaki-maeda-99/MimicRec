@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { SegmentedTab, SegmentedTabBar } from "./ui/segmented-tab";
 import {
   LineChart,
@@ -56,27 +56,25 @@ export default function JointPlot({ ds, idx }: Props) {
     return { data: chartData, jointNames: names, hasVelocity: nonzeroVel };
   }, [rows]);
 
-  // Clamp mode to position when velocity becomes unavailable. Effect, not
-  // render-phase setState — render-phase writes are an anti-pattern under
-  // React 18+ concurrent rendering.
-  useEffect(() => {
-    if (!hasVelocity && mode !== "position") setMode("position");
-  }, [hasVelocity, mode]);
+  // Derive activeMode to avoid flicker when velocity becomes unavailable.
+  // User preference (mode) is preserved; activeMode ensures the chart never
+  // renders with an unavailable series.
+  const activeMode: "position" | "velocity" = hasVelocity ? mode : "position";
 
   if (loading) return <p className="text-stone p-4">Loading chart...</p>;
   if (!data.length) return <p className="text-stone p-4">No data</p>;
 
-  const prefix = mode === "position" ? "pos_" : "vel_";
-  const unit = mode === "position" ? "rad" : "rad/s";
+  const prefix = activeMode === "position" ? "pos_" : "vel_";
+  const unit = activeMode === "position" ? "rad" : "rad/s";
 
   return (
     <div>
       {hasVelocity && (
         <SegmentedTabBar className="mb-3">
-          <SegmentedTab active={mode === "position"} onClick={() => setMode("position")}>
+          <SegmentedTab active={activeMode === "position"} onClick={() => setMode("position")}>
             Position
           </SegmentedTab>
-          <SegmentedTab active={mode === "velocity"} onClick={() => setMode("velocity")}>
+          <SegmentedTab active={activeMode === "velocity"} onClick={() => setMode("velocity")}>
             Velocity
           </SegmentedTab>
         </SegmentedTabBar>
