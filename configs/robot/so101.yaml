@@ -1,6 +1,6 @@
 _target_: mimicrec.adapters.so101.SO101Adapter
-port: /dev/ttyACM1
-id: my_awesome_follower_arm
+port: /dev/ttyACM4
+id: my_arm
 replay:
   ramp_duration_sec: 2
   max_joint_velocity: 720
@@ -18,13 +18,21 @@ kinematics:
   - wrist_flex
   - wrist_roll
 inference_safety:
-  # REQUIRED for inference sessions; missing block → 400 at start_inference_session.
-  # Conservative defaults — tighten as you validate against your VLA's chunks.
-  max_joint_delta_per_step_deg: 2.0   # 30 deg/s at 15 fps
-  slow_stop_ticks: 5                   # ~333 ms ramp at 15 fps
-  joint_limits_deg:                    # required; inside URDF mechanical limits
-    shoulder_pan: [-180.0, 180.0]
-    shoulder_lift: [-110.0, 110.0]
-    elbow_flex: [-110.0, 110.0]
-    wrist_flex: [-110.0, 110.0]
-    wrist_roll: [-180.0, 180.0]
+  max_joint_delta_per_step_deg: 2
+  slow_stop_ticks: 5
+  joint_limits_deg:
+    shoulder_pan:
+    - -180
+    - 180
+    shoulder_lift:
+    - -110
+    - 110
+    elbow_flex:
+    - -110
+    - 110
+    wrist_flex:
+    - -110
+    - 110
+    wrist_roll:
+    - -180
+    - 180

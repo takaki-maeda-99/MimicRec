@@ -1,4 +1,0 @@
-_target_: mimicrec.cameras.mock_camera.MockCamera
-name: mock_wrist
-width: 224
-height: 224
