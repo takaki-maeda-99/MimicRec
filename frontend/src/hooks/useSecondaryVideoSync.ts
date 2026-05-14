@@ -1,22 +1,21 @@
-import { useEffect, type RefObject } from "react";
+import { useEffect } from "react";
 
 /**
- * Slaves a secondary <video> to a master <video>:
- *   - mirrors play/pause/rate/ended events from master
- *   - mirrors seeks via guarded currentTime writes (readyState + !seeking +
- *     > 1/fps drift threshold) to prevent seek storms when the master is
- *     emitting per-frame timeupdates.
+ * Slaves a secondary <video> to a master <video>. Mirrors play/pause/rate/ended
+ * events and seeks via guarded currentTime writes (readyState + !seeking +
+ * > 1/fps drift threshold).
+ *
+ * Takes both video elements directly so that the effects re-bind when either
+ * element remounts (e.g. when the underlying camera key changes).
  */
 export function useSecondaryVideoSync(
-  secondaryRef: RefObject<HTMLVideoElement | null>,
-  masterRef: RefObject<HTMLVideoElement | null>,
+  secondary: HTMLVideoElement | null,
+  master: HTMLVideoElement | null,
   currentTimeSec: number,
   fps: number,
 ) {
   // Mirror play/pause/rate
   useEffect(() => {
-    const master = masterRef.current;
-    const secondary = secondaryRef.current;
     if (!master || !secondary) return;
 
     const onPlay = () => secondary.play().catch(() => {});
@@ -39,16 +38,15 @@ export function useSecondaryVideoSync(
       master.removeEventListener("ratechange", onRate);
       master.removeEventListener("ended", onEnded);
     };
-  }, [masterRef, secondaryRef]);
+  }, [master, secondary]);
 
   // Mirror seeks (guarded)
   useEffect(() => {
-    const secondary = secondaryRef.current;
     if (!secondary) return;
     if (secondary.readyState < 1 /* HAVE_METADATA */) return;
     if (secondary.seeking) return;
     const frameTime = 1 / Math.max(1, fps);
     if (Math.abs(secondary.currentTime - currentTimeSec) <= frameTime) return;
     secondary.currentTime = currentTimeSec;
-  }, [secondaryRef, currentTimeSec, fps]);
+  }, [secondary, currentTimeSec, fps]);
 }

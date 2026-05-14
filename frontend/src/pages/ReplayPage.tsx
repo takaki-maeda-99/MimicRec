@@ -1,4 +1,4 @@
-import { useMemo, useRef } from "react";
+import { useMemo, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { useEpisodes, useReplayStart, useReplayStop } from "../api/queries";
 import { useSessionStore } from "../state/session-store";
@@ -32,20 +32,20 @@ export default function ReplayPage() {
     console.warn(`Replay: ${allCameras.length} cameras present, only first 4 rendered (sync limit).`);
   }
 
-  const masterRef = useRef<HTMLVideoElement>(null);
-  const sec1Ref = useRef<HTMLVideoElement>(null);
-  const sec2Ref = useRef<HTMLVideoElement>(null);
-  const sec3Ref = useRef<HTMLVideoElement>(null);
-  const secondaryRefs = [sec1Ref, sec2Ref, sec3Ref] as const;
+  const [masterEl, setMasterEl] = useState<HTMLVideoElement | null>(null);
+  const [sec1El, setSec1El] = useState<HTMLVideoElement | null>(null);
+  const [sec2El, setSec2El] = useState<HTMLVideoElement | null>(null);
+  const [sec3El, setSec3El] = useState<HTMLVideoElement | null>(null);
+  const secondarySetters = [setSec1El, setSec2El, setSec3El] as const;
 
-  const { currentTimeSec, seek } = useEpisodeTimeline(masterRef);
+  const { currentTimeSec, seek } = useEpisodeTimeline(masterEl);
   const fps = (episode?.num_frames ?? 1) / Math.max(0.001, episode?.duration_sec ?? 1);
 
   // Always call all 3 sync hooks (rules-of-hooks). Each hook no-ops when its
-  // ref is null (no secondary at that slot).
-  useSecondaryVideoSync(sec1Ref, masterRef, currentTimeSec, fps);
-  useSecondaryVideoSync(sec2Ref, masterRef, currentTimeSec, fps);
-  useSecondaryVideoSync(sec3Ref, masterRef, currentTimeSec, fps);
+  // element is null (no secondary at that slot).
+  useSecondaryVideoSync(sec1El, masterEl, currentTimeSec, fps);
+  useSecondaryVideoSync(sec2El, masterEl, currentTimeSec, fps);
+  useSecondaryVideoSync(sec3El, masterEl, currentTimeSec, fps);
 
   const cursorFrameIdx = useMemo(
     () => Math.min(Math.round(currentTimeSec * fps), (episode?.num_frames ?? 1) - 1),
@@ -117,7 +117,7 @@ export default function ReplayPage() {
       <div className="flex-1 flex min-h-0 gap-sm p-sm">
         <div className="flex-[1.5] min-w-0 grid gap-sm" style={{ gridTemplateColumns: `repeat(${Math.min(cameras.length, 2)}, minmax(0, 1fr))` }}>
           {cameras.map((cam, i) => {
-            const ref = i === 0 ? masterRef : (secondaryRefs[i - 1] ?? null);
+            const setter = i === 0 ? setMasterEl : secondarySetters[i - 1];
             return (
               <VideoPlayer
                 key={cam}
@@ -125,7 +125,7 @@ export default function ReplayPage() {
                 idx={episodeIdx}
                 cam={cam}
                 isMaster={i === 0}
-                ref={ref ?? undefined}
+                ref={setter}
               />
             );
           })}

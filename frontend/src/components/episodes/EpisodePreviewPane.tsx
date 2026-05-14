@@ -33,7 +33,9 @@ export function EpisodePreviewPane({ ds, episode, onDelete }: Props) {
       </div>
 
       <div className="aspect-video bg-surface-code rounded-sm relative overflow-hidden cursor-pointer" onClick={open}>
-        {thumb ? (
+        {!masterCam ? (
+          <div className="absolute inset-0 flex items-center justify-center text-stone text-caption">No video</div>
+        ) : thumb ? (
           <img src={thumb} alt="" className="absolute inset-0 w-full h-full object-cover" />
         ) : (
           <div className="absolute inset-0 flex items-center justify-center text-stone text-caption">loading…</div>
