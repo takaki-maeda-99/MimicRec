@@ -1,14 +1,15 @@
+import { useMemo, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { useEpisodes, useReplayStart, useReplayStop } from "../api/queries";
 import { useSessionStore } from "../state/session-store";
 import VideoPlayer from "../components/VideoPlayer";
 import JointPlot from "../components/JointPlot";
 import EndEffectorPlot from "../components/EndEffectorPlot";
-import SubtaskAnnotator from "../components/SubtaskAnnotator";
-import SubtaskTimeline from "../components/SubtaskTimeline";
+import { Scrubber } from "../components/Scrubber";
 import { Button } from "../components/ui/button";
-import { Card } from "../components/ui/card";
 import { PageHeader } from "../components/ui/page-header";
+import { useEpisodeTimeline } from "../hooks/useEpisodeTimeline";
+import { useSecondaryVideoSync } from "../hooks/useSecondaryVideoSync";
 
 export default function ReplayPage() {
   const { ds, idx } = useParams<{ ds: string; idx: string }>();
@@ -20,6 +21,36 @@ export default function ReplayPage() {
   const sessionState = useSessionStore((s) => s.state);
   const subState = useSessionStore((s) => s.subState);
   const replayProgress = useSessionStore((s) => s.replayProgress);
+
+  const allCameras = episode?.cameras ?? ["front"];
+  // Hard cap: master + 3 secondaries = 4 total. If a session exposes more, we
+  // only render 4 and drop the rest (rather than rendering unsynced extras that
+  // are forced into the no-controls state). Most adapters expose ≤ 2 cameras.
+  const cameras = allCameras.slice(0, 4);
+  if (allCameras.length > 4) {
+    // eslint-disable-next-line no-console
+    console.warn(`Replay: ${allCameras.length} cameras present, only first 4 rendered (sync limit).`);
+  }
+
+  const [masterEl, setMasterEl] = useState<HTMLVideoElement | null>(null);
+  const [sec1El, setSec1El] = useState<HTMLVideoElement | null>(null);
+  const [sec2El, setSec2El] = useState<HTMLVideoElement | null>(null);
+  const [sec3El, setSec3El] = useState<HTMLVideoElement | null>(null);
+  const secondarySetters = [setSec1El, setSec2El, setSec3El] as const;
+
+  const { currentTimeSec, seek } = useEpisodeTimeline(masterEl);
+  const fps = (episode?.num_frames ?? 1) / Math.max(0.001, episode?.duration_sec ?? 1);
+
+  // Always call all 3 sync hooks (rules-of-hooks). Each hook no-ops when its
+  // element is null (no secondary at that slot).
+  useSecondaryVideoSync(sec1El, masterEl, currentTimeSec, fps);
+  useSecondaryVideoSync(sec2El, masterEl, currentTimeSec, fps);
+  useSecondaryVideoSync(sec3El, masterEl, currentTimeSec, fps);
+
+  const cursorFrameIdx = useMemo(
+    () => Math.min(Math.round(currentTimeSec * fps), (episode?.num_frames ?? 1) - 1),
+    [currentTimeSec, fps, episode?.num_frames],
+  );
 
   if (!ds || !idx) return <div className="p-6">Invalid URL</div>;
 
@@ -34,123 +65,107 @@ export default function ReplayPage() {
             <span className="font-mono text-caption text-ink">{ds} / ep {idx}</span>
           </span>
         }
+        meta={episode && (
+          <span className="font-mono text-micro text-stone">
+            {episode.duration_sec.toFixed(1)}s · {episode.num_frames} frames
+          </span>
+        )}
       />
-      <div className="flex-1 overflow-auto">
-        <div className="max-w-[1100px] mx-auto px-xl py-xl">
 
-          {/* Replay controls */}
-          <div className="flex items-center justify-between mb-md">
-            <Link to={`/datasets/${ds}/episodes`} className="text-caption text-stone hover:text-ink">
-              &larr; Episodes — {ds}
-            </Link>
-            <div className="flex items-center gap-md">
-              {subState === "replaying" ? (
-                <>
-                  <Button
-                    className="!bg-brand-error !text-on-dark hover:!bg-brand-error/90"
-                    onClick={() => replayStop.mutate()}
-                  >
-                    Stop Replay
-                  </Button>
-                  {replayProgress && (
-                    <span className="text-body-sm text-slate">
-                      Frame {replayProgress.frame_index} / {replayProgress.total_frames}
-                    </span>
-                  )}
-                </>
-              ) : (
-                <Button
-                  onClick={() => replayStart.mutate({ dataset: ds, episode_idx: episodeIdx })}
-                  disabled={sessionState !== "ready" || replayStart.isPending}
-                >
-                  {sessionState !== "ready"
-                    ? "Start a session first"
-                    : replayStart.isPending
-                    ? "Starting..."
-                    : "▶ Replay on Robot"}
-                </Button>
-              )}
+      {/* Control row */}
+      <div className="flex-shrink-0 flex items-center gap-md px-xl py-sm border-b border-hairline bg-canvas">
+        <Link to={`/datasets/${ds}/episodes`} className="text-caption text-stone hover:text-ink">
+          ← Episodes
+        </Link>
+        <span className="text-hairline">|</span>
+        {replayProgress && subState === "replaying" && (
+          <span className="text-body-sm text-slate font-mono">
+            HW replay {replayProgress.frame_index} / {replayProgress.total_frames}
+          </span>
+        )}
+        <span className="flex-1" />
+        {subState === "replaying" ? (
+          <Button variant="destructive" onClick={() => replayStop.mutate()}>Stop Replay</Button>
+        ) : (
+          <Button
+            onClick={() => replayStart.mutate({ dataset: ds, episode_idx: episodeIdx })}
+            disabled={sessionState !== "ready" || replayStart.isPending}
+          >
+            {sessionState !== "ready"
+              ? "Start a session first"
+              : replayStart.isPending
+              ? "Starting…"
+              : "▶ Replay on Robot"}
+          </Button>
+        )}
+      </div>
+
+      {/* Meta strip */}
+      {episode && (
+        <div className="flex-shrink-0 flex flex-wrap items-baseline gap-x-lg gap-y-1 px-xl py-sm border-b border-hairline-soft bg-surface-soft text-body-sm">
+          <MetaItem k="Task"     v={episode.task} />
+          <MetaItem k="Duration" v={`${episode.duration_sec.toFixed(1)}s`} />
+          <MetaItem k="Frames"   v={String(episode.num_frames)} />
+          <MetaItem k="Success"  v={episode.success === true ? "Yes" : episode.success === false ? "No" : "—"}
+                    color={episode.success === true ? "text-brand-green-deep" : episode.success === false ? "text-brand-error" : "text-stone"} />
+          <MetaItem k="Mode"     v={episode.mode} />
+          <MetaItem k="Robot"    v={episode.robot} />
+        </div>
+      )}
+
+      {/* Body: left video / right plots */}
+      <div className="flex-1 flex min-h-0 gap-sm p-sm">
+        <div className="flex-[1.5] min-w-0 grid gap-sm" style={{ gridTemplateColumns: `repeat(${Math.min(cameras.length, 2)}, minmax(0, 1fr))` }}>
+          {cameras.map((cam, i) => {
+            const setter = i === 0 ? setMasterEl : secondarySetters[i - 1];
+            return (
+              <VideoPlayer
+                key={cam}
+                ds={ds}
+                idx={episodeIdx}
+                cam={cam}
+                isMaster={i === 0}
+                ref={setter}
+              />
+            );
+          })}
+        </div>
+
+        <div className="flex-1 min-w-0 flex flex-col gap-sm">
+          <div className="flex-1 min-h-0 flex flex-col border border-hairline rounded-sm bg-canvas overflow-hidden">
+            <div className="flex-shrink-0 px-md py-sm border-b border-hairline-soft text-micro-uppercase uppercase tracking-[0.18em] text-stone font-semibold flex items-center justify-between">
+              <span>Joint trajectory</span>
+              <span className="font-mono text-[10px] text-muted">click to seek</span>
+            </div>
+            <div className="flex-1 min-h-0">
+              <JointPlot ds={ds} idx={episodeIdx} cursorTimeSec={currentTimeSec} onSeek={seek} />
             </div>
           </div>
-
-          {/* Metadata strip — horizontal header */}
-          {episode && (
-            <div className="flex flex-wrap items-center gap-x-lg gap-y-xs mb-lg pb-md border-b border-hairline-soft text-body-sm">
-              <MetaItem label="Task" value={episode.task} />
-              <MetaItem label="Duration" value={`${episode.duration_sec.toFixed(1)}s`} />
-              <MetaItem label="Frames" value={String(episode.num_frames)} />
-              <MetaItem
-                label="Success"
-                value={episode.success === true ? "Yes" : episode.success === false ? "No" : "—"}
-                color={
-                  episode.success === true ? "text-brand-green-deep" :
-                  episode.success === false ? "text-brand-error" : "text-stone"
-                }
-              />
-              <MetaItem label="Mode" value={episode.mode} />
-              <MetaItem label="Robot" value={episode.robot} />
+          <div className="flex-1 min-h-0 flex flex-col border border-hairline rounded-sm bg-canvas overflow-hidden">
+            <div className="flex-shrink-0 px-md py-sm border-b border-hairline-soft text-micro-uppercase uppercase tracking-[0.18em] text-stone font-semibold">
+              End-Effector
             </div>
-          )}
-
-          {replayStart.isError && (
-            <p className="text-brand-error text-body-sm mb-md">
-              {(replayStart.error as Error).message}
-            </p>
-          )}
-
-          {/* Video grid — fixed square thumbnails */}
-          <Card className="mb-md">
-            <h3 className="text-heading-5 text-ink mb-md">Video</h3>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-md max-w-4xl">
-              {(episode?.cameras || ["front"]).map((cam: string) => (
-                <VideoPlayer key={cam} ds={ds} idx={episodeIdx} cam={cam} />
-              ))}
+            <div className="flex-1 min-h-0">
+              <EndEffectorPlot ds={ds} idx={episodeIdx} cursorFrameIdx={cursorFrameIdx} />
             </div>
-          </Card>
-
-          {/* Joint angle plot */}
-          <Card className="mb-md">
-            <h3 className="text-heading-5 text-ink mb-md">Joint trajectory</h3>
-            <JointPlot ds={ds} idx={episodeIdx} />
-          </Card>
-
-          {/* End-effector plot */}
-          <Card className="mb-md">
-            <h3 className="text-heading-5 text-ink mb-md">End-Effector</h3>
-            <EndEffectorPlot ds={ds} idx={episodeIdx} />
-          </Card>
-
-          {/* Subtask timeline */}
-          <Card className="mb-md">
-            <h3 className="text-heading-5 text-ink mb-md">Subtask Timeline</h3>
-            <SubtaskTimeline ds={ds} idx={episodeIdx} />
-          </Card>
-
-          {/* Subtask annotation */}
-          <Card>
-            <h3 className="text-heading-5 text-ink mb-md">Subtask Annotation</h3>
-            <SubtaskAnnotator ds={ds} idx={episodeIdx} cameras={episode?.cameras || ["front"]} />
-          </Card>
-
+          </div>
         </div>
       </div>
+
+      <Scrubber
+        durationSec={episode?.duration_sec ?? 0}
+        currentTimeSec={currentTimeSec}
+        onSeek={seek}
+      />
     </>
   );
 }
 
-function MetaItem({
-  label,
-  value,
-  color = "text-ink",
-}: {
-  label: string;
-  value: string;
-  color?: string;
-}) {
+function MetaItem({ k, v, color = "text-ink" }: { k: string; v: string; color?: string }) {
   return (
     <div className="flex items-baseline gap-1">
-      <span className="text-caption-bold text-steel uppercase tracking-[0.5px]">{label}</span>
-      <span className={`text-body-sm-medium ${color}`}>{value}</span>
+      <span className="text-caption-bold text-steel uppercase tracking-[0.5px]">{k}</span>
+      <span className={`text-body-sm-medium ${color}`}>{v}</span>
     </div>
   );
 }

@@ -1,15 +1,25 @@
 import { NavLink } from "react-router-dom";
+import type { LucideIcon } from "lucide-react";
 import { cn } from "../../lib/utils";
 
 interface SidebarNavItemProps {
   to: string;
   /** Section code prefix, e.g. "§01". Required by the new design. */
   code?: string;
+  /** Optional monochrome icon (Lucide). Stroke uses currentColor so the
+   * active-state inversion works automatically. */
+  icon?: LucideIcon;
   children: React.ReactNode;
   className?: string;
 }
 
-export function SidebarNavItem({ to, code, children, className }: SidebarNavItemProps) {
+export function SidebarNavItem({
+  to,
+  code,
+  icon: Icon,
+  children,
+  className,
+}: SidebarNavItemProps) {
   return (
     <NavLink
       to={to}
@@ -26,6 +36,14 @@ export function SidebarNavItem({ to, code, children, className }: SidebarNavItem
     >
       {({ isActive }) => (
         <>
+          {Icon && (
+            <Icon
+              size={14}
+              strokeWidth={1.75}
+              className="flex-shrink-0"
+              aria-hidden
+            />
+          )}
           {code && (
             <span
               className={cn(

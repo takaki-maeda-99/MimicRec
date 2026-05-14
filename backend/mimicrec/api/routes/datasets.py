@@ -5,7 +5,6 @@ import json
 import logging
 import shutil
 import tempfile
-import threading
 import time
 import zipfile
 from pathlib import Path
@@ -17,9 +16,7 @@ import pyarrow.parquet as pq
 from fastapi import APIRouter, Request, Query, HTTPException
 from omegaconf import OmegaConf
 from fastapi.responses import StreamingResponse, FileResponse
-from pydantic import BaseModel as _BaseModel
 
-from mimicrec.annotator.subtask import annotate_episode, save_annotations
 from mimicrec.api.deps import get_datasets_root, get_configs_root, get_vla_dest_root
 from mimicrec.api.schemas import (
     CreateDatasetRequest, CreateTaskRequest, DatasetSummary,
@@ -312,132 +309,6 @@ async def get_episode_frames(request: Request, ds: str, idx: int):
                 clean[k] = v
         rows.append(clean)
     return rows
-
-
-class AnnotateRequest(_BaseModel):
-    camera: str | None = None  # Auto-detect from episode metadata
-    model: str = "google/gemma-4-E2B-it"
-    sample_fps: float = 1.0
-    prompt: str | None = None
-
-
-class BatchAnnotateRequest(_BaseModel):
-    camera: str | None = None  # Auto-detect from episode metadata
-    model: str = "google/gemma-4-E2B-it"
-    sample_fps: float = 1.0
-    prompt: str | None = None
-
-
-@router.post("/datasets/{ds}/episodes/{idx}/annotate")
-async def annotate_episode_subtasks(
-    request: Request, ds: str, idx: int,
-    body: AnnotateRequest = AnnotateRequest(),
-):
-    """Annotate an episode with subtask labels using Gemma 4 VLM."""
-    root = get_datasets_root(request.app)
-    ds_root = root / ds
-    if not ds_root.exists():
-        raise FileNotFoundError(f"dataset '{ds}' not found")
-
-    # Auto-detect camera from episode metadata if not specified
-    camera = body.camera
-    if not camera:
-        for ep in iter_episodes(ds_root):
-            if ep.get("episode_index") == idx:
-                cams = ep.get("cameras", [])
-                camera = cams[0] if cams else "front"
-                break
-        else:
-            camera = "front"
-
-    loop = asyncio.get_running_loop()
-    segments = await loop.run_in_executor(
-        None, annotate_episode, ds_root, idx, camera, body.model,
-        body.sample_fps, "auto", body.prompt,
-    )
-
-    save_annotations(ds_root, idx, segments, coordinator=request.app.state.push_coordinator, ds_name=ds)
-
-    return {
-        "episode_index": idx,
-        "num_subtasks": len(segments),
-        "subtasks": [
-            {
-                "name": s.name,
-                "start_frame": s.start_frame,
-                "end_frame": s.end_frame,
-                "description": s.description,
-            }
-            for s in segments
-        ],
-    }
-
-
-@router.post("/datasets/{ds}/annotate-all")
-async def annotate_all_episodes(
-    request: Request, ds: str,
-    body: BatchAnnotateRequest = BatchAnnotateRequest(),
-):
-    """Start batch annotation. Returns immediately, progress via GET."""
-    root = get_datasets_root(request.app)
-    ds_root = root / ds
-    if not ds_root.exists():
-        raise FileNotFoundError(f"dataset '{ds}' not found")
-
-    episodes = list(iter_episodes(ds_root, include_deleted=False))
-
-    # Store progress on app.state
-    progress = {
-        "dataset": ds,
-        "total": len(episodes),
-        "done": 0,
-        "current_episode": None,
-        "status": "running",
-        "results": [],
-    }
-    request.app.state.annotate_progress = progress
-
-    coord = request.app.state.push_coordinator
-
-    def run():
-        for ep in episodes:
-            ep_idx = ep.get("episode_index", 0)
-            progress["current_episode"] = ep_idx
-            try:
-                cam = body.camera
-                if not cam:
-                    cams = ep.get("cameras", [])
-                    cam = cams[0] if cams else "front"
-                segments = annotate_episode(
-                    ds_root, ep_idx, cam, body.model,
-                    body.sample_fps, "auto", body.prompt,
-                )
-                save_annotations(ds_root, ep_idx, segments, coordinator=coord, ds_name=ds)
-                progress["results"].append({
-                    "episode_index": ep_idx, "status": "ok",
-                    "num_subtasks": len(segments),
-                    "subtasks": [s.name for s in segments],
-                })
-            except Exception as e:
-                progress["results"].append({
-                    "episode_index": ep_idx, "status": "error", "error": str(e),
-                })
-            progress["done"] += 1
-        progress["status"] = "done"
-        progress["current_episode"] = None
-
-    threading.Thread(target=run, daemon=True).start()
-
-    return {"message": "started", "total": len(episodes)}
-
-
-@router.get("/datasets/{ds}/annotate-progress")
-async def get_annotate_progress(request: Request, ds: str):
-    """Get batch annotation progress."""
-    progress = getattr(request.app.state, "annotate_progress", None)
-    if not progress or progress.get("dataset") != ds:
-        return {"status": "idle", "total": 0, "done": 0}
-    return progress
 
 
 @router.get("/datasets/{ds}/schema")

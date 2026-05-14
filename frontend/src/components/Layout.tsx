@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { Outlet } from "react-router-dom";
+import { LayoutGrid, Disc, Play, Settings as SettingsIcon } from "lucide-react";
 import { useSessionStore } from "../state/session-store";
 import { useSessionState } from "../api/queries";
 import { SidebarNavItem } from "./ui/sidebar-nav-item";
@@ -8,10 +9,10 @@ import EStopButton from "./EStopButton";
 import SidebarStatus from "./SidebarStatus";
 
 const navItems = [
-  { to: "/datasets", code: "§01", label: "Datasets" },
-  { to: "/record", code: "§02", label: "Record" },
-  { to: "/inference", code: "§03", label: "Inference" },
-  { to: "/settings", code: "§04", label: "Settings" },
+  { to: "/datasets",  code: "§01", label: "Datasets",  icon: LayoutGrid },
+  { to: "/record",    code: "§02", label: "Record",    icon: Disc },
+  { to: "/inference", code: "§03", label: "Inference", icon: Play },
+  { to: "/settings",  code: "§04", label: "Settings",  icon: SettingsIcon },
 ];
 
 function Brand() {
@@ -66,7 +67,7 @@ export default function Layout() {
               Index
             </div>
             {navItems.map((item) => (
-              <SidebarNavItem key={item.to} to={item.to} code={item.code}>
+              <SidebarNavItem key={item.to} to={item.to} code={item.code} icon={item.icon}>
                 {item.label}
               </SidebarNavItem>
             ))}

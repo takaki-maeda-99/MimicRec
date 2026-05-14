@@ -1,14 +1,55 @@
-import { useParams, Link, useNavigate } from "react-router-dom";
+import { useMemo, useState } from "react";
+import { useParams, Link } from "react-router-dom";
 import { useEpisodes, useDeleteEpisode } from "../api/queries";
-import { Button } from "../components/ui/button";
 import { CodeInline } from "../components/ui/code-inline";
 import { PageHeader } from "../components/ui/page-header";
+import { EpisodesFilterBar, type StatusFilter } from "../components/episodes/EpisodesFilterBar";
+import { EpisodesList } from "../components/episodes/EpisodesList";
+import { EpisodePreviewPane } from "../components/episodes/EpisodePreviewPane";
 
 export default function EpisodesPage() {
   const { ds } = useParams<{ ds: string }>();
-  const { data: episodes, isLoading } = useEpisodes(ds || "");
+  const { data: episodes = [], isLoading } = useEpisodes(ds || "");
   const deleteMutation = useDeleteEpisode(ds || "");
-  const navigate = useNavigate();
+
+  const [status, setStatus] = useState<StatusFilter>("all");
+  const [modes, setModes] = useState<Set<string>>(new Set());
+  const [search, setSearch] = useState("");
+  const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
+
+  const availableModes = useMemo(
+    () => Array.from(new Set(episodes.map((e) => e.mode).filter(Boolean))) as string[],
+    [episodes],
+  );
+
+  const filtered = useMemo(() => {
+    return episodes.filter((e) => {
+      if (status === "success" && e.success !== true) return false;
+      if (status === "failure" && e.success !== false) return false;
+      if (modes.size > 0 && !modes.has(e.mode)) return false;
+      if (search && !e.task.toLowerCase().includes(search.toLowerCase())) return false;
+      return true;
+    });
+  }, [episodes, status, modes, search]);
+
+  // Auto-select first in filtered list when selection becomes invalid
+  const effectiveSel = useMemo(() => {
+    if (selectedIdx != null && filtered.some((e) => e.episode_index === selectedIdx)) return selectedIdx;
+    return filtered[0]?.episode_index ?? null;
+  }, [filtered, selectedIdx]);
+
+  const selectedEpisode = filtered.find((e) => e.episode_index === effectiveSel) ?? null;
+
+  const successCount = episodes.filter((e) => e.success === true).length;
+  const failureCount = episodes.filter((e) => e.success === false).length;
+
+  const toggleMode = (m: string) => {
+    setModes((prev) => {
+      const next = new Set(prev);
+      if (next.has(m)) next.delete(m); else next.add(m);
+      return next;
+    });
+  };
 
   if (!ds) return <div className="p-xl">No dataset selected</div>;
 
@@ -23,87 +64,50 @@ export default function EpisodesPage() {
             <CodeInline>{ds}</CodeInline>
           </span>
         }
+        meta={
+          <span className="font-mono text-micro text-stone">
+            {episodes.length} episodes · {successCount} ok / {failureCount} failed
+          </span>
+        }
         actions={
           <Link to="/datasets" className="text-caption text-steel hover:text-ink">
             ← Datasets
           </Link>
         }
       />
-      <div className="flex-1 overflow-auto">
-        <div className="max-w-[1240px] mx-auto px-xl py-xl">
-          {isLoading ? (
-            <p className="text-steel">Loading...</p>
-          ) : !episodes?.length ? (
-            <p className="text-steel">No episodes recorded yet.</p>
-          ) : (
-            <table className="w-full text-body-sm">
-              <thead>
-                <tr className="border-b border-hairline text-left text-stone text-micro-uppercase uppercase tracking-[0.18em] font-semibold">
-                  <th className="pb-sm">#</th>
-                  <th className="pb-sm">Task</th>
-                  <th className="pb-sm">Duration</th>
-                  <th className="pb-sm">Frames</th>
-                  <th className="pb-sm">Success</th>
-                  <th className="pb-sm">Mode</th>
-                  <th className="pb-sm">Recorded</th>
-                  <th className="pb-sm"></th>
-                </tr>
-              </thead>
-              <tbody>
-                {episodes.map((ep) => (
-                  <tr
-                    key={ep.episode_index}
-                    className="border-b border-hairline-soft hover:bg-surface-soft cursor-pointer transition-colors group"
-                    onClick={() =>
-                      navigate(`/datasets/${ds}/episodes/${ep.episode_index}/replay`)
-                    }
-                    title={`Open replay for episode #${ep.display_index}`}
-                  >
-                    <td className="py-md font-mono text-caption text-ink tabular-nums">
-                      {ep.display_index}
-                    </td>
-                    <td className="py-md text-slate">{ep.task}</td>
-                    <td className="py-md font-mono text-caption text-slate tabular-nums">
-                      {ep.duration_sec.toFixed(1)}s
-                    </td>
-                    <td className="py-md font-mono text-caption text-slate tabular-nums">
-                      {ep.num_frames}
-                    </td>
-                    <td className="py-md">
-                      {ep.success === true && (
-                        <span className="text-brand-green-deep">Success</span>
-                      )}
-                      {ep.success === false && (
-                        <span className="text-brand-error">Failure</span>
-                      )}
-                      {ep.success === null && <span className="text-stone">—</span>}
-                    </td>
-                    <td className="py-md text-slate">{ep.mode}</td>
-                    <td className="py-md text-steel text-caption font-mono">
-                      {ep.recorded_at || "—"}
-                    </td>
-                    <td
-                      className="py-md text-right"
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      <Button
-                        variant="destructive"
-                        size="xs"
-                        onClick={() => {
-                          if (confirm(`Delete episode #${ep.display_index}?`)) {
-                            deleteMutation.mutate(ep.episode_index);
-                          }
-                        }}
-                      >
-                        Delete
-                      </Button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </div>
+
+      <EpisodesFilterBar
+        total={episodes.length}
+        successCount={successCount}
+        failureCount={failureCount}
+        status={status} onStatusChange={setStatus}
+        modes={modes} availableModes={availableModes} onToggleMode={toggleMode}
+        search={search} onSearchChange={setSearch}
+      />
+
+      <div className="flex-1 flex min-h-0">
+        {isLoading ? (
+          <p className="text-steel p-md">Loading…</p>
+        ) : (
+          <>
+            <div className="flex-1 min-w-0 flex flex-col border-r border-hairline">
+              <EpisodesList
+                episodes={filtered}
+                selectedIdx={effectiveSel}
+                onSelect={setSelectedIdx}
+              />
+            </div>
+            <EpisodePreviewPane
+              ds={ds}
+              episode={selectedEpisode}
+              onDelete={(idx) => {
+                if (confirm(`Delete episode #${selectedEpisode?.display_index ?? idx}?`)) {
+                  deleteMutation.mutate(idx);
+                }
+              }}
+            />
+          </>
+        )}
       </div>
     </>
   );

@@ -1,7 +1,6 @@
 import { useState, useEffect } from "react";
 import { Link } from "react-router-dom";
 import { useDatasets, useDeleteDataset } from "../api/queries";
-import { apiFetch } from "../api/client";
 import { fetchAuthStatus, fetchHub, putHub, postHubPush } from "../api/cloud";
 import type { HubResponse, AuthStatus, HubConfig } from "../api/cloud";
 import { Button } from "../components/ui/button";
@@ -13,18 +12,9 @@ import { CreateDatasetModal } from "../components/CreateDatasetModal";
 import { PageHeader } from "../components/ui/page-header";
 import { CornerTicks } from "../components/ui/corner-ticks";
 
-interface AnnotateProgress {
-  done: number;
-  total: number;
-  current_episode: number | null;
-  status: string;
-}
-
 export default function DatasetsPage() {
   const { data: datasets, isLoading } = useDatasets();
   const deleteMutation = useDeleteDataset();
-  const [annotating, setAnnotating] = useState<string | null>(null);
-  const [progress, setProgress] = useState<AnnotateProgress | null>(null);
   const [exportingDataset, setExportingDataset] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [auth, setAuth] = useState<AuthStatus | null>(null);
@@ -62,35 +52,6 @@ export default function DatasetsPage() {
       setAuth(null);
     } finally {
       setAuthLoading(false);
-    }
-  };
-
-  const handleAnnotateAll = async (dsName: string) => {
-    if (!confirm(`Annotate all episodes in "${dsName}" with Gemma 4?\nThis may take a while.`)) return;
-    setAnnotating(dsName);
-    setProgress(null);
-    try {
-      await apiFetch(`/api/datasets/${dsName}/annotate-all`, {
-        method: "POST", body: JSON.stringify({}),
-      });
-      const poll = setInterval(async () => {
-        try {
-          const p = await apiFetch<AnnotateProgress>(
-            `/api/datasets/${dsName}/annotate-progress`,
-          );
-          setProgress(p);
-          if (p.status === "done") {
-            clearInterval(poll);
-            setAnnotating(null);
-          }
-        } catch {
-          clearInterval(poll);
-          setAnnotating(null);
-        }
-      }, 2000);
-    } catch (e) {
-      alert(`Error: ${(e as Error).message}`);
-      setAnnotating(null);
     }
   };
 
@@ -149,10 +110,6 @@ export default function DatasetsPage() {
                   ds={ds}
                   index={i + 1}
                   auth={auth}
-                  isAnnotating={annotating === ds.name}
-                  annotatingAny={annotating !== null}
-                  annotateProgress={annotating === ds.name ? progress : null}
-                  onAnnotate={() => handleAnnotateAll(ds.name)}
                   onExport={() => setExportingDataset(ds.name)}
                   onDelete={() => {
                     if (confirm(`Delete dataset "${ds.name}" and all its episodes?`)) {
@@ -161,27 +118,6 @@ export default function DatasetsPage() {
                   }}
                 />
               ))}
-            </div>
-          )}
-
-          {annotating && progress && progress.total > 0 && (
-            <div className="mt-xl rounded-lg border border-hairline bg-canvas p-md">
-              <div className="text-caption-bold text-ink mb-2">Annotation progress</div>
-              <div className="flex items-baseline justify-between mb-xs">
-                <span className="text-body-sm-medium text-ink">{annotating}</span>
-                <span className="text-body-sm text-steel font-mono tabular-nums">
-                  {progress.done} / {progress.total} episodes
-                </span>
-              </div>
-              <div className="w-full bg-surface rounded-full h-2 overflow-hidden">
-                <div
-                  className="bg-brand-warn h-2 transition-all"
-                  style={{ width: `${(progress.done / progress.total) * 100}%` }}
-                />
-              </div>
-              {progress.status === "done" && (
-                <p className="mt-xs text-body-sm text-brand-green-deep">Complete.</p>
-              )}
             </div>
           )}
         </div>
@@ -203,7 +139,7 @@ function SummaryBlock({ datasets }: { datasets: Array<{ name: string; num_episod
       <div>
         <h2 className="text-heading-2 text-ink leading-tight">Recorded data, sorted by recency.</h2>
         <p className="text-body-sm text-steel mt-2 max-w-[640px]">
-          {datasets.length} active datasets — review status, push to Hub, export, or annotate.
+          {datasets.length} active datasets — review status, push to Hub, or export.
         </p>
       </div>
       <div className="flex gap-xl items-baseline text-right">
@@ -267,10 +203,6 @@ interface DatasetCardProps {
   ds: { name: string; num_episodes: number; total_frames: number };
   index: number;
   auth: AuthStatus | null;
-  isAnnotating: boolean;
-  annotatingAny: boolean;
-  annotateProgress: AnnotateProgress | null;
-  onAnnotate: () => void;
   onExport: () => void;
   onDelete: () => void;
 }
@@ -279,10 +211,6 @@ function DatasetCard({
   ds,
   index,
   auth,
-  isAnnotating,
-  annotatingAny,
-  annotateProgress,
-  onAnnotate,
   onExport,
   onDelete,
 }: DatasetCardProps) {
@@ -412,18 +340,6 @@ function DatasetCard({
           </>
         )}
         <Button variant="secondary" size="sm" onClick={onExport}>Export</Button>
-        <Button
-          variant="secondary"
-          size="sm"
-          onClick={onAnnotate}
-          disabled={annotatingAny}
-        >
-          {isAnnotating && annotateProgress
-            ? `Annotating ${annotateProgress.done}/${annotateProgress.total}`
-            : isAnnotating
-            ? "Starting…"
-            : "Annotate"}
-        </Button>
         <span className="flex-1" />
         <Button variant="destructive" size="sm" onClick={onDelete}>Delete</Button>
       </div>
