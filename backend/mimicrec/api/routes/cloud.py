@@ -70,6 +70,10 @@ def _iso_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _invalidate_auth_cache(request: Request) -> None:
+    request.app.state.auth_cache = None
+
+
 def _resolve_ds(request: Request, ds: str) -> Path:
     root = get_datasets_root(request.app)
     try:
@@ -301,6 +305,22 @@ async def cloud_login(request: Request, body: LoginRequest) -> AuthStatus:
     if not username:
         raise HTTPException(status_code=502, detail="unexpected response from Hugging Face")
 
-    # hf_login + cache write lands in Task 5
-    raise HTTPException(status_code=500, detail="not implemented")
+    # persist to CLI cache. try/finally guarantees auth_cache is invalidated
+    # even if hf_login() raises, so we never serve a stale cached value.
+    try:
+        try:
+            hf_login(token=token, add_to_git_credential=False)
+        except Exception:
+            raise HTTPException(status_code=500, detail="failed to persist auth token")
+    finally:
+        _invalidate_auth_cache(request)
+
+    value = {
+        "authenticated": True,
+        "username": username,
+        "checked_at": _iso_now(),
+        "env_locked": False,
+    }
+    request.app.state.auth_cache = {"t": time.monotonic(), "value": value}
+    return AuthStatus(**value)
 
