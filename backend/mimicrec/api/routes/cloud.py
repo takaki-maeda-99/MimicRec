@@ -1,5 +1,6 @@
 from __future__ import annotations
 import asyncio
+import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,6 +22,12 @@ router = APIRouter()
 
 _AUTH_TTL_SEC = 60.0
 
+_ENV_TOKEN_VARS = ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN")
+
+
+def _env_token_present() -> bool:
+    return any(os.environ.get(v, "").strip() for v in _ENV_TOKEN_VARS)
+
 
 class HubConfig(BaseModel):
     repo_id: str = Field(..., min_length=3, pattern=r"^[\w][\w.-]*\/[\w][\w.-]*$")
@@ -32,6 +39,7 @@ class AuthStatus(BaseModel):
     authenticated: bool
     username: str | None
     checked_at: str
+    env_locked: bool = False
 
 
 def _iso_now() -> str:
@@ -56,6 +64,7 @@ async def auth_status(request: Request, refresh: int = 0) -> AuthStatus:
     if not refresh and cache is not None and now - cache["t"] < _AUTH_TTL_SEC:
         return AuthStatus(**cache["value"])
 
+    env_locked = _env_token_present()
     token = get_token()
     authenticated = False
     username: str | None = None
@@ -71,6 +80,7 @@ async def auth_status(request: Request, refresh: int = 0) -> AuthStatus:
         "authenticated": authenticated,
         "username": username,
         "checked_at": _iso_now(),
+        "env_locked": env_locked,
     }
     request.app.state.auth_cache = {"t": now, "value": value}
     return AuthStatus(**value)
