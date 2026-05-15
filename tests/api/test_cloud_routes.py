@@ -121,6 +121,7 @@ async def test_post_push_401_when_no_token(client_and_root):
         async with client as ac:
             r = await ac.post("/api/datasets/ds/hub/push")
     assert r.status_code == 401
+    assert "Settings" in r.json()["detail"] and "Hugging Face" in r.json()["detail"]
 
 
 @pytest.mark.asyncio

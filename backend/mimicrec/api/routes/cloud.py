@@ -1,11 +1,13 @@
 from __future__ import annotations
 import asyncio
+import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
-from huggingface_hub import HfApi, get_token
+from huggingface_hub import HfApi, get_token, login as hf_login, logout as hf_logout
+from huggingface_hub.errors import HfHubHTTPError
 from pydantic import BaseModel, Field
 
 from mimicrec.api.deps import get_datasets_root
@@ -21,6 +23,35 @@ router = APIRouter()
 
 _AUTH_TTL_SEC = 60.0
 
+_ENV_TOKEN_VARS = ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN")
+
+
+def _env_token_present() -> bool:
+    """True if HF_TOKEN or HUGGING_FACE_HUB_TOKEN env var is set and non-whitespace.
+
+    Presence-only check — does not validate the token with HF.
+    """
+    return any(os.environ.get(v, "").strip() for v in _ENV_TOKEN_VARS)
+
+
+def _require_same_origin(request: Request) -> None:
+    """Reject cross-origin POSTs (minimal CSRF guard for localhost).
+
+    Implementation detail: `request.url.netloc` is derived from the incoming
+    Host header. Vite's default proxy config in `frontend/vite.config.ts`
+    uses the **shorthand** form (`'/api': 'http://localhost:8000'`), which
+    preserves the browser's Host header (`localhost:5173`) when forwarding,
+    so this check passes in dev. If anyone later adds `changeOrigin: true`
+    to that proxy config, Host would be rewritten to `localhost:8000` and
+    this check would reject browser requests with 403 — adjust both at once.
+    """
+    origin = request.headers.get("origin")
+    if origin is None:
+        raise HTTPException(status_code=403, detail="origin header required")
+    expected = f"{request.url.scheme}://{request.url.netloc}"
+    if origin != expected:
+        raise HTTPException(status_code=403, detail="cross-origin request rejected")
+
 
 class HubConfig(BaseModel):
     repo_id: str = Field(..., min_length=3, pattern=r"^[\w][\w.-]*\/[\w][\w.-]*$")
@@ -32,10 +63,15 @@ class AuthStatus(BaseModel):
     authenticated: bool
     username: str | None
     checked_at: str
+    env_locked: bool = False
 
 
 def _iso_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _invalidate_auth_cache(request: Request) -> None:
+    request.app.state.auth_cache = None
 
 
 def _resolve_ds(request: Request, ds: str) -> Path:
@@ -51,10 +87,15 @@ def _resolve_ds(request: Request, ds: str) -> Path:
 
 @router.get("/cloud/auth-status")
 async def auth_status(request: Request, refresh: int = 0) -> AuthStatus:
+    # env_locked is a cheap os.environ lookup — always recompute so toggling
+    # HF_TOKEN during the cache window reflects immediately. The cache exists
+    # to amortize the HfApi().whoami() network call only.
+    env_locked = _env_token_present()
     cache = getattr(request.app.state, "auth_cache", None)
     now = time.monotonic()
     if not refresh and cache is not None and now - cache["t"] < _AUTH_TTL_SEC:
-        return AuthStatus(**cache["value"])
+        cached_value = {**cache["value"], "env_locked": env_locked}
+        return AuthStatus(**cached_value)
 
     token = get_token()
     authenticated = False
@@ -71,6 +112,7 @@ async def auth_status(request: Request, refresh: int = 0) -> AuthStatus:
         "authenticated": authenticated,
         "username": username,
         "checked_at": _iso_now(),
+        "env_locked": env_locked,
     }
     request.app.state.auth_cache = {"t": now, "value": value}
     return AuthStatus(**value)
@@ -126,7 +168,10 @@ async def put_hub(request: Request, ds: str, body: HubConfig):
 async def post_push(request: Request, ds: str):
     ds_root = _resolve_ds(request, ds)   # path 400 / 存在 404
     if not get_token():
-        raise HTTPException(status_code=401, detail="not authenticated; run `huggingface-cli login`")
+        raise HTTPException(
+            status_code=401,
+            detail="not authenticated; sign in from Settings → Hugging Face",
+        )
     meta = read_hub_meta(ds_root)
     if meta is None:
         raise HTTPException(status_code=400, detail="hub not configured for this dataset")
@@ -230,4 +275,73 @@ def _finalize_with_error(app, ds_name: str, ds_root: Path, error: BaseException)
         coord.progress[ds_name].status = "error"
         coord.progress[ds_name].error = str(error)
         coord.progress[ds_name].ended_at = _iso_now()
+
+
+class LoginRequest(BaseModel):
+    token: str = Field(..., min_length=1)
+
+
+@router.post("/cloud/login")
+async def cloud_login(request: Request, body: LoginRequest) -> AuthStatus:
+    _require_same_origin(request)
+    if _env_token_present():
+        raise HTTPException(
+            status_code=409,
+            detail="HF_TOKEN env var is set; unset it before signing in from the UI",
+        )
+    token = body.token.strip()
+    if not token:
+        raise HTTPException(status_code=400, detail="token is required")
+
+    # validate via whoami
+    try:
+        who = HfApi().whoami(token=token)
+    except HfHubHTTPError as e:
+        code = getattr(getattr(e, "response", None), "status_code", None)
+        if code in (401, 403):
+            raise HTTPException(status_code=401, detail="invalid token")
+        raise HTTPException(status_code=503, detail="could not reach Hugging Face")
+    except Exception:
+        raise HTTPException(status_code=503, detail="could not reach Hugging Face")
+
+    username = who.get("name") if isinstance(who, dict) else None
+    if not username:
+        raise HTTPException(status_code=502, detail="unexpected response from Hugging Face")
+
+    # persist to CLI cache. try/finally guarantees auth_cache is invalidated
+    # even if hf_login() raises, so we never serve a stale cached value.
+    try:
+        try:
+            hf_login(token=token, add_to_git_credential=False)
+        except Exception:
+            raise HTTPException(status_code=500, detail="failed to persist auth token")
+    finally:
+        _invalidate_auth_cache(request)
+
+    value = {
+        "authenticated": True,
+        "username": username,
+        "checked_at": _iso_now(),
+        "env_locked": False,
+    }
+    request.app.state.auth_cache = {"t": time.monotonic(), "value": value}
+    return AuthStatus(**value)
+
+
+@router.post("/cloud/logout", status_code=204)
+async def cloud_logout(request: Request):
+    _require_same_origin(request)
+    if _env_token_present():
+        raise HTTPException(
+            status_code=409,
+            detail="token is provided via HF_TOKEN env var; unset it to log out",
+        )
+    try:
+        try:
+            hf_logout()
+        except Exception:
+            raise HTTPException(status_code=500, detail="failed to clear stored auth token")
+    finally:
+        _invalidate_auth_cache(request)
+    return None
 

@@ -9,6 +9,7 @@ import { Input } from "../components/ui/input";
 import { CodeInline } from "../components/ui/code-inline";
 import { ExportDatasetModal } from "../components/ExportDatasetModal";
 import { CreateDatasetModal } from "../components/CreateDatasetModal";
+import { HfAuthModal } from "../components/HfAuthModal";
 import { PageHeader } from "../components/ui/page-header";
 import { CornerTicks } from "../components/ui/corner-ticks";
 
@@ -19,6 +20,7 @@ export default function DatasetsPage() {
   const [creating, setCreating] = useState(false);
   const [auth, setAuth] = useState<AuthStatus | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
+  const [showAuthModal, setShowAuthModal] = useState(false);
   const [sort, setSort] = useState<"recency" | "name" | "size">("recency");
   const [search, setSearch] = useState("");
 
@@ -43,18 +45,6 @@ export default function DatasetsPage() {
     };
   }, []);
 
-  const refreshAuth = async () => {
-    setAuthLoading(true);
-    try {
-      const s = await fetchAuthStatus(true);
-      setAuth(s);
-    } catch {
-      setAuth(null);
-    } finally {
-      setAuthLoading(false);
-    }
-  };
-
   const filtered = (datasets ?? []).filter((d) =>
     d.name.toLowerCase().includes(search.toLowerCase()),
   );
@@ -76,7 +66,7 @@ export default function DatasetsPage() {
         }
         actions={
           <>
-            <HubAuthPill auth={auth} loading={authLoading} onRefresh={refreshAuth} />
+            <HubAuthPill auth={auth} loading={authLoading} onOpen={() => setShowAuthModal(true)} />
             <Button size="sm" onClick={() => setCreating(true)}>+ New dataset</Button>
           </>
         }
@@ -127,6 +117,13 @@ export default function DatasetsPage() {
       {exportingDataset && (
         <ExportDatasetModal ds={exportingDataset} onClose={() => setExportingDataset(null)} />
       )}
+      {showAuthModal && (
+        <HfAuthModal
+          auth={auth}
+          onAuthChange={setAuth}
+          onClose={() => setShowAuthModal(false)}
+        />
+      )}
     </>
   );
 }
@@ -162,11 +159,11 @@ function Stat({ label, value }: { label: string; value: React.ReactNode }) {
 function HubAuthPill({
   auth,
   loading,
-  onRefresh,
+  onOpen,
 }: {
   auth: AuthStatus | null;
   loading: boolean;
-  onRefresh: () => void;
+  onOpen: () => void;
 }) {
   const base =
     "inline-flex items-center gap-1 h-9 px-md rounded-full text-button-md transition-colors cursor-pointer";
@@ -177,11 +174,22 @@ function HubAuthPill({
       </span>
     );
   }
+  if (auth?.env_locked) {
+    return (
+      <button
+        onClick={onOpen}
+        title="HF_TOKEN env var is set — click for details"
+        className={`${base} bg-brand-tag/15 text-brand-tag hover:bg-brand-tag/25`}
+      >
+        HF: env-locked
+      </button>
+    );
+  }
   if (auth?.authenticated) {
     return (
       <button
-        onClick={onRefresh}
-        title="Click to refresh"
+        onClick={onOpen}
+        title="Signed in — click to sign out"
         className={`${base} bg-brand-green text-primary hover:opacity-90`}
       >
         HF: @{auth.username ?? "(unknown)"}
@@ -190,11 +198,11 @@ function HubAuthPill({
   }
   return (
     <button
-      onClick={onRefresh}
-      title="Click to refresh"
+      onClick={onOpen}
+      title="Click to sign in to Hugging Face"
       className={`${base} bg-brand-warn/15 text-brand-warn hover:bg-brand-warn/25`}
     >
-      HF: not logged in — run&nbsp;<CodeInline>huggingface-cli login</CodeInline>
+      HF: sign in
     </button>
   );
 }
