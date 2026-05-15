@@ -26,6 +26,10 @@ _ENV_TOKEN_VARS = ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN")
 
 
 def _env_token_present() -> bool:
+    """True if HF_TOKEN or HUGGING_FACE_HUB_TOKEN env var is set and non-whitespace.
+
+    Presence-only check — does not validate the token with HF.
+    """
     return any(os.environ.get(v, "").strip() for v in _ENV_TOKEN_VARS)
 
 
@@ -59,12 +63,16 @@ def _resolve_ds(request: Request, ds: str) -> Path:
 
 @router.get("/cloud/auth-status")
 async def auth_status(request: Request, refresh: int = 0) -> AuthStatus:
+    # env_locked is a cheap os.environ lookup — always recompute so toggling
+    # HF_TOKEN during the cache window reflects immediately. The cache exists
+    # to amortize the HfApi().whoami() network call only.
+    env_locked = _env_token_present()
     cache = getattr(request.app.state, "auth_cache", None)
     now = time.monotonic()
     if not refresh and cache is not None and now - cache["t"] < _AUTH_TTL_SEC:
-        return AuthStatus(**cache["value"])
+        cached_value = {**cache["value"], "env_locked": env_locked}
+        return AuthStatus(**cached_value)
 
-    env_locked = _env_token_present()
     token = get_token()
     authenticated = False
     username: str | None = None

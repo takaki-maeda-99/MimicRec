@@ -72,3 +72,36 @@ async def test_auth_status_env_locked_false_when_whitespace_env(client_and_app, 
         async with client as ac:
             r = await ac.get("/api/cloud/auth-status")
     assert r.json()["env_locked"] is False
+
+
+@pytest.mark.asyncio
+async def test_auth_status_env_locked_recomputed_on_each_call_despite_cache(
+    client_and_app, monkeypatch
+):
+    """env_locked must be recomputed on every call, not served stale from the cache.
+
+    The auth_cache TTL (60s) exists to amortize the HfApi().whoami() network call,
+    but _env_token_present() is a cheap os.environ lookup. If the env var toggles
+    during the cache window, the response must reflect the new value immediately.
+    """
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.delenv("HUGGING_FACE_HUB_TOKEN", raising=False)
+    client, _ = client_and_app
+    async with client as ac:
+        # First call: no env var -> env_locked false, populates cache.
+        with patch("mimicrec.api.routes.cloud.get_token", return_value=None), \
+             patch("mimicrec.api.routes.cloud.HfApi"):
+            r1 = await ac.get("/api/cloud/auth-status")
+        assert r1.status_code == 200
+        assert r1.json()["env_locked"] is False
+
+        # Set the env var without busting the cache (no refresh=1).
+        monkeypatch.setenv("HF_TOKEN", "envtok")
+
+        # Second call within TTL: env_locked must now be true even though the
+        # cached whoami value is reused.
+        with patch("mimicrec.api.routes.cloud.get_token", return_value=None), \
+             patch("mimicrec.api.routes.cloud.HfApi"):
+            r2 = await ac.get("/api/cloud/auth-status")
+        assert r2.status_code == 200
+        assert r2.json()["env_locked"] is True
