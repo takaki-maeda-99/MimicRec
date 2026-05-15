@@ -40,11 +40,16 @@ export default function SidebarStatus() {
   const [auth, setAuth] = useState<AuthStatus | null>(null);
   useEffect(() => {
     let alive = true;
-    fetchAuthStatus()
-      .then((s) => alive && setAuth(s))
-      .catch(() => alive && setAuth(null));
+    const refresh = () =>
+      fetchAuthStatus()
+        .then((s) => alive && setAuth(s))
+        .catch(() => alive && setAuth(null));
+    refresh();
+    const onChange = () => refresh();
+    window.addEventListener("hf-auth-changed", onChange);
     return () => {
       alive = false;
+      window.removeEventListener("hf-auth-changed", onChange);
     };
   }, []);
 
