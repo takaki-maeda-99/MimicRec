@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
-from huggingface_hub import HfApi, get_token
+from huggingface_hub import HfApi, get_token, login as hf_login, logout as hf_logout
 from pydantic import BaseModel, Field
 
 from mimicrec.api.deps import get_datasets_root
@@ -31,6 +31,25 @@ def _env_token_present() -> bool:
     Presence-only check — does not validate the token with HF.
     """
     return any(os.environ.get(v, "").strip() for v in _ENV_TOKEN_VARS)
+
+
+def _require_same_origin(request: Request) -> None:
+    """Reject cross-origin POSTs (minimal CSRF guard for localhost).
+
+    Implementation detail: `request.url.netloc` is derived from the incoming
+    Host header. Vite's default proxy config in `frontend/vite.config.ts`
+    uses the **shorthand** form (`'/api': 'http://localhost:8000'`), which
+    preserves the browser's Host header (`localhost:5173`) when forwarding,
+    so this check passes in dev. If anyone later adds `changeOrigin: true`
+    to that proxy config, Host would be rewritten to `localhost:8000` and
+    this check would reject browser requests with 403 — adjust both at once.
+    """
+    origin = request.headers.get("origin")
+    if origin is None:
+        raise HTTPException(status_code=403, detail="origin header required")
+    expected = f"{request.url.scheme}://{request.url.netloc}"
+    if origin != expected:
+        raise HTTPException(status_code=403, detail="cross-origin request rejected")
 
 
 class HubConfig(BaseModel):
@@ -248,4 +267,18 @@ def _finalize_with_error(app, ds_name: str, ds_root: Path, error: BaseException)
         coord.progress[ds_name].status = "error"
         coord.progress[ds_name].error = str(error)
         coord.progress[ds_name].ended_at = _iso_now()
+
+
+class LoginRequest(BaseModel):
+    token: str = Field(..., min_length=1)
+
+
+@router.post("/cloud/login")
+async def cloud_login(request: Request, body: LoginRequest) -> AuthStatus:
+    _require_same_origin(request)
+    token = body.token.strip()
+    if not token:
+        raise HTTPException(status_code=400, detail="token is required")
+    # whoami / hf_login wiring lands in Task 4–5; placeholder to make Task 2 tests pass.
+    raise HTTPException(status_code=500, detail="not implemented")
 

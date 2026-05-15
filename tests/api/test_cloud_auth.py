@@ -105,3 +105,56 @@ async def test_auth_status_env_locked_recomputed_on_each_call_despite_cache(
             r2 = await ac.get("/api/cloud/auth-status")
         assert r2.status_code == 200
         assert r2.json()["env_locked"] is True
+
+
+@pytest.mark.asyncio
+async def test_login_missing_origin_returns_403(client_and_app):
+    client, _ = client_and_app
+    async with client as ac:
+        r = await ac.post("/api/cloud/login", json={"token": "hf_xxx"})
+    assert r.status_code == 403
+    assert r.json()["detail"] == "origin header required"
+
+
+@pytest.mark.asyncio
+async def test_login_cross_origin_returns_403(client_and_app):
+    client, _ = client_and_app
+    async with client as ac:
+        r = await ac.post(
+            "/api/cloud/login",
+            json={"token": "hf_xxx"},
+            headers={"Origin": "http://evil.example.com"},
+        )
+    assert r.status_code == 403
+    assert r.json()["detail"] == "cross-origin request rejected"
+
+
+@pytest.mark.asyncio
+async def test_login_empty_token_returns_400(client_and_app, monkeypatch):
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.delenv("HUGGING_FACE_HUB_TOKEN", raising=False)
+    client, _ = client_and_app
+    async with client as ac:
+        r = await ac.post(
+            "/api/cloud/login",
+            json={"token": ""},
+            headers={"Origin": "http://test"},
+        )
+    # Pydantic min_length=1 → 422; the route's body strip() check is unreachable
+    # if the body fails validation first, so 422 is acceptable here.
+    assert r.status_code in (400, 422)
+
+
+@pytest.mark.asyncio
+async def test_login_whitespace_token_returns_400(client_and_app, monkeypatch):
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.delenv("HUGGING_FACE_HUB_TOKEN", raising=False)
+    client, _ = client_and_app
+    async with client as ac:
+        r = await ac.post(
+            "/api/cloud/login",
+            json={"token": "   "},
+            headers={"Origin": "http://test"},
+        )
+    assert r.status_code == 400
+    assert r.json()["detail"] == "token is required"
