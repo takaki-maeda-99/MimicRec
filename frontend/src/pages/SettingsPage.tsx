@@ -4,6 +4,7 @@ import { ConfigEditorModal, type ConfigEntry, type ConfigEditorMode } from "../c
 import type { ConfigGroup, ConfigCardEntry } from "../components/ConfigCard";
 import { ConfigurationsTabs } from "../components/ConfigurationsTabs";
 import { HardwareStatusBlock } from "../components/HardwareStatusBlock";
+import { HuggingFaceCard } from "../components/HuggingFaceCard";
 import { PageHeader } from "../components/ui/page-header";
 
 interface SerialDevice { port: string; available: boolean }
@@ -94,6 +95,7 @@ export default function SettingsPage() {
             refreshing={refreshing}
             onRefresh={loadAll}
           />
+          <HuggingFaceCard />
           <ConfigurationsTabs
             configs={configs}
             refreshing={refreshing}
