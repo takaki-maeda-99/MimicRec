@@ -158,3 +158,40 @@ async def test_login_whitespace_token_returns_400(client_and_app, monkeypatch):
         )
     assert r.status_code == 400
     assert r.json()["detail"] == "token is required"
+
+
+@pytest.mark.asyncio
+async def test_login_env_locked_returns_409(client_and_app, monkeypatch):
+    monkeypatch.setenv("HF_TOKEN", "envtok")
+    monkeypatch.delenv("HUGGING_FACE_HUB_TOKEN", raising=False)
+    client, _ = client_and_app
+    with patch("mimicrec.api.routes.cloud.HfApi") as MockApi, \
+         patch("mimicrec.api.routes.cloud.hf_login") as MockLogin:
+        async with client as ac:
+            r = await ac.post(
+                "/api/cloud/login",
+                json={"token": "hf_xxx"},
+                headers={"Origin": "http://test"},
+            )
+    assert r.status_code == 409
+    assert "HF_TOKEN" in r.json()["detail"]
+    MockApi.return_value.whoami.assert_not_called()
+    MockLogin.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_login_env_locked_legacy_var_returns_409(client_and_app, monkeypatch):
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.setenv("HUGGING_FACE_HUB_TOKEN", "envtok")
+    client, _ = client_and_app
+    with patch("mimicrec.api.routes.cloud.HfApi") as MockApi, \
+         patch("mimicrec.api.routes.cloud.hf_login") as MockLogin:
+        async with client as ac:
+            r = await ac.post(
+                "/api/cloud/login",
+                json={"token": "hf_xxx"},
+                headers={"Origin": "http://test"},
+            )
+    assert r.status_code == 409
+    MockApi.return_value.whoami.assert_not_called()
+    MockLogin.assert_not_called()

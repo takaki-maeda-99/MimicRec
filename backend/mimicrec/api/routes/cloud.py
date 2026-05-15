@@ -276,6 +276,11 @@ class LoginRequest(BaseModel):
 @router.post("/cloud/login")
 async def cloud_login(request: Request, body: LoginRequest) -> AuthStatus:
     _require_same_origin(request)
+    if _env_token_present():
+        raise HTTPException(
+            status_code=409,
+            detail="HF_TOKEN env var is set; unset it before signing in from the UI",
+        )
     token = body.token.strip()
     if not token:
         raise HTTPException(status_code=400, detail="token is required")
