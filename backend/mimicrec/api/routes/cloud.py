@@ -168,7 +168,10 @@ async def put_hub(request: Request, ds: str, body: HubConfig):
 async def post_push(request: Request, ds: str):
     ds_root = _resolve_ds(request, ds)   # path 400 / 存在 404
     if not get_token():
-        raise HTTPException(status_code=401, detail="not authenticated; run `huggingface-cli login`")
+        raise HTTPException(
+            status_code=401,
+            detail="not authenticated; sign in from Settings → Hugging Face",
+        )
     meta = read_hub_meta(ds_root)
     if meta is None:
         raise HTTPException(status_code=400, detail="hub not configured for this dataset")
