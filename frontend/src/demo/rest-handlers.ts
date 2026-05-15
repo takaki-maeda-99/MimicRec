@@ -225,6 +225,8 @@ export const stubHandlers = [
   http.post("/api/datasets/:ds/export", demoUnsupported),
 
   http.get("/api/cloud/auth-status", demoUnsupported),
+  http.post("/api/cloud/login", demoUnsupported),
+  http.post("/api/cloud/logout", demoUnsupported),
   http.get("/api/datasets/:ds/hub", demoUnsupported),
   http.put("/api/datasets/:ds/hub", demoUnsupported),
   http.post("/api/datasets/:ds/hub/push", demoUnsupported),
