@@ -357,3 +357,74 @@ async def test_login_disk_write_failure_returns_500_and_clears_cache(client_and_
     assert app.state.auth_cache is None
     # also: token MUST NOT appear in response body
     assert "hf_valid" not in r.text
+
+
+@pytest.mark.asyncio
+async def test_logout_missing_origin_returns_403(client_and_app):
+    client, _ = client_and_app
+    async with client as ac:
+        r = await ac.post("/api/cloud/logout")
+    assert r.status_code == 403
+    assert r.json()["detail"] == "origin header required"
+
+
+@pytest.mark.asyncio
+async def test_logout_cross_origin_returns_403(client_and_app):
+    client, _ = client_and_app
+    async with client as ac:
+        r = await ac.post(
+            "/api/cloud/logout",
+            headers={"Origin": "http://evil.example.com"},
+        )
+    assert r.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_logout_env_locked_returns_409(client_and_app, monkeypatch):
+    monkeypatch.setenv("HF_TOKEN", "envtok")
+    client, _ = client_and_app
+    with patch("mimicrec.api.routes.cloud.hf_logout") as MockLogout:
+        async with client as ac:
+            r = await ac.post(
+                "/api/cloud/logout",
+                headers={"Origin": "http://test"},
+            )
+    assert r.status_code == 409
+    MockLogout.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_logout_success_returns_204_and_clears_cache(client_and_app, monkeypatch):
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.delenv("HUGGING_FACE_HUB_TOKEN", raising=False)
+    client, app = client_and_app
+    app.state.auth_cache = {"t": 1.0, "value": {"authenticated": True, "username": "alice", "checked_at": "x", "env_locked": False}}
+    with patch("mimicrec.api.routes.cloud.hf_logout") as MockLogout:
+        async with client as ac:
+            r = await ac.post(
+                "/api/cloud/logout",
+                headers={"Origin": "http://test"},
+            )
+    assert r.status_code == 204
+    MockLogout.assert_called_once()
+    assert app.state.auth_cache is None
+
+
+@pytest.mark.asyncio
+async def test_logout_hf_logout_fails_returns_500_and_still_invalidates_cache(client_and_app, monkeypatch):
+    """If hf_logout raises, the route must NOT swallow it (no false 204), and
+    auth_cache must be cleared via finally regardless."""
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.delenv("HUGGING_FACE_HUB_TOKEN", raising=False)
+    client, app = client_and_app
+    app.state.auth_cache = {"t": 1.0, "value": {"authenticated": True, "username": "alice", "checked_at": "x", "env_locked": False}}
+    with patch("mimicrec.api.routes.cloud.hf_logout") as MockLogout:
+        MockLogout.side_effect = PermissionError("denied")
+        async with client as ac:
+            r = await ac.post(
+                "/api/cloud/logout",
+                headers={"Origin": "http://test"},
+            )
+    assert r.status_code == 500
+    assert r.json()["detail"] == "failed to clear stored auth token"
+    assert app.state.auth_cache is None

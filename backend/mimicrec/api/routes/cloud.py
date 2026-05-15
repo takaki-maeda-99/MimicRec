@@ -324,3 +324,21 @@ async def cloud_login(request: Request, body: LoginRequest) -> AuthStatus:
     request.app.state.auth_cache = {"t": time.monotonic(), "value": value}
     return AuthStatus(**value)
 
+
+@router.post("/cloud/logout", status_code=204)
+async def cloud_logout(request: Request):
+    _require_same_origin(request)
+    if _env_token_present():
+        raise HTTPException(
+            status_code=409,
+            detail="token is provided via HF_TOKEN env var; unset it to log out",
+        )
+    try:
+        try:
+            hf_logout()
+        except Exception:
+            raise HTTPException(status_code=500, detail="failed to clear stored auth token")
+    finally:
+        _invalidate_auth_cache(request)
+    return None
+
