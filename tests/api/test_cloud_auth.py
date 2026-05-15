@@ -195,3 +195,88 @@ async def test_login_env_locked_legacy_var_returns_409(client_and_app, monkeypat
     assert r.status_code == 409
     MockApi.return_value.whoami.assert_not_called()
     MockLogin.assert_not_called()
+
+
+def _make_http_error(status_code: int):
+    """Build a real HfHubHTTPError with an httpx.Response — the installed
+    huggingface_hub version (0.35.x) requires `response: httpx.Response` and
+    will introspect `response.request` during string formatting, so a plain
+    duck-typed `_Resp` shim fails with `AttributeError`."""
+    import httpx
+    from huggingface_hub.errors import HfHubHTTPError
+
+    request = httpx.Request("GET", "https://huggingface.co/api/whoami-v2")
+    response = httpx.Response(status_code=status_code, request=request)
+    return HfHubHTTPError("http error", response=response)
+
+
+@pytest.mark.asyncio
+async def test_login_invalid_token_returns_401(client_and_app, monkeypatch):
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.delenv("HUGGING_FACE_HUB_TOKEN", raising=False)
+    client, _ = client_and_app
+    with patch("mimicrec.api.routes.cloud.HfApi") as MockApi, \
+         patch("mimicrec.api.routes.cloud.hf_login") as MockLogin:
+        MockApi.return_value.whoami.side_effect = _make_http_error(401)
+        async with client as ac:
+            r = await ac.post(
+                "/api/cloud/login",
+                json={"token": "hf_invalid"},
+                headers={"Origin": "http://test"},
+            )
+    assert r.status_code == 401
+    assert r.json()["detail"] == "invalid token"
+    MockLogin.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_login_403_also_returns_401(client_and_app, monkeypatch):
+    """403 from whoami means the token lacks permission — surface as 'invalid token' for the UI."""
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.delenv("HUGGING_FACE_HUB_TOKEN", raising=False)
+    client, _ = client_and_app
+    with patch("mimicrec.api.routes.cloud.HfApi") as MockApi, \
+         patch("mimicrec.api.routes.cloud.hf_login"):
+        MockApi.return_value.whoami.side_effect = _make_http_error(403)
+        async with client as ac:
+            r = await ac.post(
+                "/api/cloud/login",
+                json={"token": "hf_xxx"},
+                headers={"Origin": "http://test"},
+            )
+    assert r.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_login_network_error_returns_503(client_and_app, monkeypatch):
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.delenv("HUGGING_FACE_HUB_TOKEN", raising=False)
+    client, _ = client_and_app
+    with patch("mimicrec.api.routes.cloud.HfApi") as MockApi, \
+         patch("mimicrec.api.routes.cloud.hf_login"):
+        MockApi.return_value.whoami.side_effect = ConnectionError("dns fail")
+        async with client as ac:
+            r = await ac.post(
+                "/api/cloud/login",
+                json={"token": "hf_xxx"},
+                headers={"Origin": "http://test"},
+            )
+    assert r.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_login_whoami_no_name_returns_502(client_and_app, monkeypatch):
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.delenv("HUGGING_FACE_HUB_TOKEN", raising=False)
+    client, _ = client_and_app
+    with patch("mimicrec.api.routes.cloud.HfApi") as MockApi, \
+         patch("mimicrec.api.routes.cloud.hf_login") as MockLogin:
+        MockApi.return_value.whoami.return_value = {"orgs": []}  # no 'name'
+        async with client as ac:
+            r = await ac.post(
+                "/api/cloud/login",
+                json={"token": "hf_xxx"},
+                headers={"Origin": "http://test"},
+            )
+    assert r.status_code == 502
+    MockLogin.assert_not_called()

@@ -7,6 +7,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
 from huggingface_hub import HfApi, get_token, login as hf_login, logout as hf_logout
+from huggingface_hub.errors import HfHubHTTPError
 from pydantic import BaseModel, Field
 
 from mimicrec.api.deps import get_datasets_root
@@ -284,6 +285,22 @@ async def cloud_login(request: Request, body: LoginRequest) -> AuthStatus:
     token = body.token.strip()
     if not token:
         raise HTTPException(status_code=400, detail="token is required")
-    # whoami / hf_login wiring lands in Task 4–5; placeholder to make Task 2 tests pass.
+
+    # validate via whoami
+    try:
+        who = HfApi().whoami(token=token)
+    except HfHubHTTPError as e:
+        code = getattr(getattr(e, "response", None), "status_code", None)
+        if code in (401, 403):
+            raise HTTPException(status_code=401, detail="invalid token")
+        raise HTTPException(status_code=503, detail="could not reach Hugging Face")
+    except Exception:
+        raise HTTPException(status_code=503, detail="could not reach Hugging Face")
+
+    username = who.get("name") if isinstance(who, dict) else None
+    if not username:
+        raise HTTPException(status_code=502, detail="unexpected response from Hugging Face")
+
+    # hf_login + cache write lands in Task 5
     raise HTTPException(status_code=500, detail="not implemented")
 
