@@ -18,6 +18,7 @@ interface Props {
   idx: number;
   cursorTimeSec?: number;
   onSeek?: (timeSec: number) => void;
+  version?: string | null;
 }
 
 const COLORS = [
@@ -25,8 +26,8 @@ const COLORS = [
   "#ea580c", "#0891b2", "#be185d", "#65a30d", "#6d28d9",
 ];
 
-export default function JointPlot({ ds, idx, cursorTimeSec, onSeek }: Props) {
-  const { data: rows = [], isLoading: loading } = useEpisodeFrames(ds, idx);
+export default function JointPlot({ ds, idx, cursorTimeSec, onSeek, version }: Props) {
+  const { data: rows = [], isLoading: loading } = useEpisodeFrames(ds, idx, true, version);
   const [mode, setMode] = useState<"position" | "velocity">("position");
 
   const { data, jointNames, hasVelocity } = useMemo(() => {

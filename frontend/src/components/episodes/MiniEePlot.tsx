@@ -4,10 +4,11 @@ import { useEpisodeFrames } from "../../hooks/useEpisodeFrames";
 interface Props {
   ds: string;
   idx: number;
+  version?: string | null;
 }
 
-export function MiniEePlot({ ds, idx }: Props) {
-  const { data: rows = [] } = useEpisodeFrames(ds, idx);
+export function MiniEePlot({ ds, idx, version }: Props) {
+  const { data: rows = [] } = useEpisodeFrames(ds, idx, true, version);
 
   // Backend writes EE position as a 3-vector under "observation.state.ee_pos"
   // (see backend/mimicrec/recording/parquet_row.py). Element 0 = x, 1 = y, 2 = z.

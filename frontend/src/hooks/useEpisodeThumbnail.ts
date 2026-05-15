@@ -15,7 +15,12 @@ const MAX = 50;
  * write into state. The previous thumbnail is cleared at the top of each
  * cache-miss to avoid showing a stale image during the new load.
  */
-export function useEpisodeThumbnail(ds: string | undefined, idx: number | null, cam: string | undefined) {
+export function useEpisodeThumbnail(
+  ds: string | undefined,
+  idx: number | null,
+  cam: string | undefined,
+  version?: string | null,
+) {
   const [src, setSrc] = useState<string | null>(null);
 
   useEffect(() => {
@@ -23,7 +28,7 @@ export function useEpisodeThumbnail(ds: string | undefined, idx: number | null, 
       setSrc(null);
       return;
     }
-    const key = `${ds}:${idx}:${cam}`;
+    const key = `${ds}:${idx}:${cam}:${version ?? ""}`;
     const cached = cache.get(key);
     if (cached) {
       setSrc(cached);
@@ -40,7 +45,8 @@ export function useEpisodeThumbnail(ds: string | undefined, idx: number | null, 
     video.playsInline = true;
     video.crossOrigin = "anonymous";
     video.preload = "metadata";
-    video.src = `/api/datasets/${ds}/episodes/${idx}/video/${cam}`;
+    const params = version ? `?v=${encodeURIComponent(version)}` : "";
+    video.src = `/api/datasets/${ds}/episodes/${idx}/video/${cam}${params}`;
 
     const onLoaded = () => {
       if (cancelled) return;
@@ -100,7 +106,7 @@ export function useEpisodeThumbnail(ds: string | undefined, idx: number | null, 
       video.removeAttribute("src");
       try { video.load(); } catch { /* ignore */ }
     };
-  }, [ds, idx, cam]);
+  }, [ds, idx, cam, version]);
 
   return src;
 }

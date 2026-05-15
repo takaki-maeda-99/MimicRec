@@ -1,9 +1,10 @@
-import { forwardRef, useState } from "react";
+import { forwardRef, useEffect, useMemo, useState } from "react";
 
 interface Props {
   ds: string;
   idx: number;
   cam: string;
+  version?: string | null;
   /** Master video gets default controls. Secondaries get `controls={false}`
    *  and a transparent overlay that swallows pointer events.
    *  (Timeline state is driven from useEpisodeTimeline reading directly from
@@ -13,11 +14,18 @@ interface Props {
 }
 
 const VideoPlayer = forwardRef<HTMLVideoElement, Props>(function VideoPlayer(
-  { ds, idx, cam, isMaster = true },
+  { ds, idx, cam, version, isMaster = true },
   ref,
 ) {
   const [error, setError] = useState(false);
-  const src = `/api/datasets/${ds}/episodes/${idx}/video/${cam}`;
+  const src = useMemo(() => {
+    const params = version ? `?v=${encodeURIComponent(version)}` : "";
+    return `/api/datasets/${ds}/episodes/${idx}/video/${cam}${params}`;
+  }, [ds, idx, cam, version]);
+
+  useEffect(() => {
+    setError(false);
+  }, [src]);
 
   return (
     <div className="rounded-lg overflow-hidden border border-hairline bg-canvas">

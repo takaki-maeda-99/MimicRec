@@ -27,7 +27,7 @@ from mimicrec.api.util import safe_dataset_path, UnsafePathError
 from mimicrec.datasets.archive import build_archive_stream
 from mimicrec.datasets.exporters.errors import DestinationExistsError
 from mimicrec.datasets.exporters.orchestrator import export_dataset_to_local, ExportOverride
-from mimicrec.datasets.reader import iter_episodes, read_dataset_info
+from mimicrec.datasets.reader import iter_episodes, read_dataset_info, require_live_episode
 from mimicrec.recording.dataset_layout import init_dataset, dataset_paths, resolve_chunk
 from mimicrec.recording.metadata import tombstone_episode, upsert_task
 
@@ -280,18 +280,24 @@ async def download_archive(
 async def get_episode_video(request: Request, ds: str, idx: int, cam: str):
     root = get_datasets_root(request.app)
     ds_root = root / ds
+    require_live_episode(ds_root, idx)
     paths = dataset_paths(ds_root)
     chunk = resolve_chunk(idx)
     video_path = paths.episode_video(chunk, cam, idx)
     if not video_path.exists():
         raise FileNotFoundError(f"video not found: {video_path}")
-    return FileResponse(video_path, media_type="video/mp4")
+    return FileResponse(
+        video_path,
+        media_type="video/mp4",
+        headers={"Cache-Control": "no-store, max-age=0"},
+    )
 
 
 @router.get("/datasets/{ds}/episodes/{idx}/frames")
 async def get_episode_frames(request: Request, ds: str, idx: int):
     root = get_datasets_root(request.app)
     ds_root = root / ds
+    require_live_episode(ds_root, idx)
     paths = dataset_paths(ds_root)
     chunk = resolve_chunk(idx)
     pq_path = paths.episode_parquet(chunk, idx)

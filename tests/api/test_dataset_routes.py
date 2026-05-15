@@ -3,9 +3,12 @@ import zipfile
 import io
 from pathlib import Path
 import pytest
+import pyarrow as pa
+import pyarrow.parquet as pq
 from httpx import AsyncClient, ASGITransport
 from mimicrec.api.app import create_app
-from mimicrec.recording.dataset_layout import init_dataset
+from mimicrec.recording.dataset_layout import dataset_paths, init_dataset
+from mimicrec.recording.metadata import append_episode, tombstone_episode
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -104,6 +107,44 @@ async def test_episodes_have_display_index_compacting_after_delete(tmp_path: Pat
         body = r.json()
         assert body["episode_index"] == 2
         assert body["display_index"] == 2
+
+
+@pytest.mark.asyncio
+async def test_deleted_episode_media_and_frames_are_not_served(tmp_path: Path):
+    app = create_app()
+    app.state.configs_root = REPO_ROOT / "configs"
+    app.state.datasets_root = tmp_path
+
+    ds = tmp_path / "ds_media"
+    init_dataset(ds, fps=30, joint_names=["j1"], camera_names=["front"])
+    append_episode(
+        ds / "meta",
+        {
+            "episode_index": 0,
+            "task": "pick",
+            "num_frames": 1,
+            "duration_sec": 1 / 30,
+            "cameras": ["front"],
+        },
+    )
+    paths = dataset_paths(ds)
+    paths.chunk_dir(0).mkdir(parents=True, exist_ok=True)
+    pq.write_table(
+        pa.Table.from_pylist([{"timestamp": 0.0, "action.joint_pos": [0.0]}]),
+        paths.episode_parquet(0, 0),
+    )
+    video = paths.episode_video(0, "front", 0)
+    video.parent.mkdir(parents=True, exist_ok=True)
+    video.write_bytes(b"fake-mp4")
+
+    tombstone_episode(ds / "meta", 0, deleted_at_unix=1)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        r = await ac.get("/api/datasets/ds_media/episodes/0/video/front")
+        assert r.status_code == 404
+        r = await ac.get("/api/datasets/ds_media/episodes/0/frames")
+        assert r.status_code == 404
 
 
 async def test_archive_download(tmp_path: Path):

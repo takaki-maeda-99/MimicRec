@@ -14,7 +14,7 @@ import { useSecondaryVideoSync } from "../hooks/useSecondaryVideoSync";
 export default function ReplayPage() {
   const { ds, idx } = useParams<{ ds: string; idx: string }>();
   const episodeIdx = Number(idx);
-  const { data: episodes } = useEpisodes(ds || "");
+  const { data: episodes, isLoading: episodesLoading } = useEpisodes(ds || "");
   const episode = episodes?.find((e) => e.episode_index === episodeIdx);
   const replayStart = useReplayStart();
   const replayStop = useReplayStop();
@@ -22,7 +22,11 @@ export default function ReplayPage() {
   const subState = useSessionStore((s) => s.subState);
   const replayProgress = useSessionStore((s) => s.replayProgress);
 
-  const allCameras = episode?.cameras ?? ["front"];
+  const version = episode
+    ? episode.recorded_at ?? `${episode.num_frames}:${episode.duration_sec}`
+    : null;
+
+  const allCameras = episode?.cameras ?? [];
   // Hard cap: master + 3 secondaries = 4 total. If a session exposes more, we
   // only render 4 and drop the rest (rather than rendering unsynced extras that
   // are forced into the no-controls state). Most adapters expose ≤ 2 cameras.
@@ -53,6 +57,51 @@ export default function ReplayPage() {
   );
 
   if (!ds || !idx) return <div className="p-6">Invalid URL</div>;
+
+  if (episodesLoading) {
+    return (
+      <>
+        <PageHeader
+          code="§01.C"
+          title={
+            <span className="flex items-baseline gap-md">
+              Replay
+              <span className="text-steel">·</span>
+              <span className="font-mono text-caption text-ink">{ds} / ep {idx}</span>
+            </span>
+          }
+        />
+        <div className="flex-1 flex items-center justify-center text-stone text-body-sm">
+          Loading episode...
+        </div>
+      </>
+    );
+  }
+
+  if (!episodesLoading && !episode) {
+    return (
+      <>
+        <PageHeader
+          code="§01.C"
+          title={
+            <span className="flex items-baseline gap-md">
+              Replay
+              <span className="text-steel">·</span>
+              <span className="font-mono text-caption text-ink">{ds} / ep {idx}</span>
+            </span>
+          }
+          actions={
+            <Link to={`/datasets/${ds}/episodes`} className="text-caption text-steel hover:text-ink">
+              ← Episodes
+            </Link>
+          }
+        />
+        <div className="flex-1 flex items-center justify-center text-stone text-body-sm">
+          Episode not found or has been deleted.
+        </div>
+      </>
+    );
+  }
 
   return (
     <>
@@ -124,6 +173,7 @@ export default function ReplayPage() {
                 ds={ds}
                 idx={episodeIdx}
                 cam={cam}
+                version={version}
                 isMaster={i === 0}
                 ref={setter}
               />
@@ -138,7 +188,7 @@ export default function ReplayPage() {
               <span className="font-mono text-[10px] text-muted">click to seek</span>
             </div>
             <div className="flex-1 min-h-0">
-              <JointPlot ds={ds} idx={episodeIdx} cursorTimeSec={currentTimeSec} onSeek={seek} />
+              <JointPlot ds={ds} idx={episodeIdx} cursorTimeSec={currentTimeSec} onSeek={seek} version={version} />
             </div>
           </div>
           <div className="flex-1 min-h-0 flex flex-col border border-hairline rounded-sm bg-canvas overflow-hidden">
@@ -146,7 +196,7 @@ export default function ReplayPage() {
               End-Effector
             </div>
             <div className="flex-1 min-h-0">
-              <EndEffectorPlot ds={ds} idx={episodeIdx} cursorFrameIdx={cursorFrameIdx} />
+              <EndEffectorPlot ds={ds} idx={episodeIdx} cursorFrameIdx={cursorFrameIdx} version={version} />
             </div>
           </div>
         </div>

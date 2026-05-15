@@ -14,9 +14,14 @@ export interface FrameRow {
  * EndEffectorPlot, MiniJointPlot, MiniEePlot) share the cache so each
  * episode is fetched at most once until it becomes stale.
  */
-export function useEpisodeFrames(ds: string, idx: number, enabled = true) {
+export function useEpisodeFrames(
+  ds: string,
+  idx: number,
+  enabled = true,
+  version?: string | null,
+) {
   return useQuery<FrameRow[]>({
-    queryKey: ["episode-frames", ds, idx],
+    queryKey: ["episode-frames", ds, idx, version ?? null],
     queryFn: () =>
       apiFetch<FrameRow[]>(`/api/datasets/${ds}/episodes/${idx}/frames`),
     enabled: enabled && !!ds && Number.isFinite(idx),

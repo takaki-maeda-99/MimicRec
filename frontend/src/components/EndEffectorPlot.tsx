@@ -5,6 +5,7 @@ interface Props {
   ds: string;
   idx: number;
   cursorFrameIdx?: number;
+  version?: string | null;
 }
 
 // Backend writes EE position as a 3-vector "observation.state.ee_pos"
@@ -12,8 +13,8 @@ interface Props {
 // We use [0]=x, [1]=y for the top-down trajectory.
 const EE_KEY = "observation.state.ee_pos";
 
-export default function EndEffectorPlot({ ds, idx, cursorFrameIdx }: Props) {
-  const { data: rows = [], isLoading: loading } = useEpisodeFrames(ds, idx);
+export default function EndEffectorPlot({ ds, idx, cursorFrameIdx, version }: Props) {
+  const { data: rows = [], isLoading: loading } = useEpisodeFrames(ds, idx, true, version);
 
   const { xs, ys } = useMemo(() => {
     const xArr: number[] = [];

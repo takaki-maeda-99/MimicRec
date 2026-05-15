@@ -4,12 +4,13 @@ import { useEpisodeFrames } from "../../hooks/useEpisodeFrames";
 interface Props {
   ds: string;
   idx: number;
+  version?: string | null;
 }
 
 const TRACE_COLORS = ["#3772cf", "#d45656", "#00b48a", "#5a5a5c", "#c37d0d", "#888888"];
 
-export function MiniJointPlot({ ds, idx }: Props) {
-  const { data: rows = [] } = useEpisodeFrames(ds, idx);
+export function MiniJointPlot({ ds, idx, version }: Props) {
+  const { data: rows = [] } = useEpisodeFrames(ds, idx, true, version);
 
   const { traces, gripper, n } = useMemo(() => {
     if (!rows.length) return { traces: [] as number[][], gripper: [] as number[], n: 0 };

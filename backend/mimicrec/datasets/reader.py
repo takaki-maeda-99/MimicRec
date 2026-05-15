@@ -9,6 +9,16 @@ def iter_episodes(ds_root: Path, include_deleted: bool = False) -> Iterator[dict
     yield from read_episodes(ds_root / "meta", include_deleted=include_deleted)
 
 
+def require_live_episode(ds_root: Path, episode_idx: int) -> dict:
+    """Return metadata for a non-deleted episode, or raise FileNotFoundError."""
+    for ep in iter_episodes(ds_root, include_deleted=False):
+        if int(ep.get("episode_index", -1)) == episode_idx:
+            return ep
+    raise FileNotFoundError(
+        f"episode {episode_idx} not found in dataset '{ds_root.name}'"
+    )
+
+
 def load_replay_trajectory(ds_root: Path, episode_idx: int):
     """Read episode parquet and extract joint trajectory + native fps for replay.
 
@@ -21,6 +31,7 @@ def load_replay_trajectory(ds_root: Path, episode_idx: int):
     from mimicrec.recording.dataset_layout import dataset_paths, resolve_chunk
     import pyarrow.parquet as pq
     import numpy as np
+    require_live_episode(ds_root, episode_idx)
     paths = dataset_paths(ds_root)
     chunk = resolve_chunk(episode_idx)
     pq_path = paths.episode_parquet(chunk, episode_idx)

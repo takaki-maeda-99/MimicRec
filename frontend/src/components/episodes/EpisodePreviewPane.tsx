@@ -14,7 +14,10 @@ interface Props {
 export function EpisodePreviewPane({ ds, episode, onDelete }: Props) {
   const navigate = useNavigate();
   const masterCam = episode?.cameras?.[0];
-  const thumb = useEpisodeThumbnail(ds, episode?.episode_index ?? null, masterCam);
+  const version = episode
+    ? episode.recorded_at ?? `${episode.num_frames}:${episode.duration_sec}`
+    : null;
+  const thumb = useEpisodeThumbnail(ds, episode?.episode_index ?? null, masterCam, version);
 
   if (!episode) {
     return (
@@ -62,7 +65,7 @@ export function EpisodePreviewPane({ ds, episode, onDelete }: Props) {
           <span>Joint trajectory</span>
           <span className="font-mono text-[10px] text-muted">j1–j6 + grip</span>
         </div>
-        <MiniJointPlot ds={ds} idx={episode.episode_index} />
+        <MiniJointPlot ds={ds} idx={episode.episode_index} version={version} />
       </div>
 
       <div className="border border-hairline rounded-sm p-2">
@@ -70,7 +73,7 @@ export function EpisodePreviewPane({ ds, episode, onDelete }: Props) {
           <span>End-Effector · XY</span>
           <span className="font-mono text-[10px] text-muted">top-down</span>
         </div>
-        <MiniEePlot ds={ds} idx={episode.episode_index} />
+        <MiniEePlot ds={ds} idx={episode.episode_index} version={version} />
       </div>
 
       <div className="flex gap-2 mt-auto">
