@@ -11,7 +11,6 @@ interface SessionStore {
   teleop: string | null;
   mapper: string | null;
   cameras: string[];
-  gopros: string[];
   fps: number | null;
   previewEnabled: boolean;
   imageSources: ImageSource[];
@@ -36,7 +35,6 @@ export const useSessionStore = create<SessionStore>((set) => ({
   teleop: null,
   mapper: null,
   cameras: [],
-  gopros: [],
   fps: null,
   previewEnabled: true,
   imageSources: [],
@@ -55,7 +53,6 @@ export const useSessionStore = create<SessionStore>((set) => ({
       teleop: (data.teleop as string) ?? null,
       mapper: (data.mapper as string) ?? null,
       cameras: (data.cameras as string[]) ?? [],
-      gopros: (data.gopros as string[]) ?? [],
       imageSources: (data.image_sources as ImageSource[] | undefined) ?? [],
       fps: (data.fps as number) ?? null,
       previewEnabled: (data.preview_enabled as boolean | undefined) ?? true,

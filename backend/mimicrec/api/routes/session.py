@@ -29,7 +29,6 @@ def _clear_session_state(app) -> None:
     app.state.resolved_config = None
     app.state.error_bus = None
     app.state.camera_manager = None
-    app.state.gopro_registry = None
 
 router = APIRouter()
 
@@ -55,7 +54,6 @@ def build_state_payload(app) -> dict:
         mapper=meta.get("mapper"),
         cameras=meta.get("cameras", []),
         fps=meta.get("fps"),
-        gopros=meta.get("gopros", []),
         preview_enabled=meta.get("preview_enabled", True),
         image_sources=meta.get("slot_assignments", []),
     ).model_dump()
@@ -111,15 +109,6 @@ async def session_end(request: Request):
     await sm.end()
     _clear_session_state(request.app)
     return build_state_payload(request.app)
-
-
-@router.get("/session/gopro_pending")
-async def gopro_pending(request: Request) -> dict[str, int]:
-    reg = getattr(request.app.state, "gopro_registry", None)
-    # Reports DL-in-flight (excludes already-staged sidecars whose bytes
-    # are on the host and just await an instant commit inside save).
-    # This is the metric the frontend uses to disable save/start.
-    return {"pending": int(reg.dl_in_flight_count) if reg is not None else 0}
 
 
 @router.get("/session/state")

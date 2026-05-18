@@ -106,9 +106,9 @@ export function useConfigsWithContent(
   return useQuery({
     queryKey: ["configs-with-content", group],
     queryFn: () => apiFetch<ConfigEntry[]>(`/api/settings/configs/${group}`),
-    // Optional groups (e.g. gopros) may not have a configs/ dir on every host —
-    // a 404 means "no configs of this kind yet", not "broken". Suppress retries
-    // so the form silently hides those pickers without console noise.
+    // Optional groups may not have a configs/ dir on every host — a 404 means
+    // "no configs of this kind yet", not "broken". Suppress retries so the
+    // form silently hides those pickers without console noise.
     retry: options?.optional ? false : 3,
   });
 }
@@ -231,15 +231,6 @@ export function useReplayStop() {
       apiFetch<SessionStatePayload>("/api/replay/stop", { method: "POST" }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["session-state"] }),
   });
-}
-
-// --------------- GoPro ---------------
-
-export async function getGoProPending(): Promise<number> {
-  const r = await fetch('/api/session/gopro_pending', { cache: 'no-store' });
-  if (!r.ok) return 0;
-  const j = await r.json();
-  return j.pending ?? 0;
 }
 
 // --------------- Export ---------------

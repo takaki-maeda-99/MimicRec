@@ -27,10 +27,10 @@ def _req(**extra) -> HandTeachSessionRequest:
 
 
 @pytest.mark.asyncio
-async def test_legacy_cameras_gopros_normalized_into_slot_assignments(tmp_path):
+async def test_legacy_cameras_normalized_into_slot_assignments(tmp_path):
     """Legacy clients sending {cameras: ['mock_cam']} must be rewritten."""
     app = _make_app(tmp_path)
-    req = _req(cameras=["mock_cam"], gopros=[])
+    req = _req(cameras=["mock_cam"])
     sm = await create_session_from_request(app, req)
     try:
         slot_assigns = app.state.session_meta["slot_assignments"]
@@ -129,27 +129,3 @@ async def test_duplicate_opencv_device_id_400(tmp_path):
         dup.unlink(missing_ok=True)
 
 
-@pytest.mark.asyncio
-async def test_duplicate_gopro_usb_serial_400(tmp_path):
-    """Two GoPros sharing usb_serial must be rejected by deps before the
-    registry-level check ever runs (registry would raise ValueError → 500
-    without the deps-level wrap)."""
-    app = _make_app(tmp_path)
-    # configs/gopros/mock_gopro.yaml has usb_serial = "MOCK0001". To trigger
-    # the duplicate detection we need TWO yamls with the same serial. Create
-    # a sibling on disk temporarily.
-    import shutil
-    src = app.state.configs_root / "gopros" / "mock_gopro.yaml"
-    dup = app.state.configs_root / "gopros" / "mock_gopro_dup.yaml"
-    shutil.copy(src, dup)
-    try:
-        req = _req(slot_assignments=[
-            SlotAssignment(slot="front", device="mock_gopro"),
-            SlotAssignment(slot="wrist", device="mock_gopro_dup"),
-        ])
-        with pytest.raises(HTTPException) as exc:
-            await create_session_from_request(app, req)
-        assert exc.value.status_code == 400
-        assert "usb_serial" in str(exc.value.detail)
-    finally:
-        dup.unlink(missing_ok=True)

@@ -57,72 +57,24 @@ def precheck_start(req: StartSessionRequestDomain) -> None:
         )
 
 
-def assert_can_start_episode(session: Session, gopro_registry: object | None = None) -> None:
+def assert_can_start_episode(session: Session) -> None:
     if session.state != SessionState.READY:
         raise InvalidTransitionError(
             f"episode/start requires READY, got {session.state}"
         )
     if session.replay_active:
         raise InvalidTransitionError("episode/start blocked while replay is active")
-    # Block the next shutter while a previous episode's mp4 is still being
-    # downloaded/processed. Starting a new GoPro shutter mid-DL produces the
-    # USB-bandwidth contention that caused sporadic DL/ffmpeg failures.
-    # Auto-cycle handles this by polling /api/session/gopro_pending and
-    # retrying once the queue drains.
-    if gopro_registry is not None:
-        pending = getattr(gopro_registry, "dl_in_flight_count", 0)
-        if pending > 0:
-            raise InvalidTransitionError(
-                f"episode/start blocked: GoPro download still in flight "
-                f"({pending} pending). Wait for the previous episode's mp4 "
-                f"to finish transferring."
-            )
 
 
-def assert_can_save_episode(session: Session, gopro_registry: object | None = None) -> None:
-    """Gate episode/save while a GoPro DL is still in flight.
-
-    Allowing the operator to commit success/failure before the mp4 has
-    landed in the dataset means the parquet metadata records an episode
-    whose video may never arrive (DL timeout, ffmpeg failure on a
-    truncated file). Blocking at this transition makes save atomic: by
-    the time it returns, the GoPro file is guaranteed to be either in
-    the dataset or permanently failed (in which case mark_done already
-    cleared the sidecar and pending_count is back to zero). Discard is
-    intentionally NOT gated — the operator should always be able to
-    throw away a bad take quickly.
-    """
+def assert_can_save_episode(session: Session) -> None:
     if session.state != SessionState.REVIEW:
         raise InvalidTransitionError(
             f"episode/save requires REVIEW, got {session.state}"
         )
-    if gopro_registry is not None:
-        pending = getattr(gopro_registry, "dl_in_flight_count", 0)
-        if pending > 0:
-            raise InvalidTransitionError(
-                f"episode/save blocked: GoPro video still transferring "
-                f"({pending} pending). Wait for the mp4 to land in the "
-                f"dataset before committing the episode."
-            )
 
 
-def _episode_image_sources(cameras: CameraManager, gopro_registry: object | None) -> list[str]:
-    """Return the list of image sources (cameras + GoPros) that produced
-    video for this episode.
-
-    GoPro names are normally merged into ``CameraManager._cameras`` via the
-    preview source, but when a session is started with ``preview_enabled=False``
-    the GoPro source is intentionally not attached — yet recording still
-    happens through the GoPro device, and the resulting mp4 lands in the
-    dataset. The Replay UI iterates this list to render playback tiles, so
-    GoPro names must always be present even when their preview is disabled.
-    """
-    names = list(cameras._cameras.keys())
-    if gopro_registry is not None:
-        for g in gopro_registry.gopro_specs().keys():
-            if g not in names:
-                names.append(g)
-    return names
+def _episode_image_sources(cameras: CameraManager) -> list[str]:
+    return list(cameras._cameras.keys())
 
 
 class SessionManager:
@@ -147,7 +99,6 @@ class SessionManager:
         coordinator=None,
         ds_name=None,
         app=None,
-        gopro_registry: object | None = None,
         gripper_binarize: GripperBinarize | None = None,
     ):
         self.session = Session(mode=mode, state=SessionState.IDLE)
@@ -164,7 +115,6 @@ class SessionManager:
         self._task = task
         self._instruction = instruction
         self._fk = fk
-        self._gopro_registry = gopro_registry
         self._metrics = Metrics()
         self._coordinator = coordinator
         self._ds_name = ds_name
@@ -499,7 +449,7 @@ class SessionManager:
 
     async def episode_start(self) -> None:
         """READY -> RECORDING. Create PendingEpisode, open video writers."""
-        assert_can_start_episode(self.session, gopro_registry=self._gopro_registry)
+        assert_can_start_episode(self.session)
         # HAND_TEACH holds the arm in POSITION at idle until the operator
         # is ready to demonstrate; flip to GRAVITY_COMP now so the arm
         # becomes compliant as recording begins.
@@ -543,12 +493,6 @@ class SessionManager:
             max_sec = getattr(self, "_session_config", None)
             max_sec = (max_sec.max_episode_seconds if max_sec else None) or 120
             self._inference_watchdog_task = asyncio.create_task(self._run_watchdog(max_sec))
-        if self._gopro_registry is not None:
-            try:
-                await self._gopro_registry.episode_start(self._episode_index, time.monotonic_ns())
-            except Exception:
-                # registry is internally fail-open; don't let it break the local episode start.
-                pass
 
     async def episode_stop(self, *, stop_reason: str = "manual") -> None:
         """RECORDING -> REVIEW. Drain writer, clear pending slot, finalize."""
@@ -594,11 +538,6 @@ class SessionManager:
         self._current_pending.set(None, t_mono_ns=time.monotonic_ns())
         if self._pending:
             self._pending.finalize()
-        if self._gopro_registry is not None:
-            try:
-                await self._gopro_registry.episode_stop(self._episode_index)
-            except Exception:
-                pass
 
         # Kick off the idle return as a background task so the REVIEW UI
         # is usable immediately. The user's success/fail/discard decision
@@ -612,12 +551,7 @@ class SessionManager:
 
     async def episode_save(self, success: bool | None = None, comment: str | None = None) -> None:
         """REVIEW -> READY. Save pending episode with metadata."""
-        assert_can_save_episode(self.session, gopro_registry=self._gopro_registry)
-        if self._gopro_registry is not None:
-            try:
-                await self._gopro_registry.commit_episode(self._episode_index)
-            except Exception:
-                pass
+        assert_can_save_episode(self.session)
         if self._pending:
             now_mono = time.monotonic_ns()
             # Make sure tasks.parquet has an entry for this task name so the
@@ -649,7 +583,7 @@ class SessionManager:
                 "robot": self._robot.name,
                 "teleop": self._teleop.name if self._teleop else None,
                 "mapper": "identity",
-                "cameras": _episode_image_sources(self._cameras, self._gopro_registry),
+                "cameras": _episode_image_sources(self._cameras),
                 "mode": self.session.mode.value,
                 "fps": self._fps,
                 "success": success,
@@ -688,11 +622,6 @@ class SessionManager:
             raise InvalidTransitionError(
                 f"episode_discard requires REVIEW, got {self.session.state}"
             )
-        if self._gopro_registry is not None:
-            try:
-                await self._gopro_registry.discard_episode(self._episode_index)
-            except Exception:
-                pass
         if self._pending:
             self._pending.discard()
             self._pending = None
@@ -1278,11 +1207,5 @@ class SessionManager:
         await self._robot.disconnect()
         if self._teleop:
             await self._teleop.disconnect()
-
-        if self._gopro_registry is not None:
-            try:
-                await self._gopro_registry.stop()
-            finally:
-                self._gopro_registry = None
 
         self.session.state = SessionState.IDLE

@@ -24,7 +24,6 @@ export const lifecycleHandlers = [
       teleop: (body.teleop as string) ?? "so_leader",
       mapper: (body.mapper as string) ?? "identity",
       cameras: (body.cameras as string[]) ?? ["front"],
-      gopros: [],
       fps: FPS,
       preview_enabled: true,
     });
@@ -202,14 +201,9 @@ export const dataHandlers = [
 
   http.get("/api/settings/configs/:group", ({ params }) => {
     const group = String(params.group);
-    if (group === "gopros") {
-      return new HttpResponse(null, { status: 404 });
-    }
     const names = CONFIG_NAMES[group] ?? [];
     return HttpResponse.json(names.map((name) => ({ name, content: {} })));
   }),
-
-  http.get("/api/session/gopro_pending", () => HttpResponse.json({ pending: 0 })),
 ];
 
 function demoUnsupported() {

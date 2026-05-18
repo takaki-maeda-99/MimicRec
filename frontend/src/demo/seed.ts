@@ -37,7 +37,6 @@ export const IDLE_SESSION: SessionStatePayload = {
   teleop: null,
   mapper: null,
   cameras: [],
-  gopros: [],
   fps: null,
   preview_enabled: false,
   image_sources: [],
@@ -48,6 +47,5 @@ export const CONFIG_NAMES: Record<string, string[]> = {
   teleop: ["mock_leader", "so_leader", "web_keyboard"],
   mapper: ["identity"],
   cameras: ["mock_front"],
-  gopros: [],
   tasks: ["demo_task"],
 };

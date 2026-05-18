@@ -13,7 +13,7 @@ class SlotAssignment(BaseModel):
 class ImageSource(BaseModel):
     slot: str
     device: str
-    kind: Literal["camera", "gopro"]
+    kind: Literal["camera"]
 
 
 class _BaseSessionRequest(BaseModel):
@@ -22,7 +22,6 @@ class _BaseSessionRequest(BaseModel):
     robot: str
     cameras: list[str] = Field(default_factory=list)
     fps: int = 30
-    gopros: list[str] = Field(default_factory=list)
     preview_enabled: bool = True
     slot_assignments: list[SlotAssignment] = Field(default_factory=list)
 
@@ -77,7 +76,6 @@ class SessionStatePayload(BaseModel):
     mapper: str | None = None
     cameras: list[str] = []
     fps: int | None = None
-    gopros: list[str] = Field(default_factory=list)
     preview_enabled: bool = True
     image_sources: list[ImageSource] = Field(default_factory=list)
 

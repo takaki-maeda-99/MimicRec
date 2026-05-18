@@ -1,5 +1,5 @@
 """Existing-dataset config immutability: a session-start that disagrees with
-the recorded info.json schema (robot_type / fps / cameras+gopros set) must
+the recorded info.json schema (robot_type / fps / cameras set) must
 return 400 instead of silently appending heterogeneous episodes.
 
 LeRobot v3 datasets have a fixed features schema; mid-dataset camera

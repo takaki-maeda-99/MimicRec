@@ -36,11 +36,9 @@ export default function SessionConfigForm({ onStarted, onEditConfig }: Props) {
   const { data: roles } = useCameraRoles();
   const { data: schema } = useDatasetSchema(datasetExists ? dataset : undefined);
   const cameraConfigs = useConfigsWithContent("cameras").data ?? [];
-  const goproConfigs = useConfigsWithContent("gopros", { optional: true }).data ?? [];
-  const deviceOptions: DeviceOption[] = [
-    ...cameraConfigs.map(c => ({ name: c.name, kind: "camera" as const })),
-    ...goproConfigs.map(g => ({ name: g.name, kind: "gopro" as const })),
-  ];
+  const deviceOptions: DeviceOption[] = cameraConfigs.map(
+    c => ({ name: c.name, kind: "camera" as const }),
+  );
   const datasetSlots = schema?.image_keys ?? [];
   const formSlots = slotAssignments.map((a: SlotAssignmentDraft) => a.slot);
   const allSlotsToShow = datasetExists
@@ -256,10 +254,7 @@ export default function SessionConfigForm({ onStarted, onEditConfig }: Props) {
                     usedDevices={usedDevices}
                     onChange={(d) => setSlotDevice(slot, d)}
                     onRemove={!locked ? () => removeSlot(slot) : undefined}
-                    onEdit={(d) => {
-                      const kind = deviceOptions.find(o => o.name === d)?.kind ?? "camera";
-                      onEditConfig?.(kind === "gopro" ? "gopros" : "cameras", d, "edit");
-                    }}
+                    onEdit={(d) => onEditConfig?.("cameras", d, "edit")}
                   />
                 ))}
                 {!datasetExists && (

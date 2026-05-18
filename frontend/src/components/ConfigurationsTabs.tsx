@@ -10,7 +10,6 @@ const GROUPS: { id: ConfigGroup; label: string }[] = [
   { id: "teleop", label: "teleop" },
   { id: "mapper", label: "mapper" },
   { id: "cameras", label: "cameras" },
-  { id: "gopros", label: "gopros" },
 ];
 
 interface Props {

@@ -240,15 +240,6 @@ async def delete_config(request: Request, group: str, name: str):
                         status_code=409,
                         detail=f"active session uses this camera config (name={name})",
                     )
-        elif group == "gopros":
-            for src in meta.get("slot_assignments", []):
-                src_kind = src.get("kind") if isinstance(src, dict) else getattr(src, "kind", None)
-                src_device = src.get("device") if isinstance(src, dict) else getattr(src, "device", None)
-                if src_kind == "gopro" and src_device == name:
-                    raise HTTPException(
-                        status_code=409,
-                        detail=f"active session uses this gopro config (name={name})",
-                    )
 
     root = get_configs_root(request.app)
     path = root / group / f"{name}.yaml"
