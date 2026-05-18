@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import { useSessionStore } from "../state/session-store";
 import { fetchAuthStatus, type AuthStatus } from "../api/cloud";
-import { getGoProPending } from "../api/queries";
 import { cn } from "../lib/utils";
 
 function Row({
@@ -35,7 +34,6 @@ function Row({
 export default function SidebarStatus() {
   const robot = useSessionStore((s) => s.robot);
   const sessionState = useSessionStore((s) => s.state);
-  const gopros = useSessionStore((s) => s.gopros);
 
   const [auth, setAuth] = useState<AuthStatus | null>(null);
   useEffect(() => {
@@ -53,26 +51,6 @@ export default function SidebarStatus() {
     };
   }, []);
 
-  const [goproPending, setGoproPending] = useState(0);
-  useEffect(() => {
-    if (!gopros.length) return;
-    let alive = true;
-    const tick = async () => {
-      try {
-        const n = await getGoProPending();
-        if (alive) setGoproPending(n);
-      } catch {
-        /* swallow */
-      }
-    };
-    tick();
-    const id = window.setInterval(tick, 1000);
-    return () => {
-      alive = false;
-      window.clearInterval(id);
-    };
-  }, [gopros.length]);
-
   return (
     <div className="flex flex-col gap-1 px-md">
       <div className="text-micro-uppercase uppercase tracking-[0.18em] text-stone font-semibold pb-1">
@@ -89,13 +67,6 @@ export default function SidebarStatus() {
         v={sessionState}
         tone={sessionState === "recording" ? "rec" : sessionState === "idle" ? "idle" : "ok"}
       />
-      {gopros.length > 0 && (
-        <Row
-          k="gopro"
-          v={goproPending > 0 ? `${goproPending} pending` : "ready"}
-          tone={goproPending > 0 ? "warn" : "ok"}
-        />
-      )}
     </div>
   );
 }

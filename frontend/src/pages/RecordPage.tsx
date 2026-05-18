@@ -58,7 +58,6 @@ export default function RecordPage() {
   const _subState = useSessionStore((s) => s.subState);
   void _subState;
   const cameras = useSessionStore((s) => s.cameras);
-  const gopros = useSessionStore((s) => s.gopros);
   const previewEnabled = useSessionStore((s) => s.previewEnabled);
   const dataset = useSessionStore((s) => s.dataset);
   const task = useSessionStore((s) => s.task);
@@ -119,8 +118,7 @@ export default function RecordPage() {
 
   const inProgressIndex = (episodes?.length ?? 0) + 1;
 
-  // Merge cameras + gopros so GoPro previews are included in the two cells.
-  const previewSources = [...cameras, ...gopros];
+  const previewSources = cameras;
 
   return (
     <>
@@ -155,7 +153,7 @@ export default function RecordPage() {
         <Brief k="Robot" v={robot ?? "—"} />
         <Brief k="Mode" v={mode ?? "—"} />
         <Brief k="Teleop" v={teleop ?? "—"} />
-        <Brief k="Cameras" v={[...cameras, ...gopros].join(" · ") || "—"} mono />
+        <Brief k="Cameras" v={cameras.join(" · ") || "—"} mono />
         <Brief k="Episodes" v={`${episodes?.length ?? 0} saved`} />
       </div>
 
@@ -179,7 +177,7 @@ export default function RecordPage() {
           caption={
             previewSources[0] && (
               <div className="flex justify-between">
-                <span>{cameras.includes(previewSources[0]) ? "fixed" : "gopro"}</span>
+                <span>fixed</span>
                 <span className="font-mono text-brand-green">live</span>
               </div>
             )
@@ -199,7 +197,7 @@ export default function RecordPage() {
           caption={
             previewSources[1] && (
               <div className="flex justify-between">
-                <span>{cameras.includes(previewSources[1]) ? "wrist" : "gopro"}</span>
+                <span>wrist</span>
                 <span className="font-mono text-brand-green">live</span>
               </div>
             )

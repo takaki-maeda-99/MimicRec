@@ -329,22 +329,6 @@ async def test_delete_camera_config_refuses_409_when_in_image_sources(app, tmp_p
     assert (tmp_path / "cameras" / "front.yaml").exists()
 
 
-async def test_delete_gopro_config_refuses_409_when_in_image_sources(app, tmp_path):
-    app.state.configs_root = tmp_path
-    (tmp_path / "gopros").mkdir()
-    (tmp_path / "gopros" / "hero11.yaml").write_text("_target_: y\n")
-    _stub_active_session(
-        app,
-        image_sources=[{"slot": "observation.images.wrist", "device": "hero11", "kind": "gopro"}],
-    )
-
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-        r = await ac.delete("/api/settings/configs/gopros/hero11")
-
-    assert r.status_code == 409
-    assert (tmp_path / "gopros" / "hero11.yaml").exists()
-
-
 async def test_delete_camera_config_ignores_unrelated_image_source(app, tmp_path):
     # An image_source pointing at `wrist` must NOT block deleting `front`.
     app.state.configs_root = tmp_path

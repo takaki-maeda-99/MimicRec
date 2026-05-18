@@ -22,11 +22,6 @@ def _build_ws_state(app) -> dict:
         "teleop": meta.get("teleop"),
         "mapper": meta.get("mapper"),
         "cameras": meta.get("cameras", []),
-        # Must mirror REST /api/session/state. The frontend session-store
-        # overwrites `gopros` from every WS push, so omitting this key
-        # silently unmounts every GoPro CameraPreview tile within 200ms
-        # of session start.
-        "gopros": meta.get("gopros", []),
         "fps": meta.get("fps"),
         "preview_enabled": meta.get("preview_enabled", True),
         "image_sources": meta.get("slot_assignments", []),

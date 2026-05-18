@@ -520,42 +520,6 @@ The MVP supports `ee_delta` actions (6-DoF EE delta + gripper) with `mean_std`
 or `minmax_neg1_pos1` normalization, half-prefetch of the next chunk, and
 optional `done` auto-stop when running during RECORDING.
 
-## GoPro Hero 11 integration
-
-Record alongside USB UVC cameras with full GPMF (IMU/GPS) preservation.
-
-### Setup
-
-- Hero 11 firmware H22.01.02.32.00 or later
-- USB-C cable (GoPro genuine recommended)
-- Linux with `cdc_ncm` driver (kernel default), `NetworkManager`, `avahi-daemon`
-- `ffmpeg` ≥ 4.4 + `ffprobe`
-- Python deps: `open-gopro==0.22.0` (pinned in `backend/pyproject.toml`)
-
-### YAML config
-
-`configs/gopros/<name>.yaml`:
-
-```yaml
-_target_: mimicrec.gopro.device.GoProDevice
-name: gopro_external
-usb_serial: "<your serial>"
-width: 1280       # YAML target — downscaled from native if needed
-height: 720
-fps: 30
-aspect_mode: crop
-```
-
-### Run hardware integration test
-
-```bash
-cd backend
-GOPRO_SERIAL=<serial> env -u PYTHONPATH .venv/bin/python -m pytest \
-  ../tests/integration/test_gopro_hardware.py -v -m gopro_hardware
-```
-
-Default `pytest` runs do NOT include hardware tests (`addopts = -m "not gopro_hardware"`).
-
 ## License
 
 TBD

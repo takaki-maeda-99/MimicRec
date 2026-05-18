@@ -51,11 +51,10 @@ def init_dataset(
     gripper_convention: dict | None = None,
     proprio_layout: dict | None = None,
     camera_resolutions: dict[str, tuple[int, int]] | None = None,
-    gopro_specs: "dict[str, object] | None" = None,
 ) -> None:
     # ds_root may already exist if the caller pre-created subdirs (e.g.
-    # api/deps.py creates `.pending/` before init_dataset is invoked when a
-    # GoPro registry is configured). Tolerate an empty pre-existing ds_root.
+    # api/deps.py creates `.pending/` before init_dataset is invoked).
+    # Tolerate an empty pre-existing ds_root.
     ds_root.mkdir(parents=True, exist_ok=True)
     p = dataset_paths(ds_root)
     p.meta_dir.mkdir(parents=True, exist_ok=True)
@@ -91,25 +90,6 @@ def init_dataset(
                 "video.channels": 3, "has_audio": False,
             },
         }
-
-    if gopro_specs:
-        for name, spec in gopro_specs.items():
-            features[f"observation.images.{name}"] = {
-                "dtype": "video",
-                "shape": [spec.height, spec.width, 3],
-                "names": ["height", "width", "channels"],
-                "info": {
-                    "video.height": spec.height,
-                    "video.width": spec.width,
-                    "video.codec": spec.codec,
-                    "video.pix_fmt": "yuv420p",
-                    "video.is_depth_map": False,
-                    "video.fps": spec.fps,
-                    "video.channels": 3,
-                    "has_audio": False,
-                    "has_gpmf": True,
-                },
-            }
 
     info: dict = {
         "codebase_version": "v3.0",

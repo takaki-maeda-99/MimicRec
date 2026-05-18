@@ -45,7 +45,6 @@ def test_rest_state_includes_image_sources(client: TestClient):
     ]
     # Legacy mirror still populated by kind-filtered slot names
     assert state["cameras"] == ["front"]
-    assert state["gopros"] == []
     client.post("/api/session/end")
 
 

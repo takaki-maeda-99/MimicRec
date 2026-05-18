@@ -11,13 +11,13 @@ interface CameraDevice {
   path: string; device_id: number; available: boolean; width: number; height: number;
 }
 
-const CONFIG_GROUPS: ConfigGroup[] = ["robot", "teleop", "mapper", "cameras", "gopros"];
+const CONFIG_GROUPS: ConfigGroup[] = ["robot", "teleop", "mapper", "cameras"];
 
 export default function SettingsPage() {
   const [serialPorts, setSerialPorts] = useState<SerialDevice[]>([]);
   const [cameras, setCameras] = useState<CameraDevice[]>([]);
   const [configs, setConfigs] = useState<Record<ConfigGroup, ConfigCardEntry[]>>({
-    robot: [], teleop: [], mapper: [], cameras: [], gopros: [],
+    robot: [], teleop: [], mapper: [], cameras: [],
   });
   const [calibrations, setCalibrations] = useState<Record<string, Record<string, string[]>>>({});
   const [editing, setEditing] = useState<{ config: ConfigEntry; mode: ConfigEditorMode } | null>(null);
@@ -37,7 +37,7 @@ export default function SettingsPage() {
       setSerialPorts(serial);
       setCameras(cams);
       setCalibrations(cal);
-      const nextConfigs = { robot: [], teleop: [], mapper: [], cameras: [], gopros: [] } as Record<ConfigGroup, ConfigCardEntry[]>;
+      const nextConfigs = { robot: [], teleop: [], mapper: [], cameras: [] } as Record<ConfigGroup, ConfigCardEntry[]>;
       CONFIG_GROUPS.forEach((g, i) => { nextConfigs[g] = groups[i]; });
       setConfigs(nextConfigs);
     } catch (e) {
