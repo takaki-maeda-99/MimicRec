@@ -264,4 +264,22 @@ ZMQ REQ/REP (port 5556) で JSON:
 
 ## ライセンス
 
-TBD
+### MimicRec 本体
+
+Apache License 2.0 — [`LICENSE`](LICENSE) 参照。
+
+### Submodules / 同梱資産
+
+| パス | 上流 | ライセンス |
+|------|------|-----------|
+| `lerobot/` | [huggingface/lerobot](https://github.com/huggingface/lerobot) のフォーク（`takaki-maeda-99/lerobot`） | Apache 2.0（Hugging Face）。一部に MIT 派生コード（Diffusion Policy / FOWM / simxarm / ALOHA）と Apache 2.0 派生コード（DETR）を含む |
+| `reBotArm_control_py/` | `vectorBH6/reBotArm_control_py` のフォーク（`takaki-maeda-99/reBotArm_control_py`） | **LICENSE 未設定**（all-rights-reserved 扱い）。ハードウェア本体 [Seeed-Projects/reBot-DevArm](https://github.com/Seeed-Projects/reBot-DevArm) は CERN-OHL-W-2.0。Python 制御 SDK の再配布・改変は上流との個別調整が必要 |
+| `configs/urdf/so101/` | TheRobotStudio SO-ARM100 を [onshape-to-robot](https://github.com/Rhoban/onshape-to-robot) で生成 | Apache 2.0（元設計） |
+
+### 主要ランタイム依存
+
+**Backend (Python)**: FastAPI / Pydantic (MIT); Uvicorn / PyAV / NumPy / SciPy / OmegaConf (BSD-3-Clause); PyArrow / OpenCV-Python / huggingface_hub (Apache 2.0); placo (MIT, `kinematics` extra のみ)
+
+**Frontend (Node)**: React / React Router / Vite / TailwindCSS / TanStack Query / Zustand / Recharts / clsx / tailwind-merge / msw (MIT); lucide-react (ISC); class-variance-authority / TypeScript (Apache 2.0)
+
+完全な推移依存ツリーは `backend/pyproject.toml` / `backend/uv.lock` / `frontend/package.json` / `frontend/pnpm-lock.yaml` を参照。
