@@ -264,4 +264,22 @@ Reference implementation: [`scripts/sim_bridge_isaacsim.py`](scripts/sim_bridge_
 
 ## License
 
-TBD
+### MimicRec itself
+
+Apache License 2.0 — see [`LICENSE`](LICENSE).
+
+### Submodules / vendored assets
+
+| Path | Upstream | License |
+|------|----------|---------|
+| `lerobot/` | Fork of [huggingface/lerobot](https://github.com/huggingface/lerobot) (`takaki-maeda-99/lerobot`) | Apache 2.0 (Hugging Face). Incorporates MIT-licensed derived code (Diffusion Policy / FOWM / simxarm / ALOHA) and Apache 2.0-licensed derived code (DETR). |
+| `reBotArm_control_py/` | Fork of `vectorBH6/reBotArm_control_py` (`takaki-maeda-99/reBotArm_control_py`) | **No LICENSE file** (defaults to all rights reserved). The underlying hardware, [Seeed-Projects/reBot-DevArm](https://github.com/Seeed-Projects/reBot-DevArm), is CERN-OHL-W-2.0. Redistribution or modification of the Python control SDK requires coordination with upstream. |
+| `configs/urdf/so101/` | Generated from TheRobotStudio SO-ARM100 via [onshape-to-robot](https://github.com/Rhoban/onshape-to-robot) | Apache 2.0 (original design) |
+
+### Major runtime dependencies
+
+**Backend (Python)**: FastAPI / Pydantic (MIT); Uvicorn / PyAV / NumPy / SciPy / OmegaConf (BSD-3-Clause); PyArrow / OpenCV-Python / huggingface_hub (Apache 2.0); placo (MIT, `kinematics` extra only)
+
+**Frontend (Node)**: React / React Router / Vite / TailwindCSS / TanStack Query / Zustand / Recharts / clsx / tailwind-merge / msw (MIT); lucide-react (ISC); class-variance-authority / TypeScript (Apache 2.0)
+
+For the full transitive dependency tree, see `backend/pyproject.toml` / `backend/uv.lock` / `frontend/package.json` / `frontend/pnpm-lock.yaml`.
