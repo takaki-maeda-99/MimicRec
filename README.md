@@ -1,5 +1,8 @@
 # MimicRec
 
+Multi-arm and mobile-manipulator control uses the embodiment-independent
+[SE3Delta Motion Graph](docs/motion-graph.md).
+
 [English](README.md) | [日本語](README.ja.md)
 
 Local-first web application for collecting imitation-learning datasets from physical robot arms. Teleoperate, hand-teach, record, review, replay, and export — all in the browser, all saved as LeRobot v3 datasets.
@@ -10,7 +13,7 @@ Local-first web application for collecting imitation-learning datasets from phys
 
 ## What it does
 
-- **Teleoperation** — drive SO-101 / reBotArm / sim robots from a leader arm, keyboard, or simulator and record trajectories
+- **Teleoperation** — drive SO-101 / reBotArm / sim robots from a leader arm, keyboard, Meta Quest controller, or simulator and record trajectories
 - **Hand-teach** — move the robot under pure-compliance gravity compensation (reBotArm), with gripper friction compensation so the gripper feels light too
 - **Record → review → save** — label episodes success / failure, or discard
 - **Replay** — re-play recorded episodes on the robot (arm + gripper) with smooth setpoint interpolation between frames, under a safety watchdog
@@ -25,6 +28,7 @@ Local-first web application for collecting imitation-learning datasets from phys
 | SO-101 | LeRobot `SOFollower` (Feetech STS3215) | — | Verified |
 | SO Leader | LeRobot `SOLeader` teleoperator | — | Verified |
 | reBot Arm B601-DM (+ gripper) | `reBotArm_control_py` via ZMQ daemon | Gravity comp + gripper friction comp | Verified |
+| Meta Quest 3/3S | Unity + ROS 2 pose/joystick bridge | — | Implemented; hardware integration pending |
 | Isaac Sim (any robot) | ZMQ bridge | Supported | Verified (Franka) |
 | Mock | Built-in mock adapter | Supported | For testing |
 
@@ -56,9 +60,13 @@ MimicRec/
   frontend/                React UI (Datasets / Record / Episodes / Replay / Inference / Settings)
   configs/                 Robot / teleop / mapper / camera / inference / rebotarm YAML
   scripts/                 Run scripts, calibration, sim bridges, rebotarm daemon
-  lerobot/                 submodule (LeRobot fork with SO-101 support)
-  reBotArm_control_py/     submodule (reBotArm control SDK)
-  docs/                    Architecture notes, VLA server contract spec
+  integrations/ros2/       Meta Quest pose/joystick + camera ROS 2 bridge
+  third_party/             pinned third-party Git submodules
+    lerobot/               LeRobot fork with SO-101 support
+    reBotArm_control_py/   reBotArm control SDK
+    ROS-TCP-Endpoint/      Unity ↔ ROS 2 transport
+    unity_ros_teleoperation/ Quest XR application
+  docs/                    Architecture notes, Quest guide, VLA server contract spec
   tests/                   unit / integration / API / exit-criteria
 ```
 
@@ -92,6 +100,27 @@ bash scripts/run.sh
 
 `scripts/run_backend.sh` / `scripts/run_frontend.sh` start them individually.
 
+To manage the reBotArm daemon and Quest ROS 2 bridge from Settings, install the
+per-user services once on each host, then restart the backend:
+
+```bash
+bash scripts/install_user_services.sh
+bash scripts/run.sh
+```
+
+The installer resolves the repository's absolute path. It does not enable
+login-time autostart and does not require root. Remove the units with
+`bash scripts/install_user_services.sh --uninstall`. The lab-only UI has no
+login prompt; service mutations remain restricted to the local UI proxy,
+explicit CORS origins, and the two allow-listed units.
+
+When opening the UI from another machine, explicitly allow that origin before
+starting the backend (do not use `*`):
+
+```bash
+export MIMICREC_CORS_ORIGINS=http://192.168.1.20:5173
+```
+
 ### SO-101 teleop
 
 Calibrate each arm once. The `id` must match `id:` in `configs/robot/so101.yaml` and `configs/teleop/so_leader.yaml`:
@@ -113,16 +142,33 @@ In the UI, pick Robot: `so101` / Teleop: `so_leader` / Mapper: `identity` / Came
 
 ### reBotArm
 
-`reBotArm_control_py` requires Python 3.10, so it can't share the 3.12 backend venv. `setup.sh` creates `.venv-rebotarm` automatically when the submodule is present. Start the daemon in a separate terminal:
+`reBotArm_control_py` requires Python 3.10, so it can't share the 3.12 backend venv. `setup.sh` creates `.venv-rebotarm` automatically when the submodule is present. The recommended start path is Settings → Managed services. To run it directly in a terminal:
 
 ```bash
 .venv-rebotarm/bin/python -m rebotarm_daemon \
     --config configs/rebotarm_daemon.yaml
 ```
 
-Select `robot=rebotarm` in the UI — a big red E-stop appears on the Record page. The daemon runs a 500 Hz arm loop + 100 Hz gripper loop and keeps motors in MIT mode at all times (the replay / teleop POSITION mode is just MIT with a strong kp + gravity feedforward). It survives across session start/end, so launch it once and leave it running.
+Select `robot=rebotarm` in the UI — a big red E-stop appears on the Record page. The daemon runs a 500 Hz arm loop + 100 Hz gripper loop and keeps motors in MIT mode at all times (the replay / teleop POSITION mode is just MIT with a strong kp + gravity feedforward). Startup connects to real hardware and enters gravity compensation, so the UI requires confirmation that the workspace, arm support, and physical enable switch are safe. The managed unit fails closed when the enable switch cannot initialize and does not auto-restart after a hard crash. The API rejects stop/restart while a recording, replay, or inference session is active. A manually launched daemon is shown as an `external process`, and a second launch is refused.
 
 Config files and tuning parameters: see [reBotArm daemon config](#rebotarm-daemon-config).
+
+### Meta Quest 3/3S teleoperation
+
+Quest controller poses travel through Unity and ROS 2 into MimicRec's
+Cartesian mapper; active MimicRec camera previews travel back as compressed ROS
+images. Motion uses a hold-to-move right-grip deadman and stops on stale input
+or connection loss.
+
+```bash
+bash scripts/setup_quest_ros2.sh
+# Thereafter start it in Settings → Managed services, or run directly:
+bash scripts/run_quest_ros2.sh
+```
+
+Start the Record session with Robot `rebotarm`, Teleop `quest_ros`, Mapper
+`delta_ee_to_rebotarm`, and preview enabled. Full build, alignment, safety and
+Quest UI instructions: [`docs/quest3/`](docs/quest3/README.md).
 
 ### Isaac Sim
 
@@ -211,8 +257,8 @@ The MVP supports `ee_delta` actions (6-DoF EE delta + gripper) with `mean_std` o
 Edit the top-level `configs/rebotarm_daemon.yaml`, plus the hardware-specific configs copied from the upstream submodule:
 
 ```bash
-cp reBotArm_control_py/config/arm.yaml     configs/rebotarm/arm.yaml
-cp reBotArm_control_py/config/gripper.yaml configs/rebotarm/gripper.yaml
+cp third_party/reBotArm_control_py/config/arm.yaml     configs/rebotarm/arm.yaml
+cp third_party/reBotArm_control_py/config/gripper.yaml configs/rebotarm/gripper.yaml
 ```
 
 Set motor IDs / channels in `configs/rebotarm/arm.yaml` to match your hardware. Main daemon-side tuning knobs:
@@ -272,8 +318,10 @@ Apache License 2.0 — see [`LICENSE`](LICENSE).
 
 | Path | Upstream | License |
 |------|----------|---------|
-| `lerobot/` | Fork of [huggingface/lerobot](https://github.com/huggingface/lerobot) (`takaki-maeda-99/lerobot`) | Apache 2.0 (Hugging Face). Incorporates MIT-licensed derived code (Diffusion Policy / FOWM / simxarm / ALOHA) and Apache 2.0-licensed derived code (DETR). |
-| `reBotArm_control_py/` | Fork of `vectorBH6/reBotArm_control_py` (`takaki-maeda-99/reBotArm_control_py`) | **No LICENSE file** (defaults to all rights reserved). The underlying hardware, [Seeed-Projects/reBot-DevArm](https://github.com/Seeed-Projects/reBot-DevArm), is CERN-OHL-W-2.0. Redistribution or modification of the Python control SDK requires coordination with upstream. |
+| `third_party/lerobot/` | Fork of [huggingface/lerobot](https://github.com/huggingface/lerobot) (`takaki-maeda-99/lerobot`) | Apache 2.0 (Hugging Face). Incorporates MIT-licensed derived code (Diffusion Policy / FOWM / simxarm / ALOHA) and Apache 2.0-licensed derived code (DETR). |
+| `third_party/reBotArm_control_py/` | Fork of `vectorBH6/reBotArm_control_py` (`takaki-maeda-99/reBotArm_control_py`) | **No LICENSE file** (defaults to all rights reserved). The underlying hardware, [Seeed-Projects/reBot-DevArm](https://github.com/Seeed-Projects/reBot-DevArm), is CERN-OHL-W-2.0. Redistribution or modification of the Python control SDK requires coordination with upstream. |
+| `third_party/ROS-TCP-Endpoint/` | `leggedrobotics/ROS-TCP-Endpoint` (`main-ros2`) | Apache 2.0 |
+| `third_party/unity_ros_teleoperation/` | `leggedrobotics/unity_ros_teleoperation` | BSD 3-Clause |
 | `configs/urdf/so101/` | Generated from TheRobotStudio SO-ARM100 via [onshape-to-robot](https://github.com/Rhoban/onshape-to-robot) | Apache 2.0 (original design) |
 
 ### Major runtime dependencies

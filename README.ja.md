@@ -1,5 +1,8 @@
 # MimicRec
 
+双腕・モバイルマニピュレータ向けの構成とSE(3)表現は
+[SE3Delta Motion Graph](docs/motion-graph.md)を参照してください。
+
 [English](README.md) | [日本語](README.ja.md)
 
 ロボットアームから模倣学習用データセットを集めるためのローカルファースト Web アプリ。テレオペ・ハンドティーチ・録画・レビュー・リプレイ・書き出しまでブラウザ完結。すべて LeRobot v3 形式で保存されます。
@@ -10,7 +13,7 @@
 
 ## できること
 
-- **テレオペレーション**: SO-Leader / キーボード / シミュレータから SO-101・reBotArm・Sim ロボットを操作して軌道を録画
+- **テレオペレーション**: SO-Leader / キーボード / Meta Questコントローラ / シミュレータから SO-101・reBotArm・Sim ロボットを操作して軌道を録画
 - **ハンドティーチ**: 純コンプライアンス重力補償でロボットを手で動かして教示（reBotArm）。グリッパも摩擦補償付き
 - **録画 → レビュー → 保存**: success / failure ラベル付きで保存、要らないテイクは破棄
 - **リプレイ**: アーム + グリッパを録画通りに再生。フレーム間 setpoint 補間 + 安全ウォッチドッグ付き
@@ -25,6 +28,7 @@
 | SO-101 | LeRobot `SOFollower` (Feetech STS3215) | — | 動作確認済み |
 | SO Leader | LeRobot `SOLeader` テレオペ | — | 動作確認済み |
 | reBot Arm B601-DM (+ グリッパ) | `reBotArm_control_py` via ZMQ デーモン | 重力補償 + グリッパ摩擦補償 | 動作確認済み |
+| Meta Quest 3/3S | Unity + ROS 2 Pose/Joyブリッジ | — | 実装済み・実機統合確認待ち |
 | Isaac Sim (任意ロボット) | ZMQ ブリッジ | 対応 | 動作確認済み (Franka) |
 | Mock | 内蔵モックアダプタ | 対応 | テスト用 |
 
@@ -56,9 +60,13 @@ MimicRec/
   frontend/                React UI (Datasets / Record / Episodes / Replay / Inference / Settings)
   configs/                 ロボット・teleop・mapper・camera・inference・rebotarm YAML
   scripts/                 起動・キャリブ・sim ブリッジ・rebotarm デーモン
-  lerobot/                 submodule (SO-101 対応版 LeRobot フォーク)
-  reBotArm_control_py/     submodule (reBotArm 制御 SDK)
-  docs/                    アーキテクチャノート / VLA サーバ契約スペック
+  integrations/ros2/       Meta Quest姿勢・Joy入力 + カメラROS 2ブリッジ
+  third_party/             固定バージョンのサードパーティ Git submodule
+    lerobot/               SO-101 対応版 LeRobot フォーク
+    reBotArm_control_py/   reBotArm 制御 SDK
+    ROS-TCP-Endpoint/      Unity ↔ ROS 2通信
+    unity_ros_teleoperation/ Quest XRアプリ
+  docs/                    アーキテクチャ / Quest手順 / VLAサーバ仕様
   tests/                   unit / integration / API / exit-criteria
 ```
 
@@ -92,6 +100,25 @@ bash scripts/run.sh
 
 別々に立ち上げたい場合は `scripts/run_backend.sh` / `scripts/run_frontend.sh`。
 
+reBotArm daemon と Quest ROS 2 bridge を Settings 画面から管理する場合は、
+ホストごとに一度だけユーザーサービスをインストールしてからバックエンドを再起動します:
+
+```bash
+bash scripts/install_user_services.sh
+bash scripts/run.sh
+```
+
+リポジトリの絶対パスはインストール時に解決されます。ユニットはログイン時の自動起動を
+有効にせず、root 権限も使用しません。アンインストールは
+`bash scripts/install_user_services.sh --uninstall` です。ラボ内利用を前提としてUI認証はありませんが、
+サービス操作APIはローカルUIプロキシ、明示したCORS Origin、固定ユニットだけに制限されます。
+
+別端末からUIを開く場合は、バックエンド起動前にそのOriginを明示します（`*`は使用しません）:
+
+```bash
+export MIMICREC_CORS_ORIGINS=http://192.168.1.20:5173
+```
+
 ### SO-101 テレオペ
 
 最初に一度だけキャリブレーション。`id` は `configs/robot/so101.yaml` と `configs/teleop/so_leader.yaml` の `id:` と完全一致させる必要があります:
@@ -113,16 +140,28 @@ UI 側では Robot: `so101` / Teleop: `so_leader` / Mapper: `identity` / Cameras
 
 ### reBotArm
 
-`reBotArm_control_py` は Python 3.10 必須なので、3.12 のバックエンド venv とは別に専用 venv が要ります。`setup.sh` は `reBotArm_control_py` submodule が存在するときに `.venv-rebotarm` を自動で作ります。デーモンを別ターミナルで起動:
+`reBotArm_control_py` は Python 3.10 必須なので、3.12 のバックエンド venv とは別に専用 venv が要ります。`setup.sh` は `reBotArm_control_py` submodule が存在するときに `.venv-rebotarm` を自動で作ります。推奨の起動方法は Settings → Managed services です。ターミナルから直接起動する場合:
 
 ```bash
 .venv-rebotarm/bin/python -m rebotarm_daemon \
     --config configs/rebotarm_daemon.yaml
 ```
 
-UI で `robot=rebotarm` を選択すると Record ページに大きな赤い E-stop が出ます。デーモンが 500Hz アーム + 100Hz グリッパの制御ループを保持し、モータは常時 MIT モードで稼働（リプレイ/テレオペ用 POSITION モードは MIT + 強い kp + 重力 FF の別名）。バックエンドの session start/end を跨いで生存するので、一度起動して放置で OK。
+UI で `robot=rebotarm` を選択すると Record ページに大きな赤い E-stop が出ます。デーモンが 500Hz アーム + 100Hz グリッパの制御ループを保持し、モータは常時 MIT モードで稼働（リプレイ/テレオペ用 POSITION モードは MIT + 強い kp + 重力 FF の別名）。起動時点で実機へ接続して重力補償に入るため、UI は作業空間・支持・物理 enable switch の確認を要求します。管理サービスではenable switchの初期化失敗をfail-closedとし、ハードクラッシュ後も自動再起動しません。録画・リプレイ・推論セッション中の停止や再起動は API 側で拒否されます。手動起動済みdaemonがある場合は`external process`として検出し、二重起動を拒否します。
 
 設定ファイルとチューニング項目は[こちら](#rebotarm-デーモン設定)。
+
+### Meta Quest 3/3S テレオペ
+
+Questコントローラ姿勢をUnity・ROS 2経由でMimicRecのCartesian mapperへ送り、MimicRecのカメラpreviewを圧縮ROS ImageとしてQuestへ返します。右グリップのhold-to-moveデッドマン方式で、入力停止・通信断時にも停止します。
+
+```bash
+bash scripts/setup_quest_ros2.sh
+# 以後は Settings → Managed services から起動、または:
+bash scripts/run_quest_ros2.sh
+```
+
+Recordでは Robot `rebotarm`、Teleop `quest_ros`、Mapper `delta_ee_to_rebotarm`、preview有効を選択します。ビルド・座標合わせ・安全確認・Quest内操作は [`docs/quest3/`](docs/quest3/README.md) を参照してください。
 
 ### Isaac Sim
 
@@ -211,8 +250,8 @@ MVP は `ee_delta` action（6-DoF EE 差分 + グリッパ）+ `mean_std` / `min
 トップレベルの `configs/rebotarm_daemon.yaml` と、上流 submodule からコピーする HW 固有 config を編集します:
 
 ```bash
-cp reBotArm_control_py/config/arm.yaml     configs/rebotarm/arm.yaml
-cp reBotArm_control_py/config/gripper.yaml configs/rebotarm/gripper.yaml
+cp third_party/reBotArm_control_py/config/arm.yaml     configs/rebotarm/arm.yaml
+cp third_party/reBotArm_control_py/config/gripper.yaml configs/rebotarm/gripper.yaml
 ```
 
 `configs/rebotarm/arm.yaml` のモータ ID / channel を実機に合わせます。デーモン側の主なチューニング項目:
@@ -272,8 +311,10 @@ Apache License 2.0 — [`LICENSE`](LICENSE) 参照。
 
 | パス | 上流 | ライセンス |
 |------|------|-----------|
-| `lerobot/` | [huggingface/lerobot](https://github.com/huggingface/lerobot) のフォーク（`takaki-maeda-99/lerobot`） | Apache 2.0（Hugging Face）。一部に MIT 派生コード（Diffusion Policy / FOWM / simxarm / ALOHA）と Apache 2.0 派生コード（DETR）を含む |
-| `reBotArm_control_py/` | `vectorBH6/reBotArm_control_py` のフォーク（`takaki-maeda-99/reBotArm_control_py`） | **LICENSE 未設定**（all-rights-reserved 扱い）。ハードウェア本体 [Seeed-Projects/reBot-DevArm](https://github.com/Seeed-Projects/reBot-DevArm) は CERN-OHL-W-2.0。Python 制御 SDK の再配布・改変は上流との個別調整が必要 |
+| `third_party/lerobot/` | [huggingface/lerobot](https://github.com/huggingface/lerobot) のフォーク（`takaki-maeda-99/lerobot`） | Apache 2.0（Hugging Face）。一部に MIT 派生コード（Diffusion Policy / FOWM / simxarm / ALOHA）と Apache 2.0 派生コード（DETR）を含む |
+| `third_party/reBotArm_control_py/` | `vectorBH6/reBotArm_control_py` のフォーク（`takaki-maeda-99/reBotArm_control_py`） | **LICENSE 未設定**（all-rights-reserved 扱い）。ハードウェア本体 [Seeed-Projects/reBot-DevArm](https://github.com/Seeed-Projects/reBot-DevArm) は CERN-OHL-W-2.0。Python 制御 SDK の再配布・改変は上流との個別調整が必要 |
+| `third_party/ROS-TCP-Endpoint/` | `leggedrobotics/ROS-TCP-Endpoint`（`main-ros2`） | Apache 2.0 |
+| `third_party/unity_ros_teleoperation/` | `leggedrobotics/unity_ros_teleoperation` | BSD 3-Clause |
 | `configs/urdf/so101/` | TheRobotStudio SO-ARM100 を [onshape-to-robot](https://github.com/Rhoban/onshape-to-robot) で生成 | Apache 2.0（元設計） |
 
 ### 主要ランタイム依存
