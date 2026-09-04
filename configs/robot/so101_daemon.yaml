@@ -1,0 +1,27 @@
+_target_: mimicrec.adapters.so101_zmq.SO101ZmqAdapter
+address: tcp://localhost:5559
+heartbeat_interval_ms: 200
+request_timeout_ms: 1000
+
+replay:
+  ramp_duration_sec: 2
+  max_joint_velocity: 720
+  max_joint_acceleration: 30000
+  max_joint_position_jump: 80
+  command_timeout_sec: 0.2
+  watchdog_hz: 20
+
+kinematics:
+  urdf_path: configs/urdf/so101/so101.urdf
+  target_frame: gripper_frame_link
+  joint_names: [shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll]
+
+inference_safety:
+  max_joint_delta_per_step_deg: 2
+  slow_stop_ticks: 5
+  joint_limits_deg:
+    shoulder_pan: [-110.0, 110.0]
+    shoulder_lift: [-100.0, 100.0]
+    elbow_flex: [-96.83, 96.83]
+    wrist_flex: [-95.0, 95.0]
+    wrist_roll: [-157.21, 162.79]

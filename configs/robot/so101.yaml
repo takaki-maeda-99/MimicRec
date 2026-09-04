@@ -1,5 +1,5 @@
 _target_: mimicrec.adapters.so101.SO101Adapter
-port: /dev/ttyACM4
+port: /dev/ttyACM0
 id: my_arm
 replay:
   ramp_duration_sec: 2

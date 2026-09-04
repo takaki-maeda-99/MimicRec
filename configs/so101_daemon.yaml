@@ -1,0 +1,53 @@
+port: /dev/so101_follower
+arm_id: my_arm
+zmq_address: tcp://*:5559
+state_rate_hz: 50
+heartbeat_timeout_ms: 500
+# Backward-compatible fallback only. Every arm joint used by this deployment
+# is explicitly listed under arm_p_coefficients below, so changing this value
+# does not silently change one unnamed joint.
+arm_p_coefficient: 96
+# Per-joint STS3215 position P gains. Higher is stiffer/tighter; lower is more
+# compliant/smoother. These are arm joints only; the gripper retains its own
+# LeRobot current/torque protection and PID settings.
+arm_p_coefficients:
+  # Base yaw: left/right sweep.
+  shoulder_pan: 32
+  # Shoulder pitch: raises/lowers the complete arm.
+  # P=120 visibly hunts around a fixed Quest target (about 1.9 deg
+  # peak-to-peak in the loaded posture audit). P=64 removed the hunt; use 48
+  # for a little more compliance after the operator's live Quest check.
+  shoulder_lift: 32
+  # Elbow pitch: bends/extends the forearm.
+  elbow_flex: 64
+  # Wrist pitch: tilts the gripper up/down.
+  wrist_flex: 96
+  # Tool-axis roll: rotates the gripper about its forward axis.
+  wrist_roll: 120
+# Keep servo integral disabled. Empirical outer-loop overdrive caused a
+# direction-dependent oscillation, so only the stable per-joint P gains above
+# are retained.
+arm_i_coefficient: 0
+# Gripper PID is independent from the five arm joints. P=32 overcomes the
+# final linkage friction that left the P=16 default stalled around raw 4.8.
+# LeRobot's Max_Torque_Limit=500, Protection_Current=250 and
+# Overload_Torque=25 remain unchanged.
+gripper_p_coefficient: 48
+gripper_i_coefficient: 0
+gripper_d_coefficient: 32
+# LeRobot configures the STS3215 acceleration to its maximum (254). Use the
+# servo's native ramp for smoother streamed Cartesian motion.
+arm_acceleration: 254
+# Zero is the STS3215 position-mode unlimited-speed setting. Software-side
+# limiting was measurably sluggish without removing encoder stepping.
+arm_goal_velocity: 0
+# Omit lock_path to use the shared user runtime directory
+# ($XDG_RUNTIME_DIR/mimicrec-so101-daemon.lock). This remains visible through
+# systemd's PrivateTmp and prevents a second direct daemon process.
+
+limits:
+  joint_pos_min_deg: [-110.0, -100.0, -96.83, -95.0, -157.21]
+  joint_pos_max_deg: [110.0, 100.0, 96.83, 95.0, 162.79]
+  max_joint_step_deg: 8
+  gripper_min: 0
+  gripper_max: 100
