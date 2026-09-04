@@ -11,6 +11,7 @@ class Session:
     state: SessionState = SessionState.READY
     sub_state: SubState | None = None
     replay_active: bool = False
+    home_active: bool = False
     stopped: asyncio.Event = field(default_factory=asyncio.Event)
     producer_paused: bool = False
     locked_instruction: str | None = None

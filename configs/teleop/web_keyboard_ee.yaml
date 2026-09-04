@@ -1,0 +1,12 @@
+_target_: mimicrec.adapters.web_teleop.WebTeleoperator
+control_mode: ee_delta
+
+# Run Cartesian control above the recording FPS so the daemon receives a
+# smoother target stream. Recording remains at the selected dataset FPS.
+control_rate_hz: 60
+
+# Motion per 60 Hz control tick while a key is held: 9 cm/s translation and
+# about 52 deg/s rotation. The mapper and daemon retain their safety clamps.
+linear_step_m: 0.0015
+angular_step_rad: 0.015
+gripper_step_rad: 0.02

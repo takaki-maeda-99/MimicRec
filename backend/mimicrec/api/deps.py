@@ -74,17 +74,172 @@ def instantiate_adapter(target_str: str, **kwargs):
     return cls(**kwargs)
 
 
+async def _create_motion_session(app, req, configs_root: Path, datasets_root: Path):
+    """Build the multi-adapter session path selected by a motion profile."""
+    import json
+
+    from mimicrec.motion.config import build_motion_profile
+    from mimicrec.recording.dataset_layout import init_motion_dataset
+    from mimicrec.session.motion_lifecycle import MotionSessionManager
+
+    error_bus = ErrorBus()
+    built = build_motion_profile(
+        req.profile, configs_root=configs_root, error_bus=error_bus
+    )
+    declared_roles = _load_camera_roles(configs_root)
+    if not req.slot_assignments and req.cameras:
+        req.slot_assignments = [
+            SlotAssignment(slot=name, device=name) for name in req.cameras
+        ]
+    seen_slots: set[str] = set()
+    seen_devices: set[str] = set()
+    resolved: list[tuple[str, str, str, dict, object]] = []
+    camera_configs: dict[str, dict] = {}
+    for assignment in req.slot_assignments:
+        if not _SLOT_NAME_RE.match(assignment.slot):
+            raise HTTPException(400, f"unsafe camera slot {assignment.slot!r}")
+        if assignment.slot in seen_slots:
+            raise HTTPException(400, f"duplicate slot {assignment.slot!r}")
+        if assignment.device in seen_devices:
+            raise HTTPException(400, f"duplicate camera device {assignment.device!r}")
+        if declared_roles and assignment.slot not in declared_roles:
+            raise HTTPException(400, f"unknown camera role {assignment.slot!r}")
+        seen_slots.add(assignment.slot)
+        seen_devices.add(assignment.device)
+        path = configs_root / "cameras" / f"{assignment.device}.yaml"
+        if not path.exists():
+            raise HTTPException(400, f"camera device {assignment.device!r} not found")
+        config = OmegaConf.to_container(OmegaConf.load(path), resolve=True)
+        adapter = instantiate_adapter(
+            str(config["_target_"]),
+            **{key: value for key, value in config.items() if key != "_target_"},
+        )
+        resolved.append((assignment.slot, assignment.device, "camera", config, adapter))
+        camera_configs[assignment.slot] = config
+
+    physical_ids: dict[int, str] = {}
+    for slot, _device, _kind, config, _adapter in resolved:
+        if "device_id" in config:
+            device_id = int(config["device_id"])
+            if device_id in physical_ids:
+                raise HTTPException(
+                    400,
+                    f"duplicate camera device_id={device_id} in "
+                    f"{physical_ids[device_id]!r} and {slot!r}",
+                )
+            physical_ids[device_id] = slot
+    cameras = {
+        slot: adapter for slot, _device, _kind, _config, adapter in resolved
+    }
+    camera_manager = CameraManager(
+        cameras=cameras,
+        error_bus=error_bus,
+        preview_enabled=req.preview_enabled,
+    )
+
+    dataset_root = datasets_root / req.dataset
+    info_path = dataset_root / "meta" / "info.json"
+    camera_resolutions = {
+        slot: (
+            int(camera_configs[slot].get("width", 640)),
+            int(camera_configs[slot].get("height", 480)),
+        )
+        for slot in cameras
+    }
+    if not info_path.exists():
+        init_motion_dataset(
+            dataset_root,
+            req.fps,
+            resources=built.resources,
+            motion_groups=built.motion_groups,
+            camera_names=list(cameras),
+            camera_resolutions=camera_resolutions,
+            profile_name=req.profile,
+        )
+    else:
+        info = json.loads(info_path.read_text())
+        if info.get("robot_type") != "motion_graph":
+            raise HTTPException(
+                400, "existing dataset is not a multi-resource motion dataset"
+            )
+        if int(info.get("fps", 0)) != int(req.fps):
+            raise HTTPException(400, "cannot change motion dataset fps")
+        schema = info.get("motion_schema") or {}
+        if schema.get("resources") != built.resources:
+            raise HTTPException(
+                400, "motion profile resources differ from the existing dataset"
+            )
+        existing_cameras = {
+            key.removeprefix("observation.images.")
+            for key in info.get("features", {})
+            if key.startswith("observation.images.")
+        }
+        if existing_cameras != set(cameras):
+            raise HTTPException(
+                400, "camera slots differ from the existing motion dataset"
+            )
+
+    resolved_config = dict(built.resolved_config)
+    resolved_config["cameras"] = camera_configs
+    resolved_config["slot_assignments"] = [
+        {"slot": slot, "device": device, "kind": kind, "device_config": config}
+        for slot, device, kind, config, _adapter in resolved
+    ]
+    app.state.error_bus = error_bus
+    app.state.camera_manager = camera_manager
+    app.state.resolved_config = resolved_config
+    app.state.session_meta = {
+        "dataset": req.dataset,
+        "task": req.task,
+        "robot": "motion_graph",
+        "teleop": "motion_router",
+        "mapper": req.profile,
+        "profile": req.profile,
+        "slot_assignments": [
+            {"slot": slot, "device": device, "kind": kind}
+            for slot, device, kind, _config, _adapter in resolved
+        ],
+        "cameras": list(cameras),
+        "fps": req.fps,
+        "preview_enabled": bool(req.preview_enabled),
+    }
+    return MotionSessionManager(
+        dataset_root=dataset_root,
+        runtime=built.runtime,
+        teleop_router=built.teleop_router,
+        cameras=camera_manager,
+        fps=req.fps,
+        task=req.task,
+        instruction=getattr(req, "instruction", "") or "",
+        profile_name=req.profile,
+        home_config=built.home,
+        resolved_config=resolved_config,
+        coordinator=getattr(app.state, "push_coordinator", None),
+        ds_name=req.dataset,
+        app=app,
+    )
+
+
 async def create_session_from_request(app, req) -> SessionManager:
     """Build a SessionManager from a StartSessionRequest."""
     configs_root = get_configs_root(app)
     datasets_root = get_datasets_root(app)
+
+    if getattr(req, "mode", None) == "motion":
+        return await _create_motion_session(app, req, configs_root, datasets_root)
 
     # Load robot config and instantiate
     robot_cfg = OmegaConf.load(configs_root / "robot" / f"{req.robot}.yaml")
     # Robot YAML may carry blocks that are not adapter constructor kwargs
     # (replay safety, kinematics for EE pose, inference_safety for the
     # closed-loop VLA inference filter). Strip them before passing.
-    _robot_meta_keys = {"_target_", "replay", "kinematics", "inference_safety"}
+    _robot_meta_keys = {
+        "_target_",
+        "replay",
+        "kinematics",
+        "inference_safety",
+        "teleop_home",
+    }
     robot_kwargs = {k: v for k, v in OmegaConf.to_container(robot_cfg).items()
                    if k not in _robot_meta_keys}
     robot = instantiate_adapter(str(robot_cfg._target_), **robot_kwargs)
@@ -406,5 +561,6 @@ async def create_session_from_request(app, req) -> SessionManager:
         coordinator=getattr(app.state, "push_coordinator", None),
         ds_name=req.dataset,
         app=app,
+        mapper_name=mapper_name,
     )
     return sm

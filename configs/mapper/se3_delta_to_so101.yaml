@@ -1,0 +1,59 @@
+_target_: mimicrec.mappers.se3_delta_to_so101.SE3DeltaToSO101Mapper
+
+urdf_path: configs/urdf/so101/so101.urdf
+target_frame: gripper_frame_link
+joint_names: [shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll]
+arm_resource: left_robot.arm
+gripper_resource: left_robot.gripper
+
+# WORLD spatial increments are rotated into the SO-101 base here. This is
+# identity while the physical base axes are aligned with the Quest world.
+world_to_base_rotation: [1.0, 0.0, 0.0,
+                         0.0, 1.0, 0.0,
+                         0.0, 0.0, 1.0]
+
+# Position is the primary 3D task. Rotation uses only its joint-space
+# nullspace, so the unavailable sixth DoF is dropped instead of causing EEF
+# translation or a jump to a different global IK branch.
+jacobian_epsilon_deg: 0.05
+differential_damping: 0.002
+# Treat weaker numerical directions as the unavailable sixth Cartesian DoF;
+# damped inversion alone would amplify them into large joint commands.
+rotation_singular_value_min: 0.05
+# If the reachable projection points mostly along a different rotation axis,
+# discard it instead of producing visibly wrong coupled wrist motion.
+# The truncated-SVD projection already removes unreachable rotation.  A
+# nonzero binary alignment gate makes mixed translation/rotation chatter by
+# alternately discarding and admitting the reachable wrist component.
+rotation_projection_min_alignment: 0.0
+max_backtracking_steps: 6
+# Refine the safe interval after coarse power-of-two probing. Without this,
+# small FK residual changes snap command speed between 1, 1/2, and 1/4.
+backtracking_refinement_steps: 6
+# Match the proven reBotArm path: smooth the clutch-absolute SE(3) target
+# before IK. This absorbs ROS/WebSocket/MotionGroup phase jitter without
+# filtering joint solutions or changing the final 1:1 controller pose.
+pose_smoothing_time_constant_sec: 0.015
+# Never let one delayed input make the filter catch up by multiple control
+# ticks at once. MotionGroup runs at 60 Hz (~16.7 ms); spreading a transport
+# gap over subsequent ticks removes the isolated joint-command kick.
+pose_smoothing_max_dt_sec: 0.017
+# Every emitted joint candidate is checked again with nonlinear FK. Keep the
+# total miss below 0.5 mm and motion perpendicular to the requested direction
+# below 0.15 mm; larger tolerances are visibly wrong for 5 mm hand motions.
+max_position_error_m: 0.0005
+max_uncommanded_position_error_m: 0.00015
+max_joint_step_deg: 6.0
+# Preserve IK continuity without allowing its target to get more than one
+# bounded step ahead of a stalled physical joint.
+max_command_lead_deg: 6.0
+# Prefer shoulder/elbow for translation. The gripper frame is slightly offset
+# from the wrist-roll axis; without this metric, minimum-norm position IK uses
+# visible wrist roll for a tiny translational gain.
+position_joint_weights: [1.0, 1.0, 1.0, 3.0, 30.0]
+# Limits from the pinned SO-101 URDF, not the broader calibration envelope.
+joint_pos_min_deg: [-110.0, -100.0, -96.83, -95.0, -157.21]
+joint_pos_max_deg: [110.0, 100.0, 96.83, 95.0, 162.79]
+
+gripper_open: 100.0
+gripper_closed: 0.0

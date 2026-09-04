@@ -1,0 +1,82 @@
+_target_: mimicrec.mappers.delta_ee_to_rebotarm.DeltaEEToReBotArmMapper
+
+rebotarm_urdf_path: third_party/reBotArm_control_py/urdf/reBot-DevArm_fixend_description/urdf/reBot-DevArm_fixend.urdf
+rebotarm_ee_frame: end_link
+rebotarm_arm_joints: [joint1, joint2, join3, joint4, joint5, joint6]
+rebotarm_package_dirs: [third_party/reBotArm_control_py/urdf]
+
+# Quest relative transforms are expressed in the clutch-time EEF frame.
+delta_frame: ee_local
+translation_scale: 1.0
+rotation_scale: 1.0
+
+ik_position_weight: 1.0
+# During pure wrist rotation, preserving the EEF pivot position takes
+# priority. Orientation still converges through repeated bounded steps.
+ik_orientation_weight: 0.2
+
+# Per-control-tick input guards. The keyboard teleoperator's configured
+# steps are deliberately smaller than these limits.
+max_linear_delta_m: 0.01
+max_angular_delta_rad: 0.10
+
+# Absolute Quest offsets are separately bounded while preserving 1:1 motion
+# inside these limits. Joint command changes remain capped below.
+max_pose_linear_offset_m: 0.5
+max_pose_angular_offset_rad: 3.141592653589793
+
+# A fast controller gesture still reaches the exact absolute target, but IK
+# sees it as bounded 60 Hz SE(3) steps instead of one large local-solver jump.
+max_pose_linear_step_m: 0.020
+max_pose_angular_step_rad: 0.16
+
+# The ROS bridge already interpolates bursty Quest samples. Add only a short
+# SE(3) low-pass here to soften residual 60 Hz position/orientation steps
+# without changing the 1:1 final pose or the safety/rate limits below.
+pose_smoothing_time_constant_sec: 0.015
+pose_smoothing_max_dt_sec: 0.05
+
+workspace_radius_m: 0.65
+workspace_z_min_m: 0.02
+workspace_z_max_m: 0.8
+max_joint_step_deg: 5.0
+
+# Never interpolate individual joints toward a discontinuous IK solution.
+# Halve the Cartesian step and solve again until a complete continuous
+# solution fits inside the per-tick joint bound.
+max_ik_backtracking_steps: 6
+ik_posture_weight: 0.02
+ik_velocity_limit_deg_s: 300.0
+ik_control_rate_hz: 60.0
+ik_hard_position_constraint: true
+
+# Physical limits from the pinned reBotArm URDF. Keep the same limits in the
+# daemon so a mapper or transport defect cannot bypass them.
+joint_pos_min_deg: [-160.428, -179.909, -179.909, -107.143, -89.954, -179.909]
+joint_pos_max_deg: [160.428, 0.0, 0.0, 89.954, 89.954, 179.909]
+
+# Horizontal table plane in the robot-base frame. Every selected URDF
+# collision mesh AABB is checked at intermediate joint-space samples before a
+# command is emitted. Adjust the plane normal/offset for a tilted base mount.
+floor_plane_normal: [0.0, 0.0, 1.0]
+floor_plane_offset_m: 0.0
+floor_clearance_m: 0.01
+floor_collision_frames: [link2, link3, link4, link5, link6, end_link]
+floor_path_samples: 7
+
+# Reject numerically valid IK outputs that do not actually reach the target.
+# This is the practical singular/unreachable-target guard provided by the
+# current Placo wrapper (it does not expose Jacobian conditioning).
+max_ik_position_error_m: 0.001
+max_ik_orientation_error_rad: 0.08
+# Seed local IK from the command that was actually sent. The raw solution may
+# be several joint-step-limited ticks ahead of the physical arm.
+seed_from_last_command: true
+seed_from_last_ik: false
+lock_joints_at_init: []
+
+gripper_min_rad: -5.5
+gripper_max_rad: -0.0
+gripper_open_rad: -5.5
+gripper_closed_rad: -0.0
+gripper_smoothing_time_constant_sec: 0.05

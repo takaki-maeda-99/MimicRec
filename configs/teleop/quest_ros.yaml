@@ -1,0 +1,7 @@
+_target_: mimicrec.adapters.web_teleop.QuestRosTeleoperator
+
+# Must be slightly longer than the bridge watchdog in
+# integrations/ros2/mimicrec_quest_bridge/config/quest3.yaml. This second
+# timeout is an independent backend-side stop if the bridge process dies.
+control_rate_hz: 60
+input_timeout_sec: 0.30

@@ -122,5 +122,107 @@ def init_dataset(
     _atomic_write_parquet(pa.table({"task": [], "task_index": [], "instruction": []}, schema=schema), p.tasks_parquet)
 
 
+def init_motion_dataset(
+    ds_root: Path,
+    fps: int,
+    *,
+    resources: dict[str, dict],
+    motion_groups: dict[str, dict],
+    camera_names: list[str],
+    camera_resolutions: dict[str, tuple[int, int]] | None = None,
+    profile_name: str | None = None,
+) -> None:
+    """Initialize a namespaced multi-resource dataset.
+
+    The ordinary LeRobot bookkeeping fields and videos remain unchanged. The
+    action/observation features are added per named resource and Motion Group,
+    avoiding an embodiment-specific concatenation in the authoritative data.
+    """
+
+    init_dataset(
+        ds_root,
+        fps,
+        joint_names=[],
+        camera_names=camera_names,
+        robot_type="motion_graph",
+        camera_resolutions=camera_resolutions,
+    )
+    info_path = dataset_paths(ds_root).meta_dir / "info.json"
+    info = json.loads(info_path.read_text())
+    features = info["features"]
+    for resource_name, spec in resources.items():
+        kind = str(spec.get("kind", "joint"))
+        if kind == "joint":
+            names = [str(name) for name in spec.get("joint_names", [])]
+            if not names:
+                raise ValueError(
+                    f"joint resource {resource_name!r} requires joint_names"
+                )
+            for suffix in ("joint_pos", "joint_vel", "joint_effort"):
+                features[f"observation.state.{resource_name}.{suffix}"] = {
+                    "dtype": "float32",
+                    "shape": [len(names)],
+                    "names": names,
+                    "unit": (
+                        "rad_s" if suffix == "joint_vel"
+                        else "rad" if suffix == "joint_pos"
+                        else "native"
+                    ),
+                }
+            features[f"action.resource.{resource_name}.joint_pos"] = {
+                "dtype": "float32",
+                "shape": [len(names)],
+                "names": names,
+                "unit": "rad",
+            }
+        elif kind == "scalar":
+            for suffix in ("position", "velocity", "effort"):
+                features[f"observation.state.{resource_name}.{suffix}"] = {
+                    "dtype": "float32", "shape": [1], "names": [resource_name]
+                }
+            features[f"action.resource.{resource_name}.position"] = {
+                "dtype": "float32", "shape": [1], "names": [resource_name]
+            }
+        elif kind == "planar":
+            features[f"observation.state.{resource_name}.pose_xy_yaw"] = {
+                "dtype": "float32", "shape": [3], "names": ["x", "y", "yaw"]
+            }
+            features[f"action.resource.{resource_name}.velocity_xy_yaw"] = {
+                "dtype": "float32", "shape": [3], "names": ["vx", "vy", "wyaw"]
+            }
+        else:
+            raise ValueError(f"unknown resource kind {kind!r}")
+
+    for group_name, spec in motion_groups.items():
+        prefix = f"action.motion.{group_name}"
+        features[f"{prefix}.se3_delta"] = {
+            "dtype": "float32",
+            "shape": [6],
+            "names": ["dx", "dy", "dz", "dRx", "dRy", "dRz"],
+        }
+        features[f"{prefix}.duration_sec"] = {
+            "dtype": "float32", "shape": [1], "names": None
+        }
+        features[f"{prefix}.active_mask"] = {
+            "dtype": "bool", "shape": [6], "names": None
+        }
+        for auxiliary in spec.get("auxiliary", []):
+            features[f"{prefix}.aux.{auxiliary}"] = {
+                "dtype": "float32", "shape": [1], "names": [str(auxiliary)]
+            }
+
+    info["motion_schema"] = {
+        "version": 1,
+        "representation": "se3_log_increment",
+        "default_frame": "ee_local",
+        "tangent_order": ["dx", "dy", "dz", "dRx", "dRy", "dRz"],
+        "composition": "T_next = T_current @ Exp(delta)",
+        "resources": resources,
+        "motion_groups": motion_groups,
+        "profile": profile_name,
+    }
+    _atomic_write_text(info_path, json.dumps(info, indent=2))
+
+
 def resolve_chunk(episode_index: int, episodes_per_chunk: int = 1000) -> int:
     return episode_index // episodes_per_chunk

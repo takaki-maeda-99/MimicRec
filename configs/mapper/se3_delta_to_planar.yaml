@@ -1,0 +1,5 @@
+_target_: mimicrec.mappers.se3_delta_to_planar.SE3DeltaToPlanarBaseMapper
+drive_resource: mobile_base.drive
+holonomic: false
+max_linear_velocity_m_s: 0.5
+max_angular_velocity_rad_s: 1.0

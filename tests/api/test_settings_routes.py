@@ -243,7 +243,38 @@ async def test_put_non_camera_config_skips_validation(app, tmp_path):
     assert "dof: 7" in (robot_dir / "mock.yaml").read_text()
 
 
-def _stub_active_session(app, *, robot=None, teleop=None, mapper=None, image_sources=None):
+async def test_invalid_motion_profile_is_rejected_before_write(app, tmp_path):
+    (tmp_path / "motion_profiles").mkdir()
+    app.state.configs_root = tmp_path
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        response = await ac.post(
+            "/api/settings/configs/motion_profiles/broken",
+            json={"content": {
+                "version": 1,
+                "adapters": {},
+                "inputs": {},
+                "motion_groups": {},
+            }},
+        )
+
+    assert response.status_code == 409
+    assert "invalid Motion Graph" in response.json()["detail"]
+    assert not (tmp_path / "motion_profiles/broken.yaml").exists()
+
+
+async def test_config_crud_rejects_path_traversal(app, tmp_path):
+    app.state.configs_root = tmp_path
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        response = await ac.post(
+            "/api/settings/configs/motion_profiles/..",
+            json={"content": {}},
+        )
+    assert response.status_code in {400, 404, 405}
+    assert not (tmp_path / "motion_profiles.yaml").exists()
+
+
+def _stub_active_session(app, *, robot=None, teleop=None, mapper=None, profile=None, image_sources=None):
     """Install a stub session_manager + session_meta on the app so
     the DELETE handler's `active` check reads as non-idle."""
     sm = MagicMock()
@@ -256,8 +287,22 @@ def _stub_active_session(app, *, robot=None, teleop=None, mapper=None, image_sou
         "robot": robot,
         "teleop": teleop,
         "mapper": mapper,
+        "profile": profile,
         "slot_assignments": image_sources or [],
     }
+
+
+async def test_delete_config_refuses_active_motion_profile(app, tmp_path):
+    app.state.configs_root = tmp_path
+    (tmp_path / "motion_profiles").mkdir()
+    (tmp_path / "motion_profiles" / "live.yaml").write_text("version: 1\n")
+    _stub_active_session(app, profile="live")
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        response = await ac.delete("/api/settings/configs/motion_profiles/live")
+
+    assert response.status_code == 409
+    assert (tmp_path / "motion_profiles/live.yaml").exists()
 
 
 def _stub_idle_manager(app):

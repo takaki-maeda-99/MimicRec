@@ -1,0 +1,37 @@
+name: motion_right_se3_example
+description: "Example SE(3)-log token contract for the right_hand Motion Group."
+motion_group: right_hand
+
+endpoint:
+  url: "http://localhost:8001/predict"
+  method: POST
+  timeout_s: 5.0
+  retry: {max_attempts: 0}
+
+request:
+  images:
+    front: {field: image_primary, encoding: jpeg_base64, resize: [224, 224], jpeg_quality: 90}
+    wrist: {field: image_wrist, encoding: jpeg_base64, resize: [224, 224], jpeg_quality: 90}
+  state:
+    field: proprio
+    components: [ee_pos, ee_rotvec, gripper_pos]
+    normalization: {method: none}
+  instruction: {field: instruction}
+  extra_fields:
+    action_representation: se3_log_increment
+    motion_group: right_hand
+
+response:
+  actions_path: actions
+  chunk: {expected_size: 8, on_size_mismatch: reject}
+  action:
+    type: ee_delta
+    frame: ee_local
+    pose: {units: se3_log_increment}
+    gripper: {kind: absolute, units: normalized_0_1}
+    components: [ee_delta, gripper]
+    normalization: {method: none}
+
+loop:
+  prefetch_threshold: 0.5
+  max_inflight: 1

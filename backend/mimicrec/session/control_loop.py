@@ -1,12 +1,14 @@
 from __future__ import annotations
-import asyncio
-from typing import Callable, Awaitable
+from typing import Callable
 
-from mimicrec.adapters.robot import RobotMode
 from mimicrec.mappers.base import TeleopMapper
 from mimicrec.session.state import Session
 from mimicrec.types import (
-    RobotCommand, RobotState, SampleBundle, SessionState, Stamped, TeleopAction,
+    RobotCommand,
+    RobotState,
+    SampleBundle,
+    SessionState,
+    TeleopAction,
 )
 from mimicrec.util.clock import Clock
 from mimicrec.util.latest_value import LatestValue
@@ -27,9 +29,16 @@ async def run_teleop_control_loop(
     enqueue: EnqueueFn,
     clock: Clock,
     metrics: Metrics,
+    control_fps: int | None = None,
 ) -> None:
-    tick_interval_ns = 1_000_000_000 // fps
+    # Cartesian keyboard control benefits from a higher command rate than the
+    # dataset/camera FPS. Recording remains at ``fps`` while mapping and
+    # dispatch can run at ``control_fps``.
+    tick_interval_ns = 1_000_000_000 // (control_fps or fps)
+    record_interval_ns = 1_000_000_000 // fps
     next_tick_ns = clock.monotonic_ns() + tick_interval_ns
+    next_record_ns = clock.monotonic_ns()
+    was_recording = False
 
     while not session.stopped.is_set():
         tick_t = clock.monotonic_ns()
@@ -40,7 +49,12 @@ async def run_teleop_control_loop(
             next_tick_ns = tick_t + tick_interval_ns
 
         phase = session.state
+        if session.home_active:
+            await clock.sleep_until(next_tick_ns)
+            next_tick_ns += tick_interval_ns
+            continue
         if phase == SessionState.REVIEW:
+            was_recording = False
             await clock.sleep_until(next_tick_ns)
             next_tick_ns += tick_interval_ns
             continue
@@ -59,25 +73,44 @@ async def run_teleop_control_loop(
             metrics.inc("stale_sample_count")
 
         # Skip if teleop hasn't produced a valid action yet (e.g. WebTeleoperator before browser connects)
-        if action.value.target_joint_pos is None and action.value.ee_delta is None:
+        if (
+            action.value.target_joint_pos is None
+            and action.value.ee_delta is None
+            and action.value.ee_pose_offset is None
+            and action.value.ee_pose_active is None
+        ):
             await clock.sleep_until(next_tick_ns)
             next_tick_ns += tick_interval_ns
             continue
 
         command = mapper.map(action.value, state.value)
         command.t_mono_ns = clock.monotonic_ns()
+        if hasattr(mapper, "telemetry"):
+            for name, value in mapper.telemetry(state.value, command).items():
+                metrics.set_gauge(name, float(value))
 
         if not session.replay_active:
             command_goal_slot.set(command, t_mono_ns=command.t_mono_ns)
 
         if phase == SessionState.RECORDING:
-            frames = {name: slot.peek() for name, slot in camera_slots.items()}
-            enqueue(SampleBundle(
-                tick_t_mono_ns=tick_t,
-                state=state,
-                action=command,
-                frames=frames,
-            ))
+            if not was_recording:
+                next_record_ns = tick_t
+                was_recording = True
+            if tick_t >= next_record_ns:
+                frames = {name: slot.peek() for name, slot in camera_slots.items()}
+                enqueue(
+                    SampleBundle(
+                        tick_t_mono_ns=tick_t,
+                        state=state,
+                        action=command,
+                        frames=frames,
+                    )
+                )
+                next_record_ns += record_interval_ns
+                if next_record_ns <= tick_t:
+                    next_record_ns = tick_t + record_interval_ns
+        else:
+            was_recording = False
 
         await clock.sleep_until(next_tick_ns)
         next_tick_ns += tick_interval_ns

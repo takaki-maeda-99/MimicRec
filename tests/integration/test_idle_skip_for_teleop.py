@@ -6,7 +6,7 @@
 - INFERENCE: 常にスキップ
 """
 from __future__ import annotations
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
@@ -17,11 +17,16 @@ from mimicrec.cameras.mock_camera import MockCamera
 from mimicrec.cameras.manager import CameraManager
 from mimicrec.mappers.identity import IdentityMapper
 from mimicrec.session.lifecycle import SessionManager
-from mimicrec.types import SessionMode
+from mimicrec.errors import InvalidTransitionError
+from mimicrec.types import SessionMode, SessionState
 from mimicrec.util.error_bus import ErrorBus
 
 
-def _build_sm(mode: SessionMode, dataset_root) -> SessionManager:
+def _build_sm(
+    mode: SessionMode,
+    dataset_root,
+    resolved_config: dict | None = None,
+) -> SessionManager:
     bus = ErrorBus()
     return SessionManager(
         dataset_root=dataset_root,
@@ -32,7 +37,7 @@ def _build_sm(mode: SessionMode, dataset_root) -> SessionManager:
         mode=mode,
         fps=30,
         error_bus=bus,
-        resolved_config={},
+        resolved_config=resolved_config or {},
         replay_safety=None,
     )
 
@@ -119,3 +124,54 @@ async def test_replay_cleanup_swallows_idle_failure(tmp_path):
     fail = AsyncMock(side_effect=RuntimeError("daemon dead"))
     with patch("mimicrec.session.lifecycle.move_to_idle", new=fail):
         await sm._replay_cleanup()  # must not raise
+
+
+@pytest.mark.asyncio
+async def test_teleop_home_pauses_control_and_resets_mapper(tmp_path):
+    sm = _build_sm(SessionMode.TELEOP, tmp_path)
+    sm.session.state = SessionState.READY
+    reset = Mock()
+    sm._mapper = Mock(reset=reset)
+    with patch("mimicrec.session.lifecycle.move_to_idle", new=AsyncMock()) as move:
+        await sm.return_home()
+
+    move.assert_awaited_once()
+    assert move.call_args.kwargs["duration_sec"] == 3.0
+    assert move.call_args.kwargs["after_mode"] == RobotMode.POSITION
+    reset.assert_called_once_with()
+    assert sm.session.home_active is False
+    released = sm._teleop_slot.peek()
+    assert released is not None
+    assert released.value.ee_pose_active is False
+
+
+@pytest.mark.asyncio
+async def test_teleop_home_uses_robot_specific_speed_config(tmp_path):
+    sm = _build_sm(
+        SessionMode.TELEOP,
+        tmp_path,
+        resolved_config={
+            "robot": {
+                "teleop_home": {
+                    "duration_sec": 2.0,
+                    "fps": 30,
+                    "hold_sec": 0.3,
+                }
+            }
+        },
+    )
+    sm.session.state = SessionState.READY
+    with patch("mimicrec.session.lifecycle.move_to_idle", new=AsyncMock()) as move:
+        await sm.return_home()
+
+    assert move.call_args.kwargs["duration_sec"] == 2.0
+    assert move.call_args.kwargs["fps"] == 30
+    assert move.call_args.kwargs["hold_sec"] == 0.3
+
+
+@pytest.mark.asyncio
+async def test_home_is_rejected_while_recording(tmp_path):
+    sm = _build_sm(SessionMode.TELEOP, tmp_path)
+    sm.session.state = SessionState.RECORDING
+    with pytest.raises(InvalidTransitionError, match="READY"):
+        await sm.return_home()

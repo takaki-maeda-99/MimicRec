@@ -5,7 +5,8 @@ from fastapi import APIRouter, HTTPException, Request
 import numpy as np
 from pydantic import Field
 from mimicrec.api.schemas import (
-    TeleopSessionRequest, HandTeachSessionRequest, SessionStatePayload,
+    TeleopSessionRequest, HandTeachSessionRequest, MotionProfileSessionRequest,
+    SessionStatePayload,
 )
 from mimicrec.api.deps import create_session_from_request, get_session_manager, get_session_manager_or_none
 from mimicrec.errors import InvalidTransitionError
@@ -33,7 +34,7 @@ def _clear_session_state(app) -> None:
 router = APIRouter()
 
 StartSessionRequest = Annotated[
-    Union[TeleopSessionRequest, HandTeachSessionRequest],
+    Union[TeleopSessionRequest, HandTeachSessionRequest, MotionProfileSessionRequest],
     Field(discriminator="mode"),
 ]
 
@@ -52,6 +53,7 @@ def build_state_payload(app) -> dict:
         robot=meta.get("robot"),
         teleop=meta.get("teleop"),
         mapper=meta.get("mapper"),
+        profile=meta.get("profile"),
         cameras=meta.get("cameras", []),
         fps=meta.get("fps"),
         preview_enabled=meta.get("preview_enabled", True),
@@ -124,6 +126,26 @@ async def session_config(request: Request):
     return cfg
 
 
+@router.post("/session/home")
+async def session_home(request: Request):
+    """Return a READY teleop robot to the captured idle pose."""
+    sm = get_session_manager(request.app)
+    await sm.return_home()
+    return {"ok": True, "state": sm.session.state.value}
+
+
+@router.get("/session/teleop-metrics")
+async def session_teleop_metrics(request: Request):
+    """Latest target/command/measured Cartesian tracking errors."""
+    sm = get_session_manager(request.app)
+    gauges = {
+        name: value
+        for name, value in sm._metrics.snapshot()["gauges"].items()
+        if name.startswith(("teleop_", "motion_"))
+    }
+    return {"gauges": gauges}
+
+
 @router.post("/robot/estop")
 async def robot_estop(request: Request):
     """Emergency stop. Hardware torque-off FIRST, then software abort.
@@ -174,6 +196,10 @@ async def robot_clear_estop(request: Request):
     if not hasattr(adapter, "clear_estop"):
         raise InvalidTransitionError("active robot adapter has no clear_estop()")
     result = await adapter.clear_estop()
+    if isinstance(result, dict) and not result.get("ok", False):
+        raise InvalidTransitionError(
+            f"hardware did not clear E-stop: {result.get('errors') or result}"
+        )
     # Clear the software latch too, so a follow-up start_inference_session
     # is allowed. Operator must still explicitly start a new session.
     sm._estop_latched = False

@@ -37,3 +37,5 @@ async def ws_camera(websocket: WebSocket, cam_name: str):
         pass
     except Exception:
         pass
+    finally:
+        cm.unsubscribe_preview(cam_name, q)

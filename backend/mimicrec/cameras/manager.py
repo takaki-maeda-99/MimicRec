@@ -37,6 +37,16 @@ class CameraManager:
         self._preview_subs[name].append(q)
         return q
 
+    def unsubscribe_preview(self, name: str, queue: asyncio.Queue) -> None:
+        """Remove a preview subscriber after a browser/bridge disconnects."""
+        subscribers = self._preview_subs.get(name)
+        if subscribers is None:
+            return
+        try:
+            subscribers.remove(queue)
+        except ValueError:
+            pass
+
     async def start(self) -> None:
         # Connect every camera up-front so any failure aborts session_start
         # rather than silently dropping the camera mid-session.

@@ -1,0 +1,46 @@
+version: 1
+default_channel: left
+state_rate_hz: 60
+
+home:
+  duration_sec: 3.0
+  fps: 50
+  hold_sec: 0.3
+  adapters:
+    left_robot:
+      joint_names: [shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll]
+      # Well-conditioned central pose verified against the pinned URDF:
+      # xyz ~= [0.278, 0.000, 0.135] m, minimum joint margin ~= 47 deg.
+      joint_pos: [0.0, -0.7853981634, 0.7853981634, 0.5235987756, 0.0]
+      channels: [left]
+
+# Hardware-isolated profile for Cartesian command-chain validation. It keeps
+# reBotArm and the Quest bridge out of the graph so test WebSocket commands
+# cannot be overwritten by another producer on the same motion channel.
+adapters:
+  left_robot:
+    robot: so101_daemon
+    wrapper: native
+    resources:
+      arm:
+        kind: joint
+        unit: rad
+        joint_names: [shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll]
+      gripper:
+        kind: scalar
+
+inputs:
+  audit_controller:
+    teleop: quest_ros
+    channel: left
+    frame: world
+    control_rate_hz: 60
+
+motion_groups:
+  left_hand:
+    input: audit_controller
+    mapper: se3_delta_to_so101
+    mapper_wrapper: native
+    outputs: [left_robot.arm, left_robot.gripper]
+    auxiliary: [gripper]
+    control_rate_hz: 60

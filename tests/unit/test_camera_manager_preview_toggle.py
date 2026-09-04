@@ -56,3 +56,17 @@ async def test_default_preview_enabled_is_true():
     # Default-on path: subscribe_preview must work and return a queue.
     q = cm.subscribe_preview("front")
     assert isinstance(q, asyncio.Queue)
+
+
+async def test_preview_subscription_can_be_removed_idempotently():
+    cm = CameraManager(
+        cameras={"front": MockCamera("front")},
+        error_bus=ErrorBus(),
+    )
+    queue = cm.subscribe_preview("front")
+    assert cm._preview_subs["front"] == [queue]
+
+    cm.unsubscribe_preview("front", queue)
+    cm.unsubscribe_preview("front", queue)
+
+    assert cm._preview_subs["front"] == []

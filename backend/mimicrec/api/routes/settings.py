@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import glob
 import json
+import re
 from dataclasses import asdict
 from pathlib import Path
 
@@ -17,6 +18,15 @@ from mimicrec.cameras.v4l2_caps import enumerate_capabilities
 from mimicrec.cameras.opencv_camera import decode_fourcc
 
 router = APIRouter()
+
+_CONFIG_TOKEN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+
+
+def _validate_config_tokens(group: str, name: str | None = None) -> None:
+    if not _CONFIG_TOKEN_RE.fullmatch(group):
+        raise HTTPException(status_code=400, detail="unsafe config group")
+    if name is not None and not _CONFIG_TOKEN_RE.fullmatch(name):
+        raise HTTPException(status_code=400, detail="unsafe config name")
 
 
 # --- Device discovery ---
@@ -82,10 +92,24 @@ class ConfigUpdate(BaseModel):
     content: dict
 
 
+def _validate_motion_profile(root: Path, name: str, content: dict) -> None:
+    """Build the graph without connecting hardware before persisting it."""
+    from mimicrec.motion.config import build_motion_profile
+
+    try:
+        build_motion_profile(name, configs_root=root, document=content)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=f"invalid Motion Graph: {type(exc).__name__}: {exc}",
+        ) from exc
+
+
 @router.get("/settings/configs/{group}")
 async def list_group_configs(request: Request, group: str, response: Response):
     """List all configs in a group with their contents."""
     response.headers["Cache-Control"] = "no-store"
+    _validate_config_tokens(group)
     root = get_configs_root(request.app)
     group_dir = root / group
     if not group_dir.is_dir():
@@ -105,6 +129,7 @@ async def list_group_configs(request: Request, group: str, response: Response):
 async def get_config(request: Request, group: str, name: str, response: Response):
     """Get a single config file's contents."""
     response.headers["Cache-Control"] = "no-store"
+    _validate_config_tokens(group, name)
     root = get_configs_root(request.app)
     path = root / group / f"{name}.yaml"
     if not path.exists():
@@ -125,8 +150,12 @@ async def update_config(
     session_start.
     """
     response.headers["Cache-Control"] = "no-store"
+    _validate_config_tokens(group, name)
     root = get_configs_root(request.app)
     path = root / group / f"{name}.yaml"
+
+    if group == "motion_profiles":
+        _validate_motion_profile(root, name, body.content)
 
     if (
         group == "cameras"
@@ -196,10 +225,13 @@ async def _validate_camera_config_or_409(content: dict, response: Response) -> N
 @router.post("/settings/configs/{group}/{name}")
 async def create_config(request: Request, group: str, name: str, body: ConfigUpdate):
     """Create a new config file."""
+    _validate_config_tokens(group, name)
     root = get_configs_root(request.app)
     path = root / group / f"{name}.yaml"
     if path.exists():
         raise ValueError(f"config '{group}/{name}' already exists")
+    if group == "motion_profiles":
+        _validate_motion_profile(root, name, body.content)
     path.parent.mkdir(parents=True, exist_ok=True)
     cfg = OmegaConf.create(body.content)
     OmegaConf.save(cfg, path)
@@ -212,6 +244,7 @@ async def delete_config(request: Request, group: str, name: str):
     bound to an active recording session — deleting it would leave the
     writer holding a path that no longer exists on disk.
     """
+    _validate_config_tokens(group, name)
     # Active-session guard. Match against session_meta with the same
     # shape build_state_payload() produces at session.py:42-61.
     # A stale manager left in IDLE after FatalHardwareError is treated
@@ -231,6 +264,11 @@ async def delete_config(request: Request, group: str, name: str):
                     status_code=409,
                     detail=f"active session uses this config (group={group}, name={name})",
                 )
+        elif group == "motion_profiles" and meta.get("profile") == name:
+            raise HTTPException(
+                status_code=409,
+                detail=f"active session uses this Motion Profile (name={name})",
+            )
         elif group == "cameras":
             for src in meta.get("slot_assignments", []):
                 src_kind = src.get("kind") if isinstance(src, dict) else getattr(src, "kind", None)

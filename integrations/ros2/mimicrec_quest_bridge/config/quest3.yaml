@@ -1,0 +1,60 @@
+mimicrec_quest_bridge:
+  ros__parameters:
+    mimicrec_url: ws://127.0.0.1:8000
+    motion_channel: right
+
+    # unity_ros_teleoperation publishes controller poses as TF children of
+    # vr_origin. Set pose_source=pose_stamped and pose_topic if using a custom
+    # Unity PoseStamped publisher instead.
+    pose_source: tf
+    tf_topic: /tf
+    controller_frame: hand_right
+    # ROS tracking-world frame. MotionStep still records canonical frame=world.
+    world_frame: vr_origin
+    motion_frame: world
+    pose_topic: /quest/pose/right
+    joy_topic: /quest/joystick
+
+    # JoystickManager axes: L/R trigger=4/5, L/R grip=6/7. The right grip is
+    # the hold-to-move deadman; releasing it or losing messages stops motion.
+    deadman_axis_index: 7
+    deadman_button_index: -1
+    deadman_threshold: 0.5
+    # Right index trigger directly controls gripper aperture: 0=open,
+    # 1=closed. A small deadzone prevents noisy near-zero commands.
+    gripper_trigger_axis_index: 5
+    gripper_trigger_deadzone: 0.03
+
+    # With the deadman grip released, hold Quest A for this duration to
+    # request a safe ramp to configs/rebotarm/idle_pose.yaml.
+    home_button_index: 1
+    home_hold_sec: 0.5
+    input_timeout_sec: 0.25
+
+    # Quest world axes -> canonical WORLD axes. Keep identity unless the
+    # tracking world's physical axes are explicitly calibrated differently.
+    controller_to_eef_rotation: [1.0, 0.0, 0.0,
+                                 0.0, 1.0, 0.0,
+                                 0.0, 0.0, 1.0]
+    world_axis_rotation: [1.0, 0.0, 0.0,
+                          0.0, 1.0, 0.0,
+                          0.0, 0.0, 1.0]
+    translation_scale: 1.0
+    rotation_scale: 1.0
+    # Offsets are measured from the controller pose at deadman engagement.
+    # Scale 1.0 therefore means the same translation and rotation amount.
+    max_linear_offset_m: 0.5
+    max_angular_offset_rad: 3.141592653589793
+    linear_deadband_m: 0.0005
+    angular_deadband_rad: 0.005
+
+    # Interpolate real Quest samples at a fixed output rate. This short fixed
+    # delay avoids the trajectory distortion of a low-pass filter.
+    command_rate_hz: 60.0
+    interpolation_delay_sec: 0.025
+    smoothing_time_constant_sec: 0.0
+
+    # Each active MimicRec camera preview is republished as
+    # /mimicrec/cameras/<name>/image_raw/compressed.
+    camera_names: [front, wrist]
+    camera_topic_prefix: /mimicrec/cameras

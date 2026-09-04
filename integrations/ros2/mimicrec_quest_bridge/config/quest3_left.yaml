@@ -1,0 +1,49 @@
+mimicrec_quest_bridge_left:
+  ros__parameters:
+    mimicrec_url: ws://127.0.0.1:8000
+    motion_channel: left
+    pose_source: tf
+    tf_topic: /tf
+    controller_frame: hand_left
+    world_frame: vr_origin
+    motion_frame: world
+    pose_topic: /quest/pose/left
+    joy_topic: /quest/joystick
+    deadman_axis_index: 6
+    deadman_button_index: -1
+    deadman_threshold: 0.5
+    gripper_trigger_axis_index: 4
+    gripper_trigger_deadzone: 0.03
+    home_button_index: -1
+    home_hold_sec: 0.5
+    input_timeout_sec: 0.25
+    # Canonical WORLD axes remain identity below. This separate local control
+    # mapping aligns controller X-forward/Y-lateral/Z-up with SO-101's
+    # gripper Z-forward/Y-lateral/-X-up convention, so controller twist maps
+    # to wrist roll without changing the recorded WORLD SE3Delta.
+    controller_to_eef_rotation: [0.0, 0.0, -1.0,
+                                 0.0, 1.0,  0.0,
+                                 1.0, 0.0,  0.0]
+    world_axis_rotation: [1.0, 0.0, 0.0,
+                          0.0, 1.0, 0.0,
+                          0.0, 0.0, 1.0]
+    translation_scale: 1.0
+    rotation_scale: 1.0
+    max_linear_offset_m: 0.5
+    max_angular_offset_rad: 3.141592653589793
+    linear_deadband_m: 0.0005
+    angular_deadband_rad: 0.005
+    # Oversample the interpolated Quest pose relative to the 60 Hz SO-101
+    # MotionGroup. Equal producer/consumer rates phase-raced in hardware
+    # traces (hold one tick, catch up on the next); 3x output keeps a fresh
+    # absolute pose available at every control tick without raising motor-bus
+    # traffic above 60 Hz.
+    command_rate_hz: 180.0
+    # Quest TF arrival gaps reach about 39 ms at p95. Keep enough history to
+    # interpolate across those gaps instead of alternating hold and catch-up.
+    # No output low-pass is applied, so this adds only 15 ms versus the old
+    # setting without the sluggish tail of pose smoothing.
+    interpolation_delay_sec: 0.040
+    smoothing_time_constant_sec: 0.0
+    camera_names: []
+    camera_topic_prefix: /mimicrec/cameras

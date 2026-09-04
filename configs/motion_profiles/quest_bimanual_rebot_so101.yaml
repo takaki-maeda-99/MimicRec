@@ -1,0 +1,82 @@
+version: 1
+default_channel: right
+state_rate_hz: 60
+
+home:
+  duration_sec: 3.0
+  fps: 50
+  hold_sec: 0.3
+  adapters:
+    right_robot:
+      pose_path: configs/rebotarm/idle_pose.yaml
+      channels: [right]
+    left_robot:
+      joint_names: [shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll]
+      # Safe central SO-101 pose (radians), away from the folded elbow limit.
+      joint_pos: [0.0, -0.7853981634, 0.7853981634, 0.5235987756, 0.0]
+      # The right controller's existing home button returns both arms.
+      channels: [right, left]
+
+adapters:
+  right_robot:
+    robot: rebotarm
+    wrapper: legacy
+    include_gripper: true
+    safe_mode: gravity_comp
+    resources:
+      arm:
+        kind: joint
+        unit: rad
+        joint_names: [joint1, joint2, joint3, joint4, joint5, joint6]
+      gripper:
+        kind: scalar
+
+  left_robot:
+    robot: so101_daemon
+    wrapper: native
+    resources:
+      arm:
+        kind: joint
+        unit: rad
+        joint_names: [shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll]
+      gripper:
+        kind: scalar
+
+inputs:
+  right_controller:
+    teleop: quest_ros
+    channel: right
+    # Canonical, embodiment-independent action recorded by MimicRec.
+    frame: world
+    control_rate_hz: 60
+
+  left_controller:
+    teleop: quest_ros
+    channel: left
+    frame: world
+    control_rate_hz: 60
+
+motion_groups:
+  right_hand:
+    input: right_controller
+    mapper: delta_ee_to_rebotarm
+    mapper_wrapper: legacy
+    mapper_args:
+      delta_frame: base
+    # Calibrate this proper rotation if the robot base is not aligned with
+    # the Quest world axes. Translation between origins does not affect a
+    # differential vector.
+    world_to_base_rotation: [1.0, 0.0, 0.0,
+                             0.0, 1.0, 0.0,
+                             0.0, 0.0, 1.0]
+    outputs: [right_robot.arm, right_robot.gripper]
+    auxiliary: [gripper]
+    control_rate_hz: 60
+
+  left_hand:
+    input: left_controller
+    mapper: se3_delta_to_so101
+    mapper_wrapper: native
+    outputs: [left_robot.arm, left_robot.gripper]
+    auxiliary: [gripper]
+    control_rate_hz: 60

@@ -70,3 +70,79 @@ def read_dataset_info(ds_root: Path) -> dict:
     if not info_path.exists():
         raise FileNotFoundError(f"info.json not found at {info_path}")
     return json.loads(info_path.read_text())
+
+
+def load_motion_replay_trajectory(ds_root: Path, episode_idx: int):
+    """Load authoritative namespaced SE3Delta streams for remapped replay."""
+    import numpy as np
+    import pyarrow.parquet as pq
+
+    from mimicrec.motion.se3 import SE3Delta
+    from mimicrec.motion.types import MotionStep
+    from mimicrec.recording.dataset_layout import dataset_paths, resolve_chunk
+    from mimicrec.session.motion_replay import MotionReplayTrajectory
+
+    require_live_episode(ds_root, episode_idx)
+    info = read_dataset_info(ds_root)
+    schema = info.get("motion_schema")
+    if not isinstance(schema, dict):
+        raise ValueError("dataset has no motion_schema")
+    groups = schema.get("motion_groups") or {}
+    path = dataset_paths(ds_root).episode_parquet(
+        resolve_chunk(episode_idx), episode_idx
+    )
+    table = pq.read_table(path)
+    frames: list[dict[str, MotionStep]] = []
+    for row_index in range(table.num_rows):
+        frame: dict[str, MotionStep] = {}
+        for group_name, group_spec in groups.items():
+            prefix = f"action.motion.{group_name}"
+            delta_key = f"{prefix}.se3_delta"
+            if delta_key not in table.column_names:
+                raise ValueError(f"motion replay column is missing: {delta_key}")
+            tangent_value = table[delta_key][row_index].as_py()
+            if tangent_value is None:
+                continue
+            duration_key = f"{prefix}.duration_sec"
+            mask_key = f"{prefix}.active_mask"
+            frame_key = f"{prefix}.frame"
+            stamp_key = f"{prefix}.t_mono_ns"
+            duration = (
+                float(table[duration_key][row_index].as_py())
+                if duration_key in table.column_names
+                else 1.0 / float(info["fps"])
+            )
+            mask = (
+                np.asarray(table[mask_key][row_index].as_py(), dtype=bool)
+                if mask_key in table.column_names
+                else np.ones(6, dtype=bool)
+            )
+            frame_name = (
+                str(table[frame_key][row_index].as_py())
+                if frame_key in table.column_names
+                else str(schema.get("default_frame", "ee_local"))
+            )
+            stamp = (
+                int(table[stamp_key][row_index].as_py())
+                if stamp_key in table.column_names
+                else 0
+            )
+            auxiliary = {}
+            for key in group_spec.get("auxiliary", []):
+                column = f"{prefix}.aux.{key}"
+                if column in table.column_names:
+                    value = table[column][row_index].as_py()
+                    if value is not None:
+                        auxiliary[str(key)] = float(value)
+            frame[str(group_name)] = MotionStep(
+                delta=SE3Delta(
+                    np.asarray(tangent_value, dtype=np.float64),
+                    frame=frame_name,
+                    duration_sec=duration,
+                    active_mask=mask,
+                ),
+                auxiliary=auxiliary,
+                t_mono_ns=stamp,
+            )
+        frames.append(frame)
+    return MotionReplayTrajectory(frames=frames, fps=int(info["fps"]))

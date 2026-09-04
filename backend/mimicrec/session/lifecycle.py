@@ -64,6 +64,8 @@ def assert_can_start_episode(session: Session) -> None:
         )
     if session.replay_active:
         raise InvalidTransitionError("episode/start blocked while replay is active")
+    if session.home_active:
+        raise InvalidTransitionError("episode/start blocked while returning home")
 
 
 def assert_can_save_episode(session: Session) -> None:
@@ -100,12 +102,14 @@ class SessionManager:
         ds_name=None,
         app=None,
         gripper_binarize: GripperBinarize | None = None,
+        mapper_name: str | None = None,
     ):
         self.session = Session(mode=mode, state=SessionState.IDLE)
         self._dataset_root = dataset_root
         self._robot = robot
         self._teleop = teleop
         self._mapper = mapper
+        self._mapper_name = mapper_name or "identity"
         self._cameras = cameras
         self._fps = fps
         self._error_bus = error_bus
@@ -144,6 +148,7 @@ class SessionManager:
         # by episode_save / episode_discard before flipping to READY, so
         # the next episode is guaranteed to start from idle.
         self._idle_move_task: asyncio.Task | None = None
+        self._home_move_task: asyncio.Task | None = None
 
         # Episode tracking
         self._episode_index = 0
@@ -165,6 +170,16 @@ class SessionManager:
 
         # Inference subsystem (populated by start_inference_session)
         self._robot_config_dict: dict = self._resolved_config.get("robot", {})
+        home_cfg = self._robot_config_dict.get("teleop_home", {}) or {}
+        self._teleop_home_duration_sec = float(home_cfg.get("duration_sec", 3.0))
+        self._teleop_home_fps = int(home_cfg.get("fps", 30))
+        self._teleop_home_hold_sec = float(home_cfg.get("hold_sec", 0.5))
+        if self._teleop_home_duration_sec <= 0.0:
+            raise ValueError("teleop_home.duration_sec must be > 0")
+        if self._teleop_home_fps <= 0:
+            raise ValueError("teleop_home.fps must be > 0")
+        if self._teleop_home_hold_sec < 0.0:
+            raise ValueError("teleop_home.hold_sec must be >= 0")
         self._instruction_slot: LatestValue[str] = LatestValue()
         # Serialize session-mode transitions (start_inference_session,
         # stop_inference_session, replay_start, replay_stop). Without this
@@ -242,6 +257,12 @@ class SessionManager:
             try:
                 t = time.monotonic_ns()
                 action = await self._teleop.read_action()
+                if action.home_requested:
+                    action = TeleopAction(ee_pose_active=False)
+                    if self._home_move_task is None or self._home_move_task.done():
+                        self._home_move_task = asyncio.create_task(
+                            self._run_requested_home()
+                        )
                 action.t_mono_ns = t
                 self._teleop_slot.set(action, t_mono_ns=t)
                 consecutive_errors = 0
@@ -265,6 +286,71 @@ class SessionManager:
                     ))
                     return
                 await asyncio.sleep(0.01)
+
+    async def _run_requested_home(self) -> None:
+        try:
+            await self.return_home()
+        except InvalidTransitionError as exc:
+            logger.warning("Quest home request rejected: %s", exc)
+        except Exception as exc:
+            logger.exception("Quest home request failed")
+            await self._error_bus.publish(
+                HardwareError(f"home move failed: {type(exc).__name__}: {exc}")
+            )
+
+    async def return_home(self) -> None:
+        """Safely ramp a READY teleop session to its captured idle pose."""
+        async with self._mode_transition_lock:
+            if self.session.mode != SessionMode.TELEOP:
+                raise InvalidTransitionError("home requires a teleop session")
+            if self.session.state != SessionState.READY:
+                raise InvalidTransitionError(
+                    f"home requires READY, got {self.session.state.value}"
+                )
+            if self.session.replay_active:
+                raise InvalidTransitionError("home blocked while replay is active")
+            if self._estop_latched:
+                raise InvalidTransitionError("home blocked while E-stop is latched")
+            if self.session.home_active:
+                raise InvalidTransitionError("home move already active")
+
+            self.session.home_active = True
+            pose_sequence_before = getattr(
+                self._teleop, "pose_message_sequence", None
+            )
+            if hasattr(self._teleop, "stop_motion"):
+                self._teleop.stop_motion()
+            release = TeleopAction(ee_pose_active=False)
+            release.t_mono_ns = time.monotonic_ns()
+            self._teleop_slot.set(release, t_mono_ns=release.t_mono_ns)
+            try:
+                # Drain the final pre-home command before the direct ramp.
+                await asyncio.sleep(0.05)
+                await move_to_idle(
+                    self._robot,
+                    duration_sec=self._teleop_home_duration_sec,
+                    fps=self._teleop_home_fps,
+                    hold_sec=self._teleop_home_hold_sec,
+                    after_mode=RobotMode.POSITION,
+                )
+                if hasattr(self._mapper, "reset"):
+                    self._mapper.reset()
+            finally:
+                pose_sequence_after = getattr(
+                    self._teleop, "pose_message_sequence", None
+                )
+                if hasattr(self._teleop, "stop_motion"):
+                    self._teleop.stop_motion()
+                if (
+                    pose_sequence_before is not None
+                    and pose_sequence_after != pose_sequence_before
+                    and hasattr(self._teleop, "require_pose_release")
+                ):
+                    self._teleop.require_pose_release()
+                release = TeleopAction(ee_pose_active=False)
+                release.t_mono_ns = time.monotonic_ns()
+                self._teleop_slot.set(release, t_mono_ns=release.t_mono_ns)
+                self.session.home_active = False
 
     # ------------------------------------------------------------------
     # Error handler
@@ -424,6 +510,7 @@ class SessionManager:
                 mapper=self._mapper,
                 enqueue=self._recorder_queue.put_nowait,
                 clock=RealClock(), metrics=self._metrics,
+                control_fps=getattr(self._teleop, "control_rate_hz", None),
             ))
         else:
             self._control_loop_task = asyncio.create_task(run_handteach_control_loop(
@@ -582,7 +669,7 @@ class SessionManager:
                 "instruction": persisted_instruction,
                 "robot": self._robot.name,
                 "teleop": self._teleop.name if self._teleop else None,
-                "mapper": "identity",
+                "mapper": self._mapper_name,
                 "cameras": _episode_image_sources(self._cameras),
                 "mode": self.session.mode.value,
                 "fps": self._fps,
@@ -1180,6 +1267,7 @@ class SessionManager:
         # mode; without these the watchdog could later fire
         # `episode_stop` after teardown has begun.
         for task in [
+            self._home_move_task,
             self._teleop_reader_task, self._robot_reader_task,
             self._control_loop_task, self._writer_task,
             self._dispatcher_task, self._error_handler_task,

@@ -89,7 +89,9 @@ class ChunkSpec(BaseModel):
 
 
 class PoseSpec(BaseModel):
-    units: Literal["meter_axisangle_rad", "mm_euler_deg"] = "meter_axisangle_rad"
+    units: Literal[
+        "meter_axisangle_rad", "se3_log_increment", "mm_euler_deg"
+    ] = "meter_axisangle_rad"
 
 
 class GripperSpec(BaseModel):
@@ -179,6 +181,8 @@ def _resolve_stats_path(spec: "ContractSpec") -> Path | None:
 class ContractSpec(BaseModel):
     name: str
     description: str = ""
+    # Required when the contract drives a multi-resource MotionRuntime.
+    motion_group: str | None = None
     endpoint: EndpointSpec
     request: RequestSpec
     response: ResponseSpec
@@ -208,10 +212,10 @@ class ContractSpec(BaseModel):
         # rotation-format mismatch when an operator drops in a contract for a
         # different VLA training stack.
         units = self.response.action.pose.units
-        if units != "meter_axisangle_rad":
+        if units not in {"meter_axisangle_rad", "se3_log_increment"}:
             raise ValueError(
                 f"response.action.pose.units='{units}' not implemented in MVP "
-                "(only 'meter_axisangle_rad' is supported)"
+                "(supported: 'meter_axisangle_rad', 'se3_log_increment')"
             )
 
     def resolve_action_stats(self) -> dict | None:

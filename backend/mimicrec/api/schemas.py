@@ -19,7 +19,7 @@ class ImageSource(BaseModel):
 class _BaseSessionRequest(BaseModel):
     dataset: str
     task: str
-    robot: str
+    robot: str | None = None
     cameras: list[str] = Field(default_factory=list)
     fps: int = 30
     preview_enabled: bool = True
@@ -28,16 +28,23 @@ class _BaseSessionRequest(BaseModel):
 
 class TeleopSessionRequest(_BaseSessionRequest):
     mode: Literal["teleop"] = "teleop"
+    robot: str
     teleop: str
     mapper: str
 
 
 class HandTeachSessionRequest(_BaseSessionRequest):
     mode: Literal["hand_teach"] = "hand_teach"
+    robot: str
+
+
+class MotionProfileSessionRequest(_BaseSessionRequest):
+    mode: Literal["motion"] = "motion"
+    profile: str
 
 
 StartSessionRequest = Annotated[
-    TeleopSessionRequest | HandTeachSessionRequest,
+    TeleopSessionRequest | HandTeachSessionRequest | MotionProfileSessionRequest,
     Field(discriminator="mode"),
 ]
 
@@ -74,6 +81,7 @@ class SessionStatePayload(BaseModel):
     robot: str | None = None
     teleop: str | None = None
     mapper: str | None = None
+    profile: str | None = None
     cameras: list[str] = []
     fps: int | None = None
     preview_enabled: bool = True

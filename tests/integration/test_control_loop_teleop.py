@@ -32,6 +32,7 @@ async def test_teleop_loop_records_samples_only_while_recording(mock_robot, mock
         robot_state_slot=rs, teleop_slot=ts, camera_slots={},
         command_goal_slot=cg, mapper=IdentityMapper(),
         enqueue=enqueue, clock=RealClock(), metrics=metrics,
+        control_fps=60,
     ))
 
     await asyncio.sleep(0.1)
@@ -40,9 +41,12 @@ async def test_teleop_loop_records_samples_only_while_recording(mock_robot, mock
     assert cg.peek() is not None
 
     session.state = SessionState.RECORDING
+    seq_before_recording = cg.seq
     await asyncio.sleep(0.2)
     count_during = len(bundles)
     assert count_during >= 3
+    # Commands run at 60 Hz while recording remains near the requested 30 Hz.
+    assert cg.seq - seq_before_recording > count_during
 
     session.state = SessionState.REVIEW
     await asyncio.sleep(0.2)
