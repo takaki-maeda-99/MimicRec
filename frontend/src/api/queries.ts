@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiFetch, ApiError } from "./client.ts";
-import type { ConfigEntry, DatasetSummary, EpisodeSummary, ExportRequest, ExportResponse, SessionStatePayload, TaskSummary } from "./types.ts";
+import type { ConfigEntry, DatasetSummary, EpisodeSummary, ExportRequest, ExportResponse, ManagedServiceStatus, SessionStatePayload, TaskSummary } from "./types.ts";
 
 // --------------- Datasets ---------------
 
@@ -141,6 +141,37 @@ export function useEndSession() {
     mutationFn: () =>
       apiFetch<SessionStatePayload>("/api/session/end", { method: "POST" }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["session-state"] }),
+  });
+}
+
+// --------------- Host services ---------------
+
+export function useManagedServices() {
+  return useQuery({
+    queryKey: ["managed-services"],
+    queryFn: () => apiFetch<ManagedServiceStatus[]>("/api/services"),
+    refetchInterval: 2000,
+  });
+}
+
+export function useServiceAction() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      serviceId,
+      action,
+      confirmHardwareReady = false,
+    }: {
+      serviceId: ManagedServiceStatus["id"];
+      action: "start" | "stop" | "restart" | "clear-fault";
+      confirmHardwareReady?: boolean;
+    }) =>
+      apiFetch<ManagedServiceStatus | { ok: boolean; motors: Record<string, unknown> }>(`/api/services/${serviceId}/${action}`, {
+        method: "POST",
+        headers: { "X-MimicRec-Control": "1" },
+        body: JSON.stringify({ confirm_hardware_ready: confirmHardwareReady }),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["managed-services"] }),
   });
 }
 

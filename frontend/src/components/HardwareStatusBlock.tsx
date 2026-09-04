@@ -22,7 +22,7 @@ export function HardwareStatusBlock({
   return (
     <section className="flex flex-col gap-md">
       <header className="flex items-baseline gap-md">
-        <SectionMark code="§04.A" name="Hardware status" />
+        <SectionMark code="§04.B" name="Hardware status" />
         <span className="flex-1 h-px bg-hairline-soft" />
         <Button variant="secondary" size="sm" onClick={onRefresh} disabled={refreshing}>
           {refreshing ? "Refreshing…" : "Refresh"}

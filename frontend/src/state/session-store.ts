@@ -10,6 +10,7 @@ interface SessionStore {
   robot: string | null;
   teleop: string | null;
   mapper: string | null;
+  profile: string | null;
   cameras: string[];
   fps: number | null;
   previewEnabled: boolean;
@@ -34,6 +35,7 @@ export const useSessionStore = create<SessionStore>((set) => ({
   robot: null,
   teleop: null,
   mapper: null,
+  profile: null,
   cameras: [],
   fps: null,
   previewEnabled: true,
@@ -52,6 +54,7 @@ export const useSessionStore = create<SessionStore>((set) => ({
       robot: (data.robot as string) ?? null,
       teleop: (data.teleop as string) ?? null,
       mapper: (data.mapper as string) ?? null,
+      profile: (data.profile as string) ?? null,
       cameras: (data.cameras as string[]) ?? [],
       imageSources: (data.image_sources as ImageSource[] | undefined) ?? [],
       fps: (data.fps as number) ?? null,

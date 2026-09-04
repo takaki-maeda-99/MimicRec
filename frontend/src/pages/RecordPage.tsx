@@ -17,6 +17,7 @@ import { SectionMark } from "../components/ui/section-mark";
 import { ConfigEditorModal, type ConfigEntry as ModalConfigEntry, type ConfigEditorMode } from "../components/ConfigEditorModal";
 import type { ConfigGroup } from "../components/ConfigCard";
 import type { EpisodeProgress, ReplayProgress } from "../api/types.ts";
+import KeyboardEeTeleop from "../components/KeyboardEeTeleop";
 
 function RecBadge({ elapsedSec }: { elapsedSec: number | null }) {
   const text =
@@ -211,8 +212,14 @@ export default function RecordPage() {
         </InstrumentWell>
         {/* Right rail spans both rows — telemetry */}
         <aside className="row-span-2 flex flex-col gap-sm min-h-0">
-          <JointBlock enabled />
-          <EEBlock enabled />
+          {robot === "motion_graph" ? (
+            <MotionResourcesBlock enabled />
+          ) : (
+            <>
+              <JointBlock enabled robot={robot} />
+              <EEBlock enabled />
+            </>
+          )}
         </aside>
         {/* Row 2, col 1 — episode progress */}
         <EpisodeProgressBlock inProgressIndex={inProgressIndex} />
@@ -227,6 +234,14 @@ export default function RecordPage() {
         </span>
         <span className="w-px h-5 bg-hairline" />
         <RecordingControls />
+        {mode === "teleop" && teleop === "web_keyboard_ee" && <KeyboardEeTeleop />}
+        {((mode === "teleop" && teleop === "quest_ros") || robot === "motion_graph") && (
+          <div className="ml-auto flex items-center gap-3 font-mono text-micro text-steel">
+            <span className="text-brand-green">QUEST ROS</span>
+            <span>HOLD GRIP TO MOVE</span>
+            <span>RELEASE TO STOP</span>
+          </div>
+        )}
       </div>
     </>
   );
@@ -335,11 +350,24 @@ function Cell({
   );
 }
 
-function JointBlock({ enabled }: { enabled: boolean }) {
+function JointBlock({
+  enabled,
+  robot,
+}: {
+  enabled: boolean;
+  robot: string | null;
+}) {
   // Initial hint; the hook adapts to the actual sample length on the first
   // WS message and re-allocates buffers if joint count grows.
-  const NUM_JOINTS_HINT = 7;
-  const history = useJointHistory(enabled, NUM_JOINTS_HINT);
+  const separateGripper = robot === "rebotarm";
+  const NUM_CHANNELS_HINT = separateGripper ? 7 : 6;
+  const history = useJointHistory(
+    enabled,
+    NUM_CHANNELS_HINT,
+    6,
+    100,
+    separateGripper,
+  );
   const numJoints = history.length;
   const latest = (i: number) => {
     const s = history[i];
@@ -349,16 +377,19 @@ function JointBlock({ enabled }: { enabled: boolean }) {
   return (
     <section className="flex-[1.4] min-h-0 bg-canvas border border-hairline rounded-md p-md flex flex-col">
       <header className="mb-xs flex items-baseline gap-xs">
-        <SectionMark code="§02.B.1" name="joint positions" />
+        <SectionMark code="§02.B.1" name="joint / gripper positions" />
         <span className="font-mono text-micro text-stone">rad · 100 Hz</span>
       </header>
       <table className="w-full text-caption">
         <tbody>
           {Array.from({ length: numJoints }).map((_, i) => {
             const v = latest(i);
+            const label = separateGripper && i === numJoints - 1
+              ? "Grip"
+              : `J${i + 1}`;
             return (
               <tr key={i} className="border-b border-dashed border-hairline-soft last:border-b-0">
-                <td className="py-1 font-mono text-micro text-steel w-[36px]">J{i + 1}</td>
+                <td className="py-1 font-mono text-micro text-steel w-[36px]">{label}</td>
                 <td className="py-1 text-right font-mono text-caption text-ink tabular-nums w-[80px]">
                   {v === null ? "—" : v.toFixed(4)}
                 </td>
@@ -370,6 +401,129 @@ function JointBlock({ enabled }: { enabled: boolean }) {
           })}
         </tbody>
       </table>
+    </section>
+  );
+}
+
+interface JointResourceSnapshot {
+  kind: "joint";
+  joint_names: string[];
+  joint_pos: number[];
+  target_joint_pos?: number[];
+  mapper_target_joint_pos?: number[];
+}
+
+interface ScalarResourceSnapshot {
+  kind: "scalar";
+  position: number;
+}
+
+interface PlanarResourceSnapshot {
+  kind: "planar";
+  pose_xy_yaw: number[];
+}
+
+type MotionResourceSnapshot =
+  | JointResourceSnapshot
+  | ScalarResourceSnapshot
+  | PlanarResourceSnapshot;
+
+function MotionResourcesBlock({ enabled }: { enabled: boolean }) {
+  const [resources, setResources] = useState<Record<string, MotionResourceSnapshot>>({});
+
+  useEffect(() => {
+    if (!enabled) return;
+    const conn = new WsConnection("/ws/state");
+    conn.onMessage((msg) => {
+      const next = (msg as { resources?: Record<string, MotionResourceSnapshot> }).resources;
+      if (next) setResources(next);
+    });
+    conn.connect();
+    return () => conn.disconnect();
+  }, [enabled]);
+
+  const rows = Object.entries(resources).flatMap(([resourceName, resource]) => {
+    if (resource.kind === "joint") {
+      return resource.joint_names.map((jointName, index) => ({
+        key: `${resourceName}.${jointName}`,
+        resourceName,
+        label: jointName,
+        value: resource.joint_pos[index],
+        target: resource.target_joint_pos?.[index],
+        mapperTarget: resource.mapper_target_joint_pos?.[index],
+        unit: "rad",
+      }));
+    }
+    if (resource.kind === "planar") {
+      return ["x", "y", "yaw"].map((label, index) => ({
+        key: `${resourceName}.${label}`,
+        resourceName,
+        label,
+        value: resource.pose_xy_yaw[index],
+        target: undefined,
+        mapperTarget: undefined,
+        unit: index === 2 ? "rad" : "m",
+      }));
+    }
+    return [{
+      key: resourceName,
+      resourceName,
+      label: "position",
+      value: resource.position,
+      target: undefined,
+      mapperTarget: undefined,
+      unit: "raw",
+    }];
+  });
+
+  let previousResource = "";
+  return (
+    <section className="flex-1 min-h-0 bg-canvas border border-hairline rounded-md p-md flex flex-col">
+      <header className="mb-xs flex items-baseline justify-between gap-xs">
+        <SectionMark code="§02.B" name="named resources" />
+        <span className="font-mono text-micro text-stone">Motion Graph</span>
+      </header>
+      <div className="min-h-0 overflow-y-auto">
+        <table className="w-full text-caption">
+          <thead>
+            <tr className="font-mono text-micro text-stone">
+              <th className="py-1 pr-2 text-left font-normal">resource</th>
+              <th className="py-1 text-left font-normal">joint</th>
+              <th className="py-1 text-right font-normal">measured</th>
+              <th className="py-1 text-right font-normal">daemon</th>
+              <th className="py-1 text-right font-normal">mapper</th>
+              <th className="py-1 pl-2 text-left font-normal">unit</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length === 0 && (
+              <tr><td className="py-2 text-stone">waiting for state…</td></tr>
+            )}
+            {rows.map((row) => {
+              const showResource = row.resourceName !== previousResource;
+              previousResource = row.resourceName;
+              return (
+                <tr key={row.key} className="border-b border-dashed border-hairline-soft last:border-b-0">
+                  <td className="py-1 pr-2 font-mono text-micro text-steel max-w-[130px] truncate">
+                    {showResource ? row.resourceName : ""}
+                  </td>
+                  <td className="py-1 font-mono text-micro text-stone">{row.label}</td>
+                  <td className="py-1 text-right font-mono text-caption text-ink tabular-nums">
+                    {typeof row.value === "number" ? row.value.toFixed(4) : "—"}
+                  </td>
+                  <td className="py-1 pl-2 text-right font-mono text-caption text-steel tabular-nums">
+                    {typeof row.target === "number" ? row.target.toFixed(4) : "—"}
+                  </td>
+                  <td className="py-1 pl-2 text-right font-mono text-caption text-steel tabular-nums">
+                    {typeof row.mapperTarget === "number" ? row.mapperTarget.toFixed(4) : "—"}
+                  </td>
+                  <td className="py-1 pl-2 font-mono text-micro text-stone">{row.unit}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
     </section>
   );
 }

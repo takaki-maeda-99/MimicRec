@@ -1,9 +1,11 @@
 type MessageHandler = (msg: Record<string, unknown>) => void;
+type StatusHandler = (connected: boolean) => void;
 
 export class WsConnection {
   private ws: WebSocket | null = null;
   private url: string;
   private handlers: MessageHandler[] = [];
+  private statusHandlers: StatusHandler[] = [];
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private binary: boolean;
 
@@ -17,6 +19,7 @@ export class WsConnection {
     if (this.ws?.readyState === WebSocket.OPEN) return;
     this.ws = new WebSocket(this.url);
     if (this.binary) this.ws.binaryType = "blob";
+    this.ws.onopen = () => this.statusHandlers.forEach((h) => h(true));
 
     this.ws.onmessage = (ev: MessageEvent) => {
       if (this.binary) {
@@ -31,6 +34,7 @@ export class WsConnection {
       }
     };
     this.ws.onclose = (ev) => {
+      this.statusHandlers.forEach((h) => h(false));
       // Don't reconnect if server explicitly rejected (1008 = policy violation)
       if (ev.code === 1008) return;
       this.reconnectTimer = setTimeout(() => this.connect(), 2000);
@@ -55,6 +59,13 @@ export class WsConnection {
     this.handlers.push(handler);
     return () => {
       this.handlers = this.handlers.filter((h) => h !== handler);
+    };
+  }
+
+  onStatus(handler: StatusHandler) {
+    this.statusHandlers.push(handler);
+    return () => {
+      this.statusHandlers = this.statusHandlers.filter((h) => h !== handler);
     };
   }
 }

@@ -7,6 +7,7 @@ export interface SessionStatePayload {
   robot: string | null;
   teleop: string | null;
   mapper: string | null;
+  profile?: string | null;
   cameras: string[];
   fps: number | null;
   preview_enabled?: boolean;
@@ -90,4 +91,21 @@ export interface ImageSource {
   slot: string;
   device: string;
   kind: "camera";
+}
+
+export interface ManagedServiceStatus {
+  id: "rebotarm" | "so101" | "quest";
+  unit: string;
+  label: string;
+  description: string;
+  safety_critical: boolean;
+  control_enabled: boolean;
+  installed: boolean;
+  active_state: string;
+  sub_state: string;
+  unit_file_state: string;
+  result: string;
+  endpoint_ready: boolean;
+  detail: string | null;
+  conflict: boolean;
 }

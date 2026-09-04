@@ -3,6 +3,7 @@ import { useState, useEffect } from "react";
 import { apiFetch } from "../api/client";
 import { Button } from "./ui/button";
 import { CameraConfigForm } from "./CameraConfigForm";
+import { MotionProfileEditor } from "./MotionProfileEditor";
 import type { ConfigGroup } from "./ConfigCard";
 
 export interface ConfigEntry {
@@ -36,10 +37,13 @@ export function ConfigEditorModal({ config, mode, onClose, onSaved }: Props) {
     config.group === "cameras"
     && (config.content as Record<string, unknown>)._target_
         === "mimicrec.cameras.opencv_camera.OpenCVCamera";
+  const isMotionProfile = config.group === "motion_profiles";
+  const safeName = /^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(
+    mode === "edit" ? config.name : editName,
+  );
 
-  const handleSave = async () => {
+  const saveContent = async (content: Record<string, unknown>) => {
     try {
-      const content = JSON.parse(editJson);
       const name = (mode === "edit") ? config.name : editName;
       if (!name) {
         alert("Name is required");
@@ -57,13 +61,21 @@ export function ConfigEditorModal({ config, mode, onClose, onSaved }: Props) {
     }
   };
 
+  const handleSave = async () => {
+    try {
+      await saveContent(JSON.parse(editJson));
+    } catch (e) {
+      alert(`Save failed: ${e}`);
+    }
+  };
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-canvas-dark/40"
       onClick={onClose}
     >
       <div
-        className="bg-canvas rounded-lg border border-hairline p-xl w-[600px] max-h-[80vh] overflow-auto"
+        className={`bg-canvas rounded-lg border border-hairline p-xl max-h-[90vh] overflow-auto ${isMotionProfile ? "w-[min(1180px,94vw)]" : "w-[600px]"}`}
         onClick={(e) => e.stopPropagation()}
       >
         {isCamera && mode === "edit" ? (
@@ -82,6 +94,39 @@ export function ConfigEditorModal({ config, mode, onClose, onSaved }: Props) {
             }}
             onCancel={onClose}
           />
+        ) : isMotionProfile ? (
+          <>
+            <div className="flex items-baseline gap-sm mb-md">
+              <h3 className="text-heading-5 text-ink">
+                {mode === "edit" && `Edit Motion Graph · ${config.name}`}
+                {mode === "new" && "New Motion Graph"}
+                {mode === "clone" && `Clone Motion Graph · ${config.name}`}
+              </h3>
+              <span className="font-mono text-micro text-stone">Motion Profile</span>
+            </div>
+            {(mode === "new" || mode === "clone") && (
+              <div className="mb-md">
+                <input
+                  type="text"
+                  placeholder="profile name (without .yaml)"
+                  value={editName}
+                  onChange={(e) => setEditName(e.target.value)}
+                  className={`w-full border rounded px-3 py-2 font-mono text-code-sm ${editName && !safeName ? "border-brand-error" : "border-hairline"}`}
+                />
+                {editName && !safeName && (
+                  <div className="mt-1 text-caption text-brand-error">
+                    Use letters, numbers, underscores or hyphens; start with a letter or number.
+                  </div>
+                )}
+              </div>
+            )}
+            <MotionProfileEditor
+              initialContent={config.content}
+              canSave={safeName}
+              onSave={saveContent}
+              onCancel={onClose}
+            />
+          </>
         ) : (
           <>
             <h3 className="text-heading-5 text-ink mb-xs">

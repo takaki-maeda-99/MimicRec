@@ -214,6 +214,25 @@ function demoUnsupported() {
 }
 
 export const stubHandlers = [
+  http.get("/api/services", () => HttpResponse.json([
+    {
+      id: "rebotarm", unit: "mimicrec-rebotarm.service", label: "reBotArm daemon",
+      description: "Hardware safety daemon and ZMQ control endpoint",
+      safety_critical: true, control_enabled: false, installed: false,
+      active_state: "inactive", sub_state: "dead", unit_file_state: "disabled",
+      result: "success", endpoint_ready: false, detail: "Not available in demo",
+      conflict: false,
+    },
+    {
+      id: "quest", unit: "mimicrec-quest.service", label: "Quest ROS 2 bridge",
+      description: "Unity ROS TCP endpoint and MimicRec Quest bridge",
+      safety_critical: false, control_enabled: false, installed: false,
+      active_state: "inactive", sub_state: "dead", unit_file_state: "disabled",
+      result: "success", endpoint_ready: false, detail: "Not available in demo",
+      conflict: false,
+    },
+  ])),
+  http.post("/api/services/:service/:action", demoUnsupported),
   http.post("/api/datasets", demoUnsupported),
   http.delete("/api/datasets/:ds", demoUnsupported),
   http.post("/api/datasets/:ds/export", demoUnsupported),

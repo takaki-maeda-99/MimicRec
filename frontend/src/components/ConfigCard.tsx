@@ -1,10 +1,10 @@
 import type { ReactNode } from "react";
-import { ArrowRightLeft, Bot, Camera, Check, Gamepad2 } from "lucide-react";
+import { ArrowRightLeft, Bot, Camera, Check, Gamepad2, Network } from "lucide-react";
 import { cn } from "../lib/utils";
 import { Badge } from "./ui/badge";
 import { CodeInline } from "./ui/code-inline";
 
-export type ConfigGroup = "robot" | "teleop" | "mapper" | "cameras";
+export type ConfigGroup = "robot" | "teleop" | "mapper" | "motion_profiles" | "cameras";
 
 export interface ConfigCardEntry {
   name: string;
@@ -25,6 +25,7 @@ const ICON_BY_GROUP = {
   robot: Bot,
   teleop: Gamepad2,
   mapper: ArrowRightLeft,
+  motion_profiles: Network,
   cameras: Camera,
 } as const;
 
@@ -32,6 +33,7 @@ const ICON_THEME_BY_GROUP: Record<ConfigGroup, string> = {
   robot: "bg-brand-tag/15 text-brand-tag",
   teleop: "bg-brand-warn/15 text-brand-warn",
   mapper: "bg-surface text-steel",
+  motion_profiles: "bg-brand-tag/15 text-brand-tag",
   cameras: "bg-brand-green/20 text-brand-green-deep",
 };
 
@@ -58,6 +60,20 @@ function getMeta(group: ConfigGroup, content: Record<string, unknown>): ReactNod
   if (group === "teleop") {
     const port = typeof content.port === "string" ? content.port : null;
     return port ? <CodeInline>{port}</CodeInline> : null;
+  }
+  if (group === "motion_profiles") {
+    const adapters = content.adapters && typeof content.adapters === "object"
+      ? Object.keys(content.adapters as Record<string, unknown>).length
+      : 0;
+    const groups = content.motion_groups && typeof content.motion_groups === "object"
+      ? Object.keys(content.motion_groups as Record<string, unknown>).length
+      : 0;
+    return (
+      <>
+        <span>{groups} Motion Group{groups === 1 ? "" : "s"}</span>
+        <span>{adapters} adapter{adapters === 1 ? "" : "s"}</span>
+      </>
+    );
   }
   if (group === "cameras") {
     const deviceId = content.device_id;

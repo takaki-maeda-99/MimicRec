@@ -7,10 +7,11 @@ export interface SlotAssignmentDraft {
 }
 
 export interface RecordFormDraft {
-  mode: "teleop" | "hand_teach";
+  mode: "teleop" | "hand_teach" | "motion";
   robot: string;
   teleop: string;
   mapper: string;
+  profile: string;
   slotAssignments: SlotAssignmentDraft[];
   dataset: string;
   task: string;
@@ -31,6 +32,7 @@ const DEFAULTS: RecordFormDraft = {
   robot: "",
   teleop: "",
   mapper: "",
+  profile: "quest_bimanual_rebot_so101",
   slotAssignments: [],
   dataset: "",
   task: "",

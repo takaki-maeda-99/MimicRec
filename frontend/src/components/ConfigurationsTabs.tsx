@@ -9,6 +9,7 @@ const GROUPS: { id: ConfigGroup; label: string }[] = [
   { id: "robot", label: "robot" },
   { id: "teleop", label: "teleop" },
   { id: "mapper", label: "mapper" },
+  { id: "motion_profiles", label: "motion graph" },
   { id: "cameras", label: "cameras" },
 ];
 

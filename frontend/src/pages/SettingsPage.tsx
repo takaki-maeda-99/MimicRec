@@ -4,6 +4,7 @@ import { ConfigEditorModal, type ConfigEntry, type ConfigEditorMode } from "../c
 import type { ConfigGroup, ConfigCardEntry } from "../components/ConfigCard";
 import { ConfigurationsTabs } from "../components/ConfigurationsTabs";
 import { HardwareStatusBlock } from "../components/HardwareStatusBlock";
+import { ManagedServicesBlock } from "../components/ManagedServicesBlock";
 import { PageHeader } from "../components/ui/page-header";
 
 interface SerialDevice { port: string; available: boolean }
@@ -11,13 +12,13 @@ interface CameraDevice {
   path: string; device_id: number; available: boolean; width: number; height: number;
 }
 
-const CONFIG_GROUPS: ConfigGroup[] = ["robot", "teleop", "mapper", "cameras"];
+const CONFIG_GROUPS: ConfigGroup[] = ["robot", "teleop", "mapper", "motion_profiles", "cameras"];
 
 export default function SettingsPage() {
   const [serialPorts, setSerialPorts] = useState<SerialDevice[]>([]);
   const [cameras, setCameras] = useState<CameraDevice[]>([]);
   const [configs, setConfigs] = useState<Record<ConfigGroup, ConfigCardEntry[]>>({
-    robot: [], teleop: [], mapper: [], cameras: [],
+    robot: [], teleop: [], mapper: [], motion_profiles: [], cameras: [],
   });
   const [calibrations, setCalibrations] = useState<Record<string, Record<string, string[]>>>({});
   const [editing, setEditing] = useState<{ config: ConfigEntry; mode: ConfigEditorMode } | null>(null);
@@ -37,7 +38,7 @@ export default function SettingsPage() {
       setSerialPorts(serial);
       setCameras(cams);
       setCalibrations(cal);
-      const nextConfigs = { robot: [], teleop: [], mapper: [], cameras: [] } as Record<ConfigGroup, ConfigCardEntry[]>;
+      const nextConfigs = { robot: [], teleop: [], mapper: [], motion_profiles: [], cameras: [] } as Record<ConfigGroup, ConfigCardEntry[]>;
       CONFIG_GROUPS.forEach((g, i) => { nextConfigs[g] = groups[i]; });
       setConfigs(nextConfigs);
     } catch (e) {
@@ -87,6 +88,7 @@ export default function SettingsPage() {
       />
       <div className="flex-1 overflow-auto">
         <div className="max-w-[1200px] mx-auto px-xl py-xl flex flex-col gap-xl">
+          <ManagedServicesBlock />
           <HardwareStatusBlock
             serial={serialPorts}
             cameras={cameras}

@@ -16,8 +16,8 @@ export async function apiFetch<T>(
 ): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     cache: "no-store",
-    headers: { "Content-Type": "application/json", ...opts?.headers },
     ...opts,
+    headers: { "Content-Type": "application/json", ...opts?.headers },
   });
   if (!res.ok) {
     const body = await res.json().catch(() => ({ detail: res.statusText }));

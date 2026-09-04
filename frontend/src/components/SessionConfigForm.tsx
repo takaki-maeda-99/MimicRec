@@ -21,6 +21,7 @@ export default function SessionConfigForm({ onStarted, onEditConfig }: Props) {
   const { data: robots } = useConfigsWithContent("robot");
   const { data: teleops } = useConfigsWithContent("teleop");
   const { data: mappers } = useConfigsWithContent("mapper");
+  const { data: motionProfiles } = useConfigsWithContent("motion_profiles");
   const { data: datasets } = useDatasets();
   const startSession = useStartSession();
 
@@ -28,7 +29,7 @@ export default function SessionConfigForm({ onStarted, onEditConfig }: Props) {
   const clearError = useSessionStore((s) => s.clearError);
 
   const form = useRecordFormStore();
-  const { mode, robot, teleop, mapper, dataset, task, fps, previewEnabled, slotAssignments } = form;
+  const { mode, robot, teleop, mapper, profile, dataset, task, fps, previewEnabled, slotAssignments } = form;
 
   const datasetExists = !!datasets?.some(d => d.name === dataset);
   const { data: tasks } = useTasks(datasetExists ? dataset : "");
@@ -70,13 +71,18 @@ export default function SessionConfigForm({ onStarted, onEditConfig }: Props) {
     // to the new attempt's spinner.
     clearError();
     const body: Record<string, unknown> = {
-      mode, dataset, task, robot, fps,
+      mode, dataset, task, fps,
       slot_assignments: slotAssignments.map((a: SlotAssignmentDraft) => ({ slot: a.slot, device: a.device })),
       preview_enabled: previewEnabled,
     };
     if (mode === "teleop") {
+      body.robot = robot;
       body.teleop = teleop;
       body.mapper = mapper;
+    } else if (mode === "hand_teach") {
+      body.robot = robot;
+    } else {
+      body.profile = profile;
     }
     startSession.mutate(body, { onSuccess: () => onStarted() });
   };
@@ -104,6 +110,9 @@ export default function SessionConfigForm({ onStarted, onEditConfig }: Props) {
                 </SegmentedTab>
                 <SegmentedTab active={mode === "hand_teach"} onClick={() => form.set({ mode: "hand_teach" })}>
                   Hand Teach
+                </SegmentedTab>
+                <SegmentedTab active={mode === "motion"} onClick={() => form.set({ mode: "motion" })}>
+                  Motion Graph
                 </SegmentedTab>
               </SegmentedTabBar>
             </Field>
@@ -205,16 +214,29 @@ export default function SessionConfigForm({ onStarted, onEditConfig }: Props) {
               <span className="flex-1 h-px bg-hairline-soft" />
             </header>
 
-            <Field label="Robot">
-              <ConfigPickerRow
-                group="robot"
-                selected={robot}
-                configs={robots ?? []}
-                onSelect={(name) => form.set({ robot: name })}
-                onEdit={(name) => onEditConfig?.("robot", name, "edit")}
-                onNew={() => onEditConfig?.("robot", "", "new")}
-              />
-            </Field>
+            {mode !== "motion" ? (
+              <Field label="Robot">
+                <ConfigPickerRow
+                  group="robot"
+                  selected={robot}
+                  configs={robots ?? []}
+                  onSelect={(name) => form.set({ robot: name })}
+                  onEdit={(name) => onEditConfig?.("robot", name, "edit")}
+                  onNew={() => onEditConfig?.("robot", "", "new")}
+                />
+              </Field>
+            ) : (
+              <Field label="Motion profile">
+                <ConfigPickerRow
+                  group="motion_profiles"
+                  selected={profile}
+                  configs={motionProfiles ?? []}
+                  onSelect={(name) => form.set({ profile: name })}
+                  onEdit={(name) => onEditConfig?.("motion_profiles", name, "edit")}
+                  onNew={() => onEditConfig?.("motion_profiles", "", "new")}
+                />
+              </Field>
+            )}
 
             {mode === "teleop" && (
               <>

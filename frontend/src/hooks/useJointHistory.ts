@@ -48,6 +48,7 @@ export function useJointHistory(
   numJoints: number,
   secondsWindow = 6,
   hz = 100,
+  appendSeparateGripper = false,
 ) {
   const capacity = secondsWindow * hz;
   const bufRef = useRef<Buffer>(makeBuffer(numJoints, capacity));
@@ -67,15 +68,19 @@ export function useJointHistory(
     conn.onMessage((msg) => {
       const m = msg as StatePayload;
       if (!m.joint_pos || !m.joint_pos.length) return;
-      if (m.joint_pos.length > numJointsObserved) {
-        setNumJointsObserved(m.joint_pos.length);
+      const sample = [...m.joint_pos];
+      if (appendSeparateGripper && typeof m.gripper_pos === "number") {
+        sample.push(m.gripper_pos);
       }
-      push(bufRef.current, m.joint_pos);
+      if (sample.length > numJointsObserved) {
+        setNumJointsObserved(sample.length);
+      }
+      push(bufRef.current, sample);
       listenersRef.current.forEach((l) => l());
     });
     conn.connect();
     return () => conn.disconnect();
-  }, [enabled, numJointsObserved]);
+  }, [enabled, numJointsObserved, appendSeparateGripper]);
 
   const subscribe = (cb: () => void) => {
     listenersRef.current.add(cb);
