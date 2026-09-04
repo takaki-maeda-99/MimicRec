@@ -80,6 +80,8 @@ if [[ -f "$REPO_ROOT/.gitmodules" ]]; then
     log "syncing pinned third-party git submodules"
     git -C "$REPO_ROOT" submodule sync --recursive
     git -C "$REPO_ROOT" submodule update --init --recursive
+    log "applying MimicRec third-party overlays"
+    bash "$REPO_ROOT/scripts/apply_third_party_patches.sh"
 fi
 
 # ---------- 3. Python venv + backend deps ----------

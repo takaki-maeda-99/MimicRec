@@ -1,0 +1,271 @@
+diff --git a/reBotArm_control_py/actuator/gripper.py b/reBotArm_control_py/actuator/gripper.py
+index 66fe519..d75b1fe 100644
+--- a/reBotArm_control_py/actuator/gripper.py
++++ b/reBotArm_control_py/actuator/gripper.py
+@@ -7,6 +7,7 @@ from __future__ import annotations
+ import threading
+ import time
+ from dataclasses import dataclass
++from math import isfinite
+ from pathlib import Path
+ from typing import Callable, Optional
+ 
+@@ -30,6 +31,17 @@ class GripperCfg:
+     pos_kp: float = 50.0
+     pos_ki: float = 1.0
+     vlim: float = 3.0
++    slip_torque_nm: Optional[float] = None
++    safe_max_nm: Optional[float] = None
++
++
++def _optional_positive_float(value: object, name: str) -> Optional[float]:
++    if value is None:
++        return None
++    result = float(value)
++    if not isfinite(result) or result <= 0.0:
++        raise ValueError(f"{name} must be a finite positive number or null")
++    return result
+ 
+ 
+ def load_cfg(path: str) -> dict:
+@@ -39,6 +51,15 @@ def load_cfg(path: str) -> dict:
+     gc = data.get("gripper", [{}])[0]
+     mc = gc.get("MIT", {})
+     pc = gc.get("POS_VEL", {})
++    tc = gc.get("torque_limits", {})
++    slip_torque_nm = _optional_positive_float(
++        tc.get("slip_torque_nm"), "torque_limits.slip_torque_nm")
++    safe_max_nm = _optional_positive_float(
++        tc.get("safe_max_nm"), "torque_limits.safe_max_nm")
++    if (safe_max_nm is not None and slip_torque_nm is not None
++            and safe_max_nm > slip_torque_nm):
++        raise ValueError(
++            "torque_limits.safe_max_nm must not exceed slip_torque_nm")
+     return {
+         "channel": data.get("channel", "/dev/ttyACM0"),
+         "gripper": GripperCfg(
+@@ -54,6 +75,8 @@ def load_cfg(path: str) -> dict:
+             pos_kp=float(pc.get("pos_kp", 50.0)),
+             pos_ki=float(pc.get("pos_ki", 1.0)),
+             vlim=float(pc.get("vlim", 3.0)),
++            slip_torque_nm=slip_torque_nm,
++            safe_max_nm=safe_max_nm,
+         ),
+     }
+ 
+@@ -72,6 +95,7 @@ class Gripper:
+         self._mode = "mit"
+         self._mit_kp = self._cfg.kp
+         self._mit_kd = self._cfg.kd
++        self._tau_limit_nm = self._cfg.safe_max_nm
+ 
+         # External Controller is owned by the caller and must not be closed here.
+         self._external_ctrl: Optional[Controller] = controller
+@@ -84,12 +108,14 @@ class Gripper:
+         self._loop_stop = threading.Event()
+         self._rate = 100.0
+ 
+-    def _make_controller(self) -> Controller:
+-        if self._external_ctrl is not None:
+-            return self._external_ctrl
+-        if self._channel.startswith("/dev/tty"):
+-            return Controller.from_dm_serial(self._channel, 921600)
+-        return Controller(self._channel)
++    def _make_controller(self) -> Controller:
++        if self._external_ctrl is not None:
++            return self._external_ctrl
++        # Accept stable udev aliases and /dev/serial/by-id links in addition
++        # to volatile /dev/tty* names.
++        if self._channel.startswith("/dev/"):
++            return Controller.from_dm_serial(self._channel, 921600)
++        return Controller(self._channel)
+ 
+     def _setup_motor(self) -> None:
+         self._ctrl = self._make_controller()
+@@ -110,6 +136,20 @@ class Gripper:
+     def mode(self) -> str:
+         return self._mode
+ 
++    @property
++    def tau_limit_nm(self) -> Optional[float]:
++        """MIT指令に適用する推定合計トルク上限を返す。"""
++        return self._tau_limit_nm
++
++    def set_tau_limit_nm(self, limit_nm: Optional[float]) -> None:
++        """MITトルク上限を変更する。None は明示的に制限を無効化する。"""
++        validated = _optional_positive_float(
++            limit_nm, "gripper torque limit")
++        if (validated is not None and self._cfg.slip_torque_nm is not None
++                and validated > self._cfg.slip_torque_nm):
++            raise ValueError("gripper torque limit must not exceed slip_torque_nm")
++        self._tau_limit_nm = validated
++
+     def connect(self) -> None:
+         pass
+ 
+@@ -166,6 +206,47 @@ class Gripper:
+             print("[disable] 失能失败")
+         return False
+ 
++    def clear_fault(
++        self,
++        *,
++        reenable: bool = True,
++        mode_timeout_ms: int = 1000,
++    ) -> dict:
++        """Clear the gripper motor fault and restore its active mode."""
++        mode_by_name = {
++            "mit": Mode.MIT,
++            "pos_vel": Mode.POS_VEL,
++            "vel": Mode.VEL,
++        }
++        try:
++            self._mot.clear_error()
++            if reenable:
++                self._mot.enable()
++                mode = mode_by_name.get(self._mode)
++                if mode is not None:
++                    self._mot.ensure_mode(mode, mode_timeout_ms)
++        except Exception as exc:
++            return {
++                "ok": False,
++                "error": f"{type(exc).__name__}: {exc}",
++                "status_code": None,
++            }
++
++        self._request_and_poll()
++        self._poll()
++        try:
++            state = self._mot.get_state()
++            status_code = None if state is None else int(state.status_code)
++        except Exception:
++            status_code = None
++        if reenable and status_code != 1:
++            return {
++                "ok": False,
++                "error": "motor did not return enabled status",
++                "status_code": status_code,
++            }
++        return {"ok": True, "status_code": status_code}
++
+     # ------------------------------------------------------------------
+     # 零点设置
+     # ------------------------------------------------------------------
+@@ -276,6 +357,7 @@ class Gripper:
+         return ok
+ 
+     def mode_pos_vel(self, stabilize_delay: float = 0.2) -> bool:
++        self._reject_unlimited_mode("POS_VEL")
+         self._mode = "pos_vel"
+         try:
+             self._mot.write_register_f32(25, self._cfg.vel_kp)
+@@ -290,6 +372,7 @@ class Gripper:
+         return ok
+ 
+     def mode_vel(self, stabilize_delay: float = 0.2) -> bool:
++        self._reject_unlimited_mode("VEL")
+         self._mode = "vel"
+         ok = self._ensure_mode(Mode.VEL)
+         time.sleep(stabilize_delay)
+@@ -307,14 +390,79 @@ class Gripper:
+             kp = self._mit_kp
+         if kd is None:
+             kd = self._mit_kd
++        pos, vel, kp, kd, tau = map(float, (pos, vel, kp, kd, tau))
++        if not all(isfinite(value) for value in (pos, vel, kp, kd, tau)):
++            raise ValueError("MIT command values must all be finite")
++
++        limit = self._tau_limit_nm
++        if limit is not None:
++            pos, vel, kp, kd, tau = self._limit_mit_command(
++                pos, vel, kp, kd, tau, limit)
+         try:
+-            self._mot.send_mit(float(pos), float(vel), float(kp), float(kd), float(tau))
++            self._mot.send_mit(pos, vel, kp, kd, tau)
+         except CallError:
+             pass
+         self._request()
+         self._poll()
+ 
++    def _limit_mit_command(
++        self,
++        pos: float,
++        vel: float,
++        kp: float,
++        kd: float,
++        tau: float,
++        limit: float,
++    ) -> tuple[float, float, float, float, float]:
++        """Clamp estimated kp*position_error + kd*velocity_error + tau.
++
++        MIT mode has no standalone torque-limit register, so the position or
++        velocity target is moved just enough to keep the motor-side PD sum
++        within the configured limit.  If feedback is not available yet, PD is
++        disabled for that cycle; this fails closed instead of sending an
++        unbounded position error.
++        """
++        # Complete the feedback transaction requested by the previous MIT
++        # command before reading the cached state.  The Damiao serial bridge
++        # needs this second poll; without it the limiter can keep seeing the
++        # initial position and repeatedly emit the same one-step target.
++        self._poll()
++        try:
++            state = self._mot.get_state()
++        except Exception:
++            state = None
++
++        if state is None:
++            return pos, vel, 0.0, 0.0, float(np.clip(tau, -limit, limit))
++
++        current_pos = float(state.pos)
++        current_vel = float(state.vel)
++        if not isfinite(current_pos) or not isfinite(current_vel):
++            return pos, vel, 0.0, 0.0, float(np.clip(tau, -limit, limit))
++
++        predicted = (
++            kp * (pos - current_pos)
++            + kd * (vel - current_vel)
++            + tau
++        )
++        limited_total = float(np.clip(predicted, -limit, limit))
++        limited_tau = float(np.clip(tau, -limit, limit))
++
++        if abs(kp) > 1e-9:
++            pos = current_pos + (
++                limited_total
++                - kd * (vel - current_vel)
++                - limited_tau
++            ) / kp
++        elif abs(kd) > 1e-9:
++            vel = current_vel + (limited_total - limited_tau) / kd
++        else:
++            limited_tau = limited_total
++
++        return pos, vel, kp, kd, limited_tau
++
+     def pos_vel(self, pos: float, vlim: Optional[float] = None) -> None:
++        self._reject_unlimited_mode("POS_VEL")
+         if vlim is None:
+             vlim = self._cfg.vlim
+         try:
+@@ -325,6 +473,7 @@ class Gripper:
+         self._poll()
+ 
+     def set_vel(self, vel: float) -> None:
++        self._reject_unlimited_mode("VEL")
+         try:
+             self._mot.send_vel(float(vel))
+         except CallError:
+@@ -332,6 +481,12 @@ class Gripper:
+         self._request()
+         self._poll()
+ 
++    def _reject_unlimited_mode(self, mode: str) -> None:
++        if self._tau_limit_nm is not None:
++            raise RuntimeError(
++                f"{mode} cannot enforce the configured gripper torque limit; "
++                "use MIT mode or explicitly disable the limit")
++
+     # ------------------------------------------------------------------
+     # 多线程控制循环
+     # ------------------------------------------------------------------

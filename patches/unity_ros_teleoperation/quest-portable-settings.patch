@@ -1,0 +1,90 @@
+diff --git a/Assets/Medium_PipelineAsset.asset b/Assets/Medium_PipelineAsset.asset
+index 50dbe50..7c2414c 100644
+--- a/Assets/Medium_PipelineAsset.asset
++++ b/Assets/Medium_PipelineAsset.asset
+@@ -101,9 +101,9 @@ MonoBehaviour:
+       m_Keys: []
+       m_Values: 
+   m_PrefilteringModeMainLightShadows: 3
+-  m_PrefilteringModeAdditionalLight: 3
++  m_PrefilteringModeAdditionalLight: 4
+   m_PrefilteringModeAdditionalLightShadows: 2
+-  m_PrefilterXRKeywords: 1
++  m_PrefilterXRKeywords: 0
+   m_PrefilteringModeForwardPlus: 0
+   m_PrefilteringModeDeferredRendering: 0
+   m_PrefilteringModeScreenSpaceOcclusion: 0
+diff --git a/Assets/Medium_PipelineAsset_ForwardRenderer.asset b/Assets/Medium_PipelineAsset_ForwardRenderer.asset
+index 6ae0908..c12dfaa 100644
+--- a/Assets/Medium_PipelineAsset_ForwardRenderer.asset
++++ b/Assets/Medium_PipelineAsset_ForwardRenderer.asset
+@@ -67,4 +67,4 @@ MonoBehaviour:
+   m_DepthAttachmentFormat: 0
+   m_DepthTextureFormat: 0
+   m_AccurateGbufferNormals: 0
+-  m_IntermediateTextureMode: 1
++  m_IntermediateTextureMode: 0
+diff --git a/ProjectSettings/ProjectSettings.asset b/ProjectSettings/ProjectSettings.asset
+index ab4d9ac..871030a 100644
+--- a/ProjectSettings/ProjectSettings.asset
++++ b/ProjectSettings/ProjectSettings.asset
+@@ -46,7 +46,7 @@ PlayerSettings:
+   defaultScreenHeight: 1080
+   defaultScreenWidthWeb: 1920
+   defaultScreenHeightWeb: 1200
+-  m_StereoRenderingPath: 0
++  m_StereoRenderingPath: 2
+   m_ActiveColorSpace: 1
+   unsupportedMSAAFallback: 0
+   m_SpriteBatchMaxVertexCount: 65535
+@@ -284,7 +284,7 @@ PlayerSettings:
+   AndroidEnableTango: 0
+   androidEnableBanner: 1
+   androidUseLowAccuracyLocation: 0
+-  androidUseCustomKeystore: 1
++  androidUseCustomKeystore: 0
+   m_AndroidBanners:
+   - width: 320
+     height: 180
+@@ -922,8 +922,8 @@ PlayerSettings:
+   webWasm2023: 0
+   webEnableSubmoduleStrippingCompatibility: 0
+   scriptingDefineSymbols:
+-    Android: USE_INPUT_SYSTEM_POSE_CONTROL
+-    Standalone: USE_INPUT_SYSTEM_POSE_CONTROL
++    Android: USE_INPUT_SYSTEM_POSE_CONTROL;OVR_DISABLE_HAND_PINCH_BUTTON_MAPPING
++    Standalone: USE_INPUT_SYSTEM_POSE_CONTROL;OVR_DISABLE_HAND_PINCH_BUTTON_MAPPING
+     Windows Store Apps: USE_INPUT_SYSTEM_POSE_CONTROL
+   additionalCompilerArguments: {}
+   platformArchitecture: {}
+@@ -1036,7 +1036,7 @@ PlayerSettings:
+   qnxGraphicConfPath: 
+   apiCompatibilityLevel: 6
+   captureStartupLogs: {}
+-  activeInputHandler: 2
++  activeInputHandler: 1
+   windowsGamepadBackendHint: 0
+   cloudProjectId: 
+   framebufferDepthMemorylessMode: 0
+diff --git a/ProjectSettings/QualitySettings.asset b/ProjectSettings/QualitySettings.asset
+index dd62926..785b399 100644
+--- a/ProjectSettings/QualitySettings.asset
++++ b/ProjectSettings/QualitySettings.asset
+@@ -273,7 +273,7 @@ QualitySettings:
+     excludedTargetPlatforms: []
+   - serializedVersion: 5
+     name: Ultra
+-    pixelLightCount: 4
++    pixelLightCount: 3
+     shadows: 2
+     shadowResolution: 2
+     shadowProjection: 1
+@@ -286,7 +286,7 @@ QualitySettings:
+     skinWeights: 4
+     globalTextureMipmapLimit: 0
+     textureMipmapLimitSettings: []
+-    anisotropicTextures: 2
++    anisotropicTextures: 1
+     antiAliasing: 0
+     softParticles: 1
+     softVegetation: 1

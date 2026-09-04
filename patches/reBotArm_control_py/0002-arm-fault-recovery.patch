@@ -1,0 +1,79 @@
+diff --git a/reBotArm_control_py/actuator/arm.py b/reBotArm_control_py/actuator/arm.py
+index 19130b3..0bb8de7 100644
+--- a/reBotArm_control_py/actuator/arm.py
++++ b/reBotArm_control_py/actuator/arm.py
+@@ -116,7 +116,10 @@ class RobotArm:
+ 
+     def _make_controller(self, vendor: str) -> Controller:
+         """按 channel 类型创建 Controller，与 motorbridge 官方示例一致。"""
+-        if self._channel.startswith("/dev/tty"):
++        # Stable udev aliases and /dev/serial/by-id links are serial devices
++        # too. Restricting this branch to /dev/tty* misclassifies those paths
++        # as SocketCAN interface names and eventually calls if_nametoindex().
++        if self._channel.startswith("/dev/"):
+             return Controller.from_dm_serial(self._channel, 921600)
+         return Controller(self._channel)
+ 
+@@ -357,6 +360,62 @@ class RobotArm:
+         if failed:
+             print(f"[disable] 仍处使能状态的电机: {failed}")
+ 
++    def clear_faults(
++        self,
++        *,
++        reenable: bool = True,
++        mode_timeout_ms: int = 1000,
++    ) -> Dict[str, dict]:
++        """Clear hardware faults on every joint and restore the active mode.
++
++        The caller must serialize this operation with any running control
++        loop.  A per-joint result is returned so one failed motor is never
++        hidden behind an aggregate success flag.
++        """
++        mode_by_name = {
++            "mit": Mode.MIT,
++            "pos_vel": Mode.POS_VEL,
++            "vel": Mode.VEL,
++        }
++        restore_mode = mode_by_name.get(self._mode)
++        results: Dict[str, dict] = {}
++
++        for jc in self._joints:
++            motor = self._motor_map[jc.name]
++            try:
++                motor.clear_error()
++                if reenable:
++                    motor.enable()
++                    if restore_mode is not None:
++                        motor.ensure_mode(restore_mode, mode_timeout_ms)
++                results[jc.name] = {"ok": True}
++            except Exception as exc:
++                results[jc.name] = {
++                    "ok": False,
++                    "error": f"{type(exc).__name__}: {exc}",
++                }
++            time.sleep(0.02)
++
++        self._request_and_poll()
++        self._poll_all()
++        for jc in self._joints:
++            result = results[jc.name]
++            try:
++                state = self._motor_map[jc.name].get_state()
++                result["status_code"] = (
++                    None if state is None else int(state.status_code)
++                )
++            except Exception:
++                result["status_code"] = None
++            if (
++                reenable
++                and result.get("ok")
++                and result["status_code"] != 1
++            ):
++                result["ok"] = False
++                result["error"] = "motor did not return enabled status"
++        return results
++
+     # ------------------------------------------------------------------
+     # 零点设置
+     # ------------------------------------------------------------------
