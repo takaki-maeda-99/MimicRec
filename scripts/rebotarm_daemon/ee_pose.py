@@ -13,7 +13,7 @@ from reBotArm_control_py.kinematics import load_robot_model
 
 
 # Default end-effector frame name in the reBotArm URDF — confirmed in
-# reBotArm_control_py/reBotArm_control_py/kinematics/robot_model.py
+# third_party/reBotArm_control_py/reBotArm_control_py/kinematics/robot_model.py
 # (get_end_effector_frame_id uses "end_link") and example 10.
 _DEFAULT_EE_FRAME = "end_link"
 

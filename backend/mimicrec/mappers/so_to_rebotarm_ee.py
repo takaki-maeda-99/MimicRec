@@ -26,6 +26,7 @@ Both FK and IK use ``lerobot.model.kinematics.RobotKinematics`` (placo
 backend) so the backend venv only needs placo — pinocchio stays in the
 daemon venv.
 """
+
 from __future__ import annotations
 
 import logging
@@ -35,6 +36,7 @@ from typing import Sequence
 import numpy as np
 
 from mimicrec.types import RobotCommand, RobotState, TeleopAction
+from mimicrec.mappers.delta_ee_to_rebotarm import DeltaEEToReBotArmMapper
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +54,7 @@ def _ensure_ros_package_path(dirs: Sequence[str]) -> None:
     os.environ["ROS_PACKAGE_PATH"] = os.pathsep.join(parts)
 
 
-class SOToReBotArmEEMapper:
+class SOToReBotArmEEMapper(DeltaEEToReBotArmMapper):
     """Map SO-101 leader joint actions to reBotArm joint commands via EE deltas.
 
     Per-tick flow:
@@ -83,12 +85,25 @@ class SOToReBotArmEEMapper:
         rebotarm_urdf_path: str,
         so101_ee_frame: str = "gripper_frame_link",
         rebotarm_ee_frame: str = "end_link",
-        so101_arm_joints: Sequence[str] = ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll"),
+        so101_arm_joints: Sequence[str] = (
+            "shoulder_pan",
+            "shoulder_lift",
+            "elbow_flex",
+            "wrist_flex",
+            "wrist_roll",
+        ),
         # NOTE: The reBotArm URDF has joint3 named "join3" (typo
         # carried over from upstream — also present in
         # joint_names_*.yaml). Match the URDF exactly here.
-        rebotarm_arm_joints: Sequence[str] = ("joint1", "joint2", "join3", "joint4", "joint5", "joint6"),
-        rebotarm_package_dirs: Sequence[str] = ("reBotArm_control_py/urdf",),
+        rebotarm_arm_joints: Sequence[str] = (
+            "joint1",
+            "joint2",
+            "join3",
+            "joint4",
+            "joint5",
+            "joint6",
+        ),
+        rebotarm_package_dirs: Sequence[str] = ("third_party/reBotArm_control_py/urdf",),
         # Position scale: reBotArm Δp = xyz_scale * SO-101 Δp.
         xyz_scale: float | Sequence[float] = 1.5,
         # Gripper linear map: SO-101 deg → reBotArm rad.
@@ -129,6 +144,8 @@ class SOToReBotArmEEMapper:
         # the IK and joint-step clamp, so the IK is free to do its
         # thing on the unlocked joints.
         lock_joints_at_init: Sequence[int] = (),
+        max_ik_position_error_m: float = 0.0,
+        max_ik_orientation_error_rad: float = 0.0,
     ):
         from lerobot.model.kinematics import RobotKinematics
 
@@ -144,18 +161,38 @@ class SOToReBotArmEEMapper:
             target_frame_name=so101_ee_frame,
             joint_names=self._so101_arm_joints,
         )
-        self._rebotarm_ik = RobotKinematics(
-            urdf_path=rebotarm_urdf_path,
-            target_frame_name=rebotarm_ee_frame,
-            joint_names=self._rebotarm_arm_joints,
-        )
-
         scale = np.asarray(xyz_scale, dtype=np.float64)
         if scale.shape == ():
             scale = np.full(3, float(scale))
         if scale.shape != (3,):
-            raise ValueError(f"xyz_scale must be scalar or 3-vector, got shape {scale.shape}")
+            raise ValueError(
+                f"xyz_scale must be scalar or 3-vector, got shape {scale.shape}"
+            )
         self._xyz_scale = scale
+
+        # The robot-specific half of this mapper is shared with keyboard,
+        # SpaceMouse, and future Cartesian teleoperators.  This class only
+        # computes the SO-101 EE delta and gripper mapping.
+        super().__init__(
+            rebotarm_urdf_path=rebotarm_urdf_path,
+            rebotarm_ee_frame=rebotarm_ee_frame,
+            rebotarm_arm_joints=rebotarm_arm_joints,
+            rebotarm_package_dirs=rebotarm_package_dirs,
+            delta_frame="base",
+            translation_scale=scale,
+            ik_position_weight=ik_position_weight,
+            ik_orientation_weight=ik_orientation_weight,
+            max_linear_delta_m=0.0,
+            max_angular_delta_rad=0.0,
+            workspace_radius_m=workspace_radius_m,
+            workspace_z_min_m=workspace_z_min_m,
+            workspace_z_max_m=workspace_z_max_m,
+            max_joint_step_deg=max_joint_step_deg,
+            max_ik_position_error_m=max_ik_position_error_m,
+            max_ik_orientation_error_rad=max_ik_orientation_error_rad,
+            seed_from_last_ik=seed_from_last_ik,
+            lock_joints_at_init=lock_joints_at_init,
+        )
 
         self._gripper_in_min = float(gripper_in_min_deg)
         self._gripper_in_max = float(gripper_in_max_deg)
@@ -163,25 +200,7 @@ class SOToReBotArmEEMapper:
         self._gripper_out_max = float(gripper_out_max_rad)
         self._gripper_invert = bool(gripper_invert)
 
-        self._ik_pos_w = float(ik_position_weight)
-        self._ik_ori_w = float(ik_orientation_weight)
         self._max_ee_step = float(max_ee_step_m)
-        self._workspace_radius = float(workspace_radius_m)
-        self._workspace_z_min = float(workspace_z_min_m)
-        self._workspace_z_max = float(workspace_z_max_m)
-        self._max_joint_step_deg = float(max_joint_step_deg)
-        self._seed_from_last_ik = bool(seed_from_last_ik)
-        self._lock_joint_indices = tuple(int(i) for i in lock_joints_at_init)
-        for i in self._lock_joint_indices:
-            if not (0 <= i < len(self._rebotarm_arm_joints)):
-                raise ValueError(
-                    f"lock_joints_at_init index {i} out of range "
-                    f"[0, {len(self._rebotarm_arm_joints)})"
-                )
-        # Filled on the first tick from the IK seed.
-        self._locked_joint_values_deg: dict[int, float] = {}
-
-        self._dof = len(self._rebotarm_arm_joints)
 
         # Running state: previous SO-101 EE pose, current reBotArm EE
         # target, last IK output (for stable seeding), last full
@@ -189,10 +208,6 @@ class SOToReBotArmEEMapper:
         # primes them.
         self._prev_so_pos: np.ndarray | None = None
         self._prev_so_R: np.ndarray | None = None
-        self._target_pos: np.ndarray | None = None
-        self._target_R: np.ndarray | None = None
-        self._last_ik_output_deg: np.ndarray | None = None
-        self._last_command: RobotCommand | None = None
 
     # -----------------------------------------------------------------
     # Public entry point
@@ -200,7 +215,9 @@ class SOToReBotArmEEMapper:
 
     def map(self, action: TeleopAction, robot_state: RobotState) -> RobotCommand:
         if action.target_joint_pos is None:
-            return self._fallback_command(robot_state, reason="action.target_joint_pos is None")
+            return self._fallback_command(
+                robot_state, reason="action.target_joint_pos is None"
+            )
 
         so101 = np.asarray(action.target_joint_pos, dtype=np.float64)
         n_arm = len(self._so101_arm_joints)
@@ -213,12 +230,16 @@ class SOToReBotArmEEMapper:
         try:
             T_so = self._so101_fk.forward_kinematics(so101[:n_arm])
         except Exception as e:
-            return self._fallback_command(robot_state, reason=f"SO101 FK error: {type(e).__name__}: {e}")
+            return self._fallback_command(
+                robot_state, reason=f"SO101 FK error: {type(e).__name__}: {e}"
+            )
 
         so_pos = np.asarray(T_so[:3, 3], dtype=np.float64)
         so_R = np.asarray(T_so[:3, :3], dtype=np.float64)
 
-        gripper_rad = self._map_gripper(float(so101[n_arm])) if so101.shape[0] > n_arm else None
+        gripper_rad = (
+            self._map_gripper(float(so101[n_arm])) if so101.shape[0] > n_arm else None
+        )
 
         # First-tick initialization: anchor reBotArm target at its
         # current FK pose; record SO-101 baseline. No motion this tick.
@@ -242,97 +263,19 @@ class SOToReBotArmEEMapper:
             if jump > self._max_ee_step:
                 logger.warning(
                     "leader Δp=%.3f m exceeds max_ee_step_m=%.3f; treating as discontinuity",
-                    jump, self._max_ee_step,
+                    jump,
+                    self._max_ee_step,
                 )
                 self._prev_so_pos = so_pos.copy()
                 self._prev_so_R = so_R.copy()
                 return self._hold_command(robot_state, gripper_rad)
-
-        # Tentative new target. Validated against the workspace box
-        # before being committed to instance state.
-        new_target_pos = self._target_pos + self._xyz_scale * dp
-        new_target_R = dR_world @ self._target_R
-
-        if self._workspace_radius > 0.0:
-            r = float(np.linalg.norm(new_target_pos))
-            if r > self._workspace_radius:
-                logger.warning(
-                    "target r=%.3f m beyond workspace_radius=%.3f m; refusing delta this tick",
-                    r, self._workspace_radius,
-                )
-                self._prev_so_pos = so_pos.copy()
-                self._prev_so_R = so_R.copy()
-                return self._hold_command(robot_state, gripper_rad)
-        if not (self._workspace_z_min <= float(new_target_pos[2]) <= self._workspace_z_max):
-            logger.warning(
-                "target z=%.3f m outside [%.3f, %.3f]; refusing delta this tick",
-                float(new_target_pos[2]), self._workspace_z_min, self._workspace_z_max,
-            )
-            self._prev_so_pos = so_pos.copy()
-            self._prev_so_R = so_R.copy()
-            return self._hold_command(robot_state, gripper_rad)
-
-        # Commit target update.
-        self._target_pos = new_target_pos
-        self._target_R = new_target_R
-
-        # Build IK target SE(3) and solve.
-        T_target = np.eye(4)
-        T_target[:3, :3] = self._target_R
-        T_target[:3, 3] = self._target_pos
-
-        seed_deg = self._seed_from_state(robot_state)
-        try:
-            q_deg = self._rebotarm_ik.inverse_kinematics(
-                seed_deg,
-                T_target,
-                position_weight=self._ik_pos_w,
-                orientation_weight=self._ik_ori_w,
-            )
-        except Exception as e:
-            return self._fallback_command(robot_state, reason=f"reBotArm IK error: {type(e).__name__}: {e}")
-
-        q_deg_raw = np.asarray(q_deg[: self._dof], dtype=np.float64)
-        if not np.isfinite(q_deg_raw).all():
-            return self._fallback_command(robot_state, reason="non-finite IK output")
-
-        # Cache the unclamped IK output as next tick's seed.
-        self._last_ik_output_deg = q_deg_raw.copy()
-
-        # Joint-space velocity clamp.
-        q_deg_send = q_deg_raw
-        if self._max_joint_step_deg > 0.0:
-            raw_delta = q_deg_raw - seed_deg
-            worst = float(np.max(np.abs(raw_delta)))
-            if worst > self._max_joint_step_deg:
-                worst_idx = int(np.argmax(np.abs(raw_delta)))
-                logger.info(
-                    "joint %d wants %+.2f° this tick — clamping to ±%.2f°",
-                    worst_idx, raw_delta[worst_idx], self._max_joint_step_deg,
-                )
-                clamped_delta = np.clip(
-                    raw_delta, -self._max_joint_step_deg, self._max_joint_step_deg
-                )
-                q_deg_send = seed_deg + clamped_delta
-
-        # Lock-joints override: forces specified joints back to their
-        # init-tick values regardless of what the IK requested. Done
-        # after the velocity clamp so the IK / clamp interaction on
-        # the unlocked joints is preserved.
-        if self._locked_joint_values_deg:
-            q_deg_send = q_deg_send.copy()
-            for idx, val in self._locked_joint_values_deg.items():
-                q_deg_send[idx] = val
-
-        q_rad = np.deg2rad(q_deg_send).astype(np.float32)
 
         # Roll the SO-101 baseline forward.
         self._prev_so_pos = so_pos.copy()
         self._prev_so_R = so_R.copy()
-
-        cmd = RobotCommand(q=q_rad, gripper=gripper_rad)
-        self._last_command = cmd
-        return cmd
+        return self._map_transform_delta(
+            self._xyz_scale * dp, dR_world, robot_state, gripper_rad
+        )
 
     # -----------------------------------------------------------------
     # Helpers
@@ -352,7 +295,8 @@ class SOToReBotArmEEMapper:
         except Exception as e:
             logger.warning(
                 "reBotArm FK at init failed (%s: %s); falling back to identity at base",
-                type(e).__name__, e,
+                type(e).__name__,
+                e,
             )
             T = np.eye(4)
         self._target_pos = np.asarray(T[:3, 3], dtype=np.float64).copy()
@@ -364,8 +308,10 @@ class SOToReBotArmEEMapper:
             logger.info(
                 "locking joints %s at init values (deg): %s",
                 list(self._lock_joint_indices),
-                {i: round(self._locked_joint_values_deg[i], 2)
-                 for i in self._lock_joint_indices},
+                {
+                    i: round(self._locked_joint_values_deg[i], 2)
+                    for i in self._lock_joint_indices
+                },
             )
 
     def _seed_from_state(self, state: RobotState) -> np.ndarray:
@@ -385,7 +331,9 @@ class SOToReBotArmEEMapper:
             if q_rad.shape[0] >= self._dof:
                 seed = np.rad2deg(q_rad[: self._dof])
             elif self._last_command is not None:
-                seed = np.rad2deg(np.asarray(self._last_command.q, dtype=np.float64)[: self._dof])
+                seed = np.rad2deg(
+                    np.asarray(self._last_command.q, dtype=np.float64)[: self._dof]
+                )
             else:
                 seed = np.zeros(self._dof, dtype=np.float64)
         for idx, val in self._locked_joint_values_deg.items():
@@ -420,7 +368,9 @@ class SOToReBotArmEEMapper:
             q = np.zeros(self._dof, dtype=np.float32)
         return RobotCommand(q=q)
 
-    def _stay_at_seed(self, robot_state: RobotState, gripper_rad: float | None) -> RobotCommand:
+    def _stay_at_seed(
+        self, robot_state: RobotState, gripper_rad: float | None
+    ) -> RobotCommand:
         """Send the current robot pose as the command (first tick).
 
         Distinct from ``_hold_command`` because there is no prior
@@ -439,8 +389,10 @@ class SOToReBotArmEEMapper:
         self,
         robot_state: RobotState,
         gripper_rad: float | None,
+        reason: str = "constraint rejected delta",
     ) -> RobotCommand:
         """Hold the previous arm command but let the gripper track."""
+        logger.warning("SOToReBotArmEEMapper holding: %s", reason)
         if self._last_command is not None:
             return RobotCommand(
                 q=self._last_command.q.copy(),

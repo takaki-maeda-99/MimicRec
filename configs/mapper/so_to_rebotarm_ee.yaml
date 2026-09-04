@@ -2,7 +2,7 @@ _target_: mimicrec.mappers.so_to_rebotarm_ee.SOToReBotArmEEMapper
 
 # URDFs (paths resolved relative to repo root)
 so101_urdf_path: configs/urdf/so101/so101.urdf
-rebotarm_urdf_path: reBotArm_control_py/urdf/reBot-DevArm_fixend_description/urdf/reBot-DevArm_fixend.urdf
+rebotarm_urdf_path: third_party/reBotArm_control_py/urdf/reBot-DevArm_fixend_description/urdf/reBot-DevArm_fixend.urdf
 
 so101_ee_frame: gripper_frame_link
 rebotarm_ee_frame: end_link
@@ -10,7 +10,7 @@ rebotarm_ee_frame: end_link
 so101_arm_joints: [shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll]
 # Note: reBotArm URDF spells joint3 as "join3" (upstream typo).
 rebotarm_arm_joints: [joint1, joint2, join3, joint4, joint5, joint6]
-rebotarm_package_dirs: [reBotArm_control_py/urdf]
+rebotarm_package_dirs: [third_party/reBotArm_control_py/urdf]
 
 # Position-delta scale: reBotArm Δp = xyz_scale * SO101 Δp.
 # Conservative 1.0 default for first hardware run; bump to 1.5–2.0

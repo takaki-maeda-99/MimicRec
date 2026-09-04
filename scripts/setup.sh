@@ -74,10 +74,11 @@ fi
 have uv || die "uv install failed; install manually: https://docs.astral.sh/uv/"
 log "uv $(uv --version)"
 
-# ---------- 2b. Git submodules (lerobot, reBotArm) ----------
+# ---------- 2b. Git submodules ----------
 # Pinned via .gitmodules; idempotent — re-running is a no-op when up to date.
 if [[ -f "$REPO_ROOT/.gitmodules" ]]; then
-    log "syncing git submodules (lerobot, reBotArm_control_py)"
+    log "syncing pinned third-party git submodules"
+    git -C "$REPO_ROOT" submodule sync --recursive
     git -C "$REPO_ROOT" submodule update --init --recursive
 fi
 
@@ -94,13 +95,13 @@ log "installing backend deps (mimicrec[dev,kinematics])"
 uv pip install --python "$PY" -e "$REPO_ROOT/backend[dev,kinematics]"
 
 log "installing lerobot + feetech extra"
-uv pip install --python "$PY" -e "$REPO_ROOT/lerobot"
+uv pip install --python "$PY" -e "$REPO_ROOT/third_party/lerobot"
 uv pip install --python "$PY" "lerobot[feetech]"
 
 # ---------- 3b. reBotArm daemon venv (Python 3.10) ----------
 # reBotArm_control_py is pinned to Python 3.10 and ships its own
 # motorbridge / pinocchio dependencies.
-if [[ -d "$REPO_ROOT/reBotArm_control_py" ]]; then
+if [[ -d "$REPO_ROOT/third_party/reBotArm_control_py" ]]; then
     log "creating .venv-rebotarm (Python 3.10) for reBotArm daemon"
     if [[ ! -d "$REPO_ROOT/.venv-rebotarm" ]]; then
         uv venv "$REPO_ROOT/.venv-rebotarm" --python 3.10
@@ -117,10 +118,10 @@ if [[ -d "$REPO_ROOT/reBotArm_control_py" ]]; then
     uv pip install --python "$PY_REBOT" \
         "meshcat>=0.3.2" "pin>=3.9.0" "numpy>=1.24.0" \
         "pyyaml>=6.0" "matplotlib>=3.10.8" "motorbridge>=0.1.7" \
-        pyzmq
+        "gpiod>=2,<3" pyzmq
     SITE_PKGS=$("$PY_REBOT" -c "import sysconfig; print(sysconfig.get_paths()['purelib'])")
     {
-        echo "$REPO_ROOT/reBotArm_control_py"
+        echo "$REPO_ROOT/third_party/reBotArm_control_py"
         echo "$REPO_ROOT/scripts"
     } > "$SITE_PKGS/rebotarm_control_py.pth"
 else

@@ -27,7 +27,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SO101_URDF = str(REPO_ROOT / "configs/urdf/so101/so101.urdf")
 REBOTARM_URDF = str(
     REPO_ROOT
-    / "reBotArm_control_py/urdf/reBot-DevArm_fixend_description/urdf/reBot-DevArm_fixend.urdf"
+    / "third_party/reBotArm_control_py/urdf/reBot-DevArm_fixend_description/urdf/reBot-DevArm_fixend.urdf"
 )
 
 

@@ -1,6 +1,13 @@
 [submodule "lerobot"]
-	path = lerobot
+	path = third_party/lerobot
 	url = https://github.com/takaki-maeda-99/lerobot.git
 [submodule "reBotArm_control_py"]
-	path = reBotArm_control_py
+	path = third_party/reBotArm_control_py
 	url = https://github.com/takaki-maeda-99/reBotArm_control_py.git
+[submodule "ROS-TCP-Endpoint"]
+	path = third_party/ROS-TCP-Endpoint
+	url = https://github.com/leggedrobotics/ROS-TCP-Endpoint.git
+	branch = main-ros2
+[submodule "unity_ros_teleoperation"]
+	path = third_party/unity_ros_teleoperation
+	url = https://github.com/leggedrobotics/unity_ros_teleoperation.git
