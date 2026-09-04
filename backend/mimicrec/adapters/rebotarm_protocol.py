@@ -16,6 +16,7 @@ CMD_SET_MODE = "set_mode"
 CMD_HEARTBEAT = "heartbeat"
 CMD_ESTOP = "estop"
 CMD_CLEAR_ESTOP = "clear_estop"
+CMD_CLEAR_FAULT = "clear_fault"
 CMD_GET_SAFETY_STATUS = "get_safety_status"
 
 # Safety state values (in read_state and get_safety_status responses)

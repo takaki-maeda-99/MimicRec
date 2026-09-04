@@ -26,7 +26,7 @@ from reBotArm_control_py.dynamics import (
 class GravityCompController:
     """Pure-compliance gravity comp — kp=0, per-joint kd, tau_g feed-forward.
 
-    Mirrors reBotArm_control_py/data_collect/11_gravity_compensation_record.py:
+    Mirrors third_party/reBotArm_control_py/data_collect/11_gravity_compensation_record.py:
     every tick we send ``pos=q``, ``vel=0``, the configured kp/kd, and
     Pinocchio's gravity-balance torque. With kp=0 the arm offers no
     position-hold force; per-joint kd (higher on the proximal 4340P
@@ -109,6 +109,11 @@ class PositionController:
 
     def set_target(self, q: np.ndarray) -> None:
         self._target = np.asarray(q, dtype=float).copy()
+
+    @property
+    def target(self) -> np.ndarray | None:
+        """Latest safety-ramped position target accepted by the daemon."""
+        return None if self._target is None else self._target.copy()
 
     def reset(self) -> None:
         self._target = None

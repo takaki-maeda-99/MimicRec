@@ -1,7 +1,8 @@
 # reBotArm 机械臂配置文件
 
-# 通信方式: CAN (can0 / can1) 或 串口桥 (/dev/ttyACM0)
-channel: /dev/ttyACM0
+# 通信方式: CAN (can0 / can1) またはシリアルブリッジ。
+# ttyACM番号はUSBの挿抜順で変わるため、この実機固有の永続パスを使う。
+channel: /dev/serial/by-id/usb-HDSC_CDC_Device_00000000050C-if00
 
 # 控制循环频率 (Hz)
 rate: 500

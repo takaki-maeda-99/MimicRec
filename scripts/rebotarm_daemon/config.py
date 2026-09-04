@@ -10,15 +10,34 @@ import yaml
 
 @dataclass
 class SafetyLimits:
-    joint_pos_min_rad: List[float] = field(default_factory=lambda: [-3.14] * 6)
-    joint_pos_max_rad: List[float] = field(default_factory=lambda: [3.14] * 6)
-    joint_vel_max_rad_s: float = 3.14
-    joint_accel_max_rad_s2: float = 20.0
+    joint_pos_min_rad: List[float] = field(
+        default_factory=lambda: [-2.8, -3.14, -3.14, -1.87, -1.57, -3.14]
+    )
+    joint_pos_max_rad: List[float] = field(
+        default_factory=lambda: [2.8, 0.0, 0.0, 1.57, 1.57, 3.14]
+    )
+    joint_vel_max_rad_s: float = 12.0
+    joint_accel_max_rad_s2: float = 300.0
     torque_max_nm: List[float] = field(default_factory=lambda: [10.0] * 6)
     temperature_warn_c: float = 70.0
     temperature_fault_c: float = 80.0
     temperature_recover_c: float = 60.0
     heartbeat_timeout_ms: int = 500
+
+    def __post_init__(self) -> None:
+        if len(self.joint_pos_min_rad) != 6 or len(self.joint_pos_max_rad) != 6:
+            raise ValueError("joint position limits must each contain 6 values")
+        if any(
+            lower >= upper
+            for lower, upper in zip(
+                self.joint_pos_min_rad, self.joint_pos_max_rad
+            )
+        ):
+            raise ValueError("each joint position minimum must be below its maximum")
+        if self.joint_vel_max_rad_s <= 0.0:
+            raise ValueError("joint_vel_max_rad_s must be > 0")
+        if self.joint_accel_max_rad_s2 <= 0.0:
+            raise ValueError("joint_accel_max_rad_s2 must be > 0")
 
 
 @dataclass
@@ -26,7 +45,7 @@ class GravityCompParams:
     # Per-joint MIT gains for pure-compliance hand-teaching. kp=0 leaves the
     # arm fully free; kd damps motion, with higher values on the proximal
     # 4340P joints (1-3) which carry more reflected inertia. Mirrors
-    # reBotArm_control_py/data_collect/11_gravity_compensation_record.py.
+    # third_party/reBotArm_control_py/data_collect/11_gravity_compensation_record.py.
     kp: List[float] = field(default_factory=lambda: [0.0] * 6)
     kd: List[float] = field(
         default_factory=lambda: [1.5, 1.5, 1.0, 0.6, 0.4, 0.2]
@@ -58,13 +77,15 @@ class PositionParams:
     # mode_pos_vel() incurs, which used to drop the QDD arm under gravity
     # whenever replay flipped modes.
     #
-    # Defaults mirror arm.yaml's MIT.kp/kd (120/8 for proximal 4340P,
-    # 18/2 for distal 4310). Tune up for tighter tracking, down for
-    # softer landing on commanded targets.
+    # Distal 4310 gains are moderately raised above arm.yaml's 18/2 motor
+    # defaults for tighter position tracking. They remain far below the
+    # proximal 4340P gains.
     kp: List[float] = field(
-        default_factory=lambda: [120.0, 120.0, 120.0, 18.0, 18.0, 18.0]
+        default_factory=lambda: [120.0, 120.0, 120.0, 30.0, 30.0, 30.0]
     )
-    kd: List[float] = field(default_factory=lambda: [8.0, 8.0, 8.0, 2.0, 2.0, 2.0])
+    kd: List[float] = field(
+        default_factory=lambda: [8.0, 8.0, 8.0, 1.8, 1.8, 1.8]
+    )
 
 
 @dataclass
@@ -73,7 +94,7 @@ class GripperParams:
     # (omit the YAML section) if the hardware has no gripper.
     #
     # In GRAVITY_COMP mode the daemon runs a compliance loop based on
-    # reBotArm_control_py/data_collect/11_gravity_compensation_record.py:
+    # third_party/reBotArm_control_py/data_collect/11_gravity_compensation_record.py:
     # kp=0 (fully free), ``kd`` damps oscillation, and a small velocity-
     # direction friction-compensation torque (``friction_tau_nm`` past
     # ``vel_deadband_rad_s``) overcomes static friction so the gripper
@@ -152,6 +173,9 @@ class EnableSwitchParams:
     # is holding the deadman closed.
     chip: str = "gpiochip0"
     line: Union[int, str] = 17
+    # When true, GPIO initialisation failure aborts before the arm is
+    # connected. Keep false on controller PCs without GPIO hardware.
+    required: bool = False
     bias: str = "pull_up"
     active_state: str = "high"
     poll_hz: float = 50.0

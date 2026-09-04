@@ -41,18 +41,45 @@ class IdlePose:
     joint_names: tuple[str, ...]
 
 
+def _validate_idle_pose(pose: IdlePose) -> IdlePose:
+    joints = np.asarray(pose.joint_pos_rad, dtype=np.float32)
+    if joints.ndim != 1 or joints.size == 0:
+        raise ValueError("idle pose joint_pos_rad must be a non-empty vector")
+    if not np.isfinite(joints).all():
+        raise ValueError("idle pose contains non-finite joint positions")
+    if pose.joint_names and len(pose.joint_names) != joints.size:
+        raise ValueError(
+            "idle pose joint_names length does not match joint_pos_rad"
+        )
+    if pose.gripper_pos is not None and not math.isfinite(float(pose.gripper_pos)):
+        raise ValueError("idle pose contains a non-finite gripper position")
+    return IdlePose(
+        joint_pos_rad=joints,
+        gripper_pos=(
+            None if pose.gripper_pos is None else float(pose.gripper_pos)
+        ),
+        joint_names=tuple(str(name) for name in pose.joint_names),
+    )
+
+
 def load_idle_pose(path: Path | str = DEFAULT_IDLE_POSE_PATH) -> IdlePose:
     p = Path(path)
     doc = yaml.safe_load(p.read_text())
-    return IdlePose(
-        joint_pos_rad=np.asarray(doc["joint_pos_rad"], dtype=np.float32),
-        gripper_pos=(
-            float(doc["gripper_pos"])
-            if doc.get("gripper_pos") is not None
-            else None
-        ),
-        joint_names=tuple(doc.get("joint_names", [])),
-    )
+    if not isinstance(doc, dict):
+        raise ValueError(f"idle pose YAML must contain a mapping: {p}")
+    try:
+        pose = IdlePose(
+            joint_pos_rad=np.asarray(doc["joint_pos_rad"], dtype=np.float32),
+            gripper_pos=(
+                float(doc["gripper_pos"])
+                if doc.get("gripper_pos") is not None
+                else None
+            ),
+            joint_names=tuple(doc.get("joint_names", [])),
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(f"invalid idle pose YAML {p}: {exc}") from exc
+    return _validate_idle_pose(pose)
 
 
 def save_idle_pose(
@@ -66,9 +93,11 @@ def save_idle_pose(
     Returns the dict that was written so callers can include it in API
     responses without re-reading the file.
     """
+    pose = _validate_idle_pose(pose)
     p = Path(path)
     rad_list = [float(x) for x in pose.joint_pos_rad.tolist()]
     doc = {
+        "schema_version": 1,
         "joint_names": list(pose.joint_names),
         "joint_pos_rad": rad_list,
         "joint_pos_deg": [math.degrees(x) for x in rad_list],
@@ -81,6 +110,8 @@ def save_idle_pose(
     try:
         with os.fdopen(fd, "w") as f:
             yaml.safe_dump(doc, f, sort_keys=False, allow_unicode=True)
+            f.flush()
+            os.fsync(f.fileno())
         os.replace(tmp_path, p)
     except Exception:
         try:
@@ -116,6 +147,8 @@ async def move_to_idle(
     """
     if idle_pose is None:
         idle_pose = load_idle_pose()
+    else:
+        idle_pose = _validate_idle_pose(idle_pose)
     if clock is None:
         clock = RealClock()
     if duration_sec <= 0:
@@ -132,6 +165,30 @@ async def move_to_idle(
         raise ValueError(
             f"idle pose dof {q_goal.shape} != adapter dof {q_start.shape}"
         )
+    adapter_joint_names = tuple(str(name) for name in getattr(adapter, "joint_names", ()))
+    if (
+        idle_pose.joint_names
+        and adapter_joint_names
+        and idle_pose.joint_names != adapter_joint_names
+    ):
+        raise ValueError(
+            "idle pose joint_names do not match active robot: "
+            f"{idle_pose.joint_names} != {adapter_joint_names}"
+        )
+    if not np.isfinite(q_start).all():
+        raise ValueError("robot returned non-finite joint positions before home move")
+
+    gripper_start = (
+        float(start.gripper_pos)
+        if start.gripper_pos is not None and math.isfinite(float(start.gripper_pos))
+        else None
+    )
+    gripper_goal = idle_pose.gripper_pos
+    move_gripper = (
+        gripper_start is not None
+        and gripper_goal is not None
+        and hasattr(adapter, "send_gripper_command")
+    )
 
     await adapter.set_mode(RobotMode.POSITION)
 
@@ -143,7 +200,7 @@ async def move_to_idle(
     logger.info(
         "[idle] start: q_start=%s q_goal=%s gripper=%s steps=%d hold=%d (~%.2fs ramp + %.2fs hold @ %dHz) after=%s",
         q_start.tolist(), q_goal.tolist(),
-        "skip",
+        gripper_goal if move_gripper else "skip",
         n_steps, n_hold, duration_sec, hold_sec, fps, after_mode.value,
     )
 
@@ -151,6 +208,9 @@ async def move_to_idle(
         alpha = i / n_steps
         q_cmd = (q_start + (q_goal - q_start) * alpha).astype(np.float32)
         await adapter.send_joint_command(q_cmd)
+        if move_gripper:
+            gripper_cmd = gripper_start + (gripper_goal - gripper_start) * alpha
+            await adapter.send_gripper_command(float(gripper_cmd))
         await clock.sleep_until(next_tick_ns)
         next_tick_ns += tick_interval_ns
 
@@ -158,6 +218,8 @@ async def move_to_idle(
     # against the rigid controller before releasing to after_mode.
     for _ in range(n_hold):
         await adapter.send_joint_command(q_goal)
+        if move_gripper:
+            await adapter.send_gripper_command(float(gripper_goal))
         await clock.sleep_until(next_tick_ns)
         next_tick_ns += tick_interval_ns
 

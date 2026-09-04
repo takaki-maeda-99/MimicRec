@@ -33,6 +33,8 @@ them in sync.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
+import os
 import threading
 import time
 from typing import Optional  # noqa: F401  (used by Gripper annotation below)
@@ -68,6 +70,7 @@ CMD_SET_MODE = "set_mode"
 CMD_HEARTBEAT = "heartbeat"
 CMD_ESTOP = "estop"
 CMD_CLEAR_ESTOP = "clear_estop"
+CMD_CLEAR_FAULT = "clear_fault"
 CMD_GET_SAFETY_STATUS = "get_safety_status"
 
 MODE_POSITION = "position"
@@ -82,6 +85,42 @@ class _ArmDisconnected(Exception):
     has gone away. The outer retry loop in ``run_server`` catches this
     and reconnects after ``cfg.reconnect_interval_s``.
     """
+
+
+class _HardwareRecoveryGate:
+    """Allow normal loops to overlap while making recovery exclusive."""
+
+    def __init__(self) -> None:
+        self._condition = threading.Condition()
+        self._active_controls = 0
+        self._recovering = False
+
+    @contextmanager
+    def control(self):
+        with self._condition:
+            while self._recovering:
+                self._condition.wait()
+            self._active_controls += 1
+        try:
+            yield
+        finally:
+            with self._condition:
+                self._active_controls -= 1
+                if self._active_controls == 0:
+                    self._condition.notify_all()
+
+    @contextmanager
+    def recovery(self):
+        with self._condition:
+            self._recovering = True
+            while self._active_controls:
+                self._condition.wait()
+        try:
+            yield
+        finally:
+            with self._condition:
+                self._recovering = False
+                self._condition.notify_all()
 
 
 def _ramp_disable(arm: RobotArm, n: int, secs: float = 1.0, rate_hz: int = 100) -> None:
@@ -202,10 +241,18 @@ def run_server(cfg: DaemonConfig) -> None:
     # session because the GPIO line is independent of the arm — its
     # physical state should persist across an arm reconnect cycle. When
     # active, the daemon holds the current pose and rejects motion
-    # commands. ``None`` means either the YAML section was omitted or
-    # GPIO init failed; the daemon then behaves as if the line is
-    # permanently unlocked.
-    enable_switch = make_enable_switch(cfg.enable_switch)
+    # commands. Hardware installations can require successful GPIO
+    # initialisation in YAML; the environment flag remains an operational
+    # override for deployments that enforce the interlock centrally.
+    require_enable_switch = bool(
+        cfg.enable_switch is not None and cfg.enable_switch.required
+    ) or os.environ.get(
+        "MIMICREC_REBOTARM_REQUIRE_ENABLE_SWITCH", "0"
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    enable_switch = make_enable_switch(
+        cfg.enable_switch,
+        fail_closed=require_enable_switch,
+    )
     if enable_switch is not None:
         print("[rebotarm-daemon] enable_switch armed", flush=True)
 
@@ -268,6 +315,18 @@ def _serve_one_session(cfg: DaemonConfig, enable_switch) -> None:
     # overwritten unconditionally in the arm.mode_mit block below.
     mode = {"current": MODE_GRAVITY_COMP}
 
+    # The arm and gripper use the same physical controller from independent
+    # control threads.  Recovery commands must be atomic with respect to both
+    # loops so clear_error/enable/ensure_mode frames cannot interleave with
+    # MIT commands.
+    recovery_gate = _HardwareRecoveryGate()
+
+    def _serialized_control(callback):
+        def locked(*args, **kwargs):
+            with recovery_gate.control():
+                return callback(*args, **kwargs)
+        return locked
+
     # Optional gripper sharing the arm's CAN/serial bus. When configured,
     # we inject the arm's Controller into the Gripper so both sides talk
     # over the same bus instead of fighting for /dev/ttyACM0. The 100 Hz
@@ -317,7 +376,8 @@ def _serve_one_session(cfg: DaemonConfig, enable_switch) -> None:
                 g.mit(pos=pos, vel=0.0, kp=0.0, kd=gripper_params.kd, tau=tau)
 
             gripper.start_control_loop(
-                _gripper_callback, rate=float(gripper_params.control_rate_hz)
+                _serialized_control(_gripper_callback),
+                rate=float(gripper_params.control_rate_hz),
             )
 
         # Force the underlying motors into MIT mode at startup. RobotArm's
@@ -461,7 +521,9 @@ def _serve_one_session(cfg: DaemonConfig, enable_switch) -> None:
                 if consecutive_faults[0] >= fault_threshold:
                     disconnect_event.set()
 
-        arm.start_control_loop(control_callback, rate=cfg.control_rate_hz)
+        arm.start_control_loop(
+            _serialized_control(control_callback), rate=cfg.control_rate_hz
+        )
 
         ctx = zmq.Context()
         sock = ctx.socket(zmq.REP)
@@ -508,6 +570,7 @@ def _serve_one_session(cfg: DaemonConfig, enable_switch) -> None:
                 sock.send_json({"ok": True})
             elif cmd == CMD_READ_STATE:
                 snap = state.snapshot()
+                daemon_target = posctl.target
                 gpio_locked = (
                     bool(enable_switch.is_locked()) if enable_switch else False
                 )
@@ -515,6 +578,9 @@ def _serve_one_session(cfg: DaemonConfig, enable_switch) -> None:
                     "joint_pos": snap["joint_pos"].tolist(),
                     "joint_vel": snap["joint_vel"].tolist(),
                     "joint_effort": snap["joint_effort"].tolist(),
+                    "daemon_target_joint_pos": (
+                        None if daemon_target is None else daemon_target.tolist()
+                    ),
                     "ee_pos": None if snap["ee_pos"] is None else snap["ee_pos"].tolist(),
                     "ee_rotvec": None if snap["ee_rotvec"] is None else snap["ee_rotvec"].tolist(),
                     "gripper_pos": snap["gripper_pos"],
@@ -654,6 +720,44 @@ def _serve_one_session(cfg: DaemonConfig, enable_switch) -> None:
                     sock.send_json({"ok": True})
                 else:
                     sock.send_json({"ok": False, "reason": "preconditions not met"})
+            elif cmd == CMD_CLEAR_FAULT:
+                if msg.get("confirm_hardware_ready") is not True:
+                    sock.send_json({
+                        "ok": False,
+                        "error": "explicit hardware-ready confirmation is required",
+                    })
+                    continue
+
+                # A recovered motor may start producing torque immediately.
+                # Always discard position targets and resume in gravity-comp,
+                # never the pre-fault POSITION target.
+                with recovery_gate.recovery():
+                    mode["current"] = MODE_GRAVITY_COMP
+                    grav.reset()
+                    posctl.reset()
+                    safety.reset_ramp_state()
+                    last_cmd_t[0] = None
+                    gripper_target[0] = None
+
+                    arm_results = arm.clear_faults()
+                    gripper_result = (
+                        gripper.clear_fault() if gripper is not None else None
+                    )
+
+                motor_results = dict(arm_results)
+                if gripper_result is not None:
+                    motor_results["gripper"] = gripper_result
+                ok = all(item.get("ok", False) for item in motor_results.values())
+                print(
+                    f"[rebotarm-daemon] clear_fault ok={ok} "
+                    f"results={motor_results}",
+                    flush=True,
+                )
+                sock.send_json({
+                    "ok": ok,
+                    "mode": MODE_GRAVITY_COMP,
+                    "motors": motor_results,
+                })
             elif cmd == CMD_GET_SAFETY_STATUS:
                 snap = state.snapshot()
                 gpio_locked = (

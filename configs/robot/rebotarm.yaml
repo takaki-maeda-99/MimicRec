@@ -2,6 +2,14 @@ _target_: mimicrec.adapters.rebotarm_zmq.ReBotArmZmqAdapter
 address: tcp://localhost:5558
 heartbeat_interval_ms: 200
 request_timeout_ms: 1000
+
+# Quest/UI home command. The daemon's joint velocity and acceleration limits
+# remain authoritative if the requested ramp is faster than hardware allows.
+teleop_home:
+  duration_sec: 2.0
+  fps: 30
+  hold_sec: 0.3
+
 replay:
   ramp_duration_sec: 2
   # Watchdog thresholds — only abort replay on truly out-of-bounds

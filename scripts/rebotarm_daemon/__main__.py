@@ -6,6 +6,7 @@ import sys
 
 from rebotarm_daemon.config import load_daemon_config
 from rebotarm_daemon.server import run_server
+from rebotarm_daemon.singleton import daemon_lock
 
 
 def main() -> int:
@@ -18,8 +19,15 @@ def main() -> int:
         help="Path to the daemon YAML config (see configs/rebotarm/*.yaml).",
     )
     args = parser.parse_args()
-    cfg = load_daemon_config(args.config)
-    run_server(cfg)
+    with daemon_lock() as acquired:
+        if not acquired:
+            print(
+                "reBotArm daemon is already running; refusing a second hardware connection",
+                file=sys.stderr,
+            )
+            return 2
+        cfg = load_daemon_config(args.config)
+        run_server(cfg)
     return 0
 
 

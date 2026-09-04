@@ -58,6 +58,7 @@ async def test_read_state_includes_ee_fields(daemon_port):
         assert s.ee_pos is not None and s.ee_pos.shape == (3,)
         assert s.ee_rotvec is not None and s.ee_rotvec.shape == (3,)
         assert s.gripper_pos is not None
+        assert s.daemon_target_joint_pos is None
     finally:
         await a.disconnect()
 
@@ -72,6 +73,9 @@ async def test_send_joint_command_round_trips(daemon_port):
         # that mode by contract; flip to POSITION first.
         await a.set_mode(RobotMode.POSITION)
         await a.send_joint_command(np.zeros(6, dtype=np.float32))
+        state = await a.read_state()
+        assert state.daemon_target_joint_pos is not None
+        np.testing.assert_allclose(state.daemon_target_joint_pos, np.zeros(6))
     finally:
         await a.disconnect()
 
@@ -101,6 +105,25 @@ async def test_clear_estop_returns_ok_dict(daemon_port):
     try:
         result = await a.clear_estop()
         assert result.get("ok") is True
+    finally:
+        await a.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_clear_fault_requires_confirmation_and_returns_motor_results(
+    daemon_port,
+):
+    a = ReBotArmZmqAdapter(address=f"tcp://localhost:{daemon_port}")
+    await a.connect()
+    try:
+        refused = await a.clear_fault()
+        assert refused.get("ok") is False
+
+        await a.set_mode(RobotMode.POSITION)
+        result = await a.clear_fault(confirm_hardware_ready=True)
+        assert result.get("ok") is True
+        assert result.get("mode") == "gravity_comp"
+        assert all(item["ok"] for item in result["motors"].values())
     finally:
         await a.disconnect()
 

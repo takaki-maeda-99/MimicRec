@@ -113,6 +113,11 @@ def test_make_enable_switch_returns_none_when_disabled():
     assert make_enable_switch(None) is None
 
 
+def test_make_enable_switch_fails_closed_when_disabled():
+    with pytest.raises(RuntimeError, match="required but not configured"):
+        make_enable_switch(None, fail_closed=True)
+
+
 def test_make_enable_switch_returns_none_on_bad_chip(tmp_path):
     """An unopenable chip must not crash the daemon — just disable the switch.
 
@@ -126,3 +131,12 @@ def test_make_enable_switch_returns_none_on_bad_chip(tmp_path):
         active_state="high",
     )
     assert make_enable_switch(params) is None
+
+
+def test_make_enable_switch_fails_closed_on_bad_chip(tmp_path):
+    params = EnableSwitchParams(
+        chip=str(tmp_path / "missing-gpiochip"),
+        line=17,
+    )
+    with pytest.raises(RuntimeError, match="initialisation failed|gpiod is unavailable"):
+        make_enable_switch(params, fail_closed=True)

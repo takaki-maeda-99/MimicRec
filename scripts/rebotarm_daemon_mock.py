@@ -25,6 +25,7 @@ from mimicrec.adapters.rebotarm_protocol import (
     CMD_CONNECT, CMD_DISCONNECT, CMD_READ_STATE, CMD_SEND_COMMAND,
     CMD_SEND_GRIPPER_COMMAND,
     CMD_SET_MODE, CMD_HEARTBEAT, CMD_ESTOP, CMD_CLEAR_ESTOP,
+    CMD_CLEAR_FAULT,
     CMD_GET_SAFETY_STATUS, MODE_POSITION, MODE_GRAVITY_COMP,
     SAFETY_OK, SAFETY_ESTOP,
 )
@@ -112,6 +113,7 @@ def main() -> int:
             sock.send_json({"ok": True})
         elif cmd == CMD_READ_STATE:
             payload = _make_payload(state["t0"])
+            payload["daemon_target_joint_pos"] = state["last_cmd_q"]
             payload["safety_state"] = state["fault"] or SAFETY_OK
             sock.send_json(payload)
         elif cmd == CMD_SEND_COMMAND:
@@ -153,6 +155,24 @@ def main() -> int:
             # always succeeds in mock (no real temp / heartbeat constraints)
             state["fault"] = None
             sock.send_json({"ok": True})
+        elif cmd == CMD_CLEAR_FAULT:
+            if msg.get("confirm_hardware_ready") is not True:
+                sock.send_json({
+                    "ok": False,
+                    "error": "explicit hardware-ready confirmation is required",
+                })
+            else:
+                state["mode"] = MODE_GRAVITY_COMP
+                state["last_cmd_q"] = None
+                sock.send_json({
+                    "ok": True,
+                    "mode": MODE_GRAVITY_COMP,
+                    "motors": {
+                        **{name: {"ok": True, "status_code": 1}
+                           for name in JOINT_NAMES},
+                        "gripper": {"ok": True, "status_code": 1},
+                    },
+                })
         elif cmd == CMD_GET_SAFETY_STATUS:
             sock.send_json({
                 "safety_state": state["fault"] or SAFETY_OK,

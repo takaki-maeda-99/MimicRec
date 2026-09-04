@@ -12,12 +12,10 @@ Raspberry Pi 5 and Jetson family. Pin identity is given by
 ``chip`` + ``line`` (offset or line-name) so the same daemon binary
 moves between boards by only editing YAML.
 
-Importing this module does not require ``gpiod`` to be installed —
-``make_enable_switch`` lazy-imports it and falls back to a no-op when
-gpiod or the chip is unavailable (e.g., running the daemon on a
-non-Pi/Jetson machine for testing). This keeps the daemon operational
-even without a working switch; absence of the switch simply means the
-software path is always "unlocked".
+Importing this module does not require ``gpiod`` to be installed.
+``make_enable_switch`` lazy-imports it. Manual development keeps a no-op
+fallback on machines without GPIO, while the managed hardware service asks
+for fail-closed initialisation so the interlock cannot disappear silently.
 """
 from __future__ import annotations
 
@@ -166,19 +164,27 @@ class EnableSwitch:
 
 def make_enable_switch(
     params: Optional[EnableSwitchParams],
+    *,
+    fail_closed: bool = False,
 ) -> Optional[EnableSwitch]:
     """Return an ``EnableSwitch`` instance, or ``None`` if disabled.
 
-    Returns ``None`` when ``params is None`` (section omitted from YAML)
-    or when initialisation fails — gpiod missing, chip not present,
-    line offset out of range, etc. A failed init is logged but does not
-    raise: the daemon should still come up on dev machines without GPIO.
+    With ``fail_closed=False``, returns ``None`` when disabled or when GPIO
+    initialisation fails, preserving manual development on machines without
+    GPIO. With ``fail_closed=True``, either case raises and prevents the daemon
+    from connecting to hardware.
     """
     if params is None:
+        if fail_closed:
+            raise RuntimeError("hardware enable_switch is required but not configured")
         return None
     try:
         return EnableSwitch(params)
     except ImportError as e:
+        if fail_closed:
+            raise RuntimeError(
+                f"hardware enable_switch is required but gpiod is unavailable: {e}"
+            ) from e
         print(
             f"[rebotarm-daemon] enable_switch configured but gpiod "
             f"unavailable: {e}; switch disabled",
@@ -186,6 +192,11 @@ def make_enable_switch(
         )
         return None
     except Exception as e:
+        if fail_closed:
+            raise RuntimeError(
+                f"hardware enable_switch initialisation failed: "
+                f"{type(e).__name__}: {e}"
+            ) from e
         print(
             f"[rebotarm-daemon] enable_switch init failed ({type(e).__name__}: "
             f"{e}); switch disabled",

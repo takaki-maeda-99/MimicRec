@@ -11,9 +11,21 @@ from rebotarm_daemon.config import (
 
 def test_safety_limits_defaults_present():
     s = SafetyLimits()
+    assert s.joint_pos_min_rad == [-2.8, -3.14, -3.14, -1.87, -1.57, -3.14]
+    assert s.joint_pos_max_rad == [2.8, 0.0, 0.0, 1.57, 1.57, 3.14]
+    assert s.joint_vel_max_rad_s == 12.0
+    assert s.joint_accel_max_rad_s2 == 300.0
     assert s.heartbeat_timeout_ms > 0
     assert s.temperature_warn_c < s.temperature_fault_c
     assert s.temperature_recover_c < s.temperature_fault_c
+
+
+def test_safety_limits_reject_invalid_joint_ranges():
+    with pytest.raises(ValueError, match="minimum"):
+        SafetyLimits(
+            joint_pos_min_rad=[0.0] * 6,
+            joint_pos_max_rad=[0.0] * 6,
+        )
 
 
 def test_loads_yaml(tmp_path):
@@ -91,8 +103,8 @@ def test_loads_empty_yaml_yields_full_defaults(tmp_path):
     # identical to the pre-taper controller for users who haven't
     # opted in via YAML.
     assert cfg.gravity_comp.friction_vel_taper_rad_s == [0.0] * 6
-    assert cfg.position.kp == [120.0, 120.0, 120.0, 18.0, 18.0, 18.0]
-    assert cfg.position.kd == [8.0, 8.0, 8.0, 2.0, 2.0, 2.0]
+    assert cfg.position.kp == [120.0, 120.0, 120.0, 30.0, 30.0, 30.0]
+    assert cfg.position.kd == [8.0, 8.0, 8.0, 1.8, 1.8, 1.8]
     # The enable-switch is opt-in: an empty YAML leaves it disabled so
     # the daemon comes up identically to before this feature landed.
     assert cfg.enable_switch is None
@@ -160,8 +172,17 @@ def test_enable_switch_defaults_match_pi5_bcm17():
     p = EnableSwitchParams()
     assert p.chip == "gpiochip0"
     assert p.line == 17
+    assert p.required is False
     assert p.bias == "pull_up"
     assert p.active_state == "high"
+
+
+def test_enable_switch_required_loads_from_yaml(tmp_path):
+    p = tmp_path / "switch_required.yaml"
+    p.write_text("enable_switch:\n  required: true\n")
+    cfg = load_daemon_config(p)
+    assert cfg.enable_switch is not None
+    assert cfg.enable_switch.required is True
 
 
 def test_reconnect_defaults_match_documented_2s_and_250_ticks():

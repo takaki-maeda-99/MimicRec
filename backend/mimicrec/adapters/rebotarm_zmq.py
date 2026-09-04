@@ -16,6 +16,7 @@ from mimicrec.adapters.rebotarm_protocol import (
     CMD_CONNECT, CMD_DISCONNECT, CMD_READ_STATE, CMD_SEND_COMMAND,
     CMD_SEND_GRIPPER_COMMAND,
     CMD_SET_MODE, CMD_HEARTBEAT, CMD_ESTOP, CMD_CLEAR_ESTOP,
+    CMD_CLEAR_FAULT,
     DEFAULT_ZMQ_ADDRESS,
 )
 from mimicrec.adapters.types import GripperConvention, ProprioLayout
@@ -100,7 +101,9 @@ class ReBotArmZmqAdapter:
             self._teardown_socket()
             raise HardwareError(
                 f"reBotArm daemon connect failed at {self._address}: {e}\n"
-                f"Is the daemon running? Start it in another terminal:\n"
+                f"The service process may be active while its hardware reconnects. "
+                f"Check the Managed services endpoint status and serial-device path.\n"
+                f"To start it manually:\n"
                 f"    .venv-rebotarm/bin/python -m rebotarm_daemon "
                 f"--config configs/rebotarm_daemon.yaml"
             ) from e
@@ -163,6 +166,11 @@ class ReBotArmZmqAdapter:
                        if reply.get("ee_rotvec") is not None else None),
             gripper_pos=(float(reply["gripper_pos"])
                          if reply.get("gripper_pos") is not None else None),
+            daemon_target_joint_pos=(
+                np.asarray(reply["daemon_target_joint_pos"], dtype=np.float32)
+                if reply.get("daemon_target_joint_pos") is not None
+                else None
+            ),
         )
 
     async def send_joint_command(self, q: np.ndarray) -> None:
@@ -217,4 +225,14 @@ class ReBotArmZmqAdapter:
         reply = await self._request({"cmd": CMD_CLEAR_ESTOP})
         if "ok" not in reply:
             raise HardwareError(f"malformed clear_estop reply: {reply}")
+        return reply
+
+    async def clear_fault(self, *, confirm_hardware_ready: bool = False) -> dict:
+        """Clear hardware motor faults and re-enter MIT gravity compensation."""
+        reply = await self._request({
+            "cmd": CMD_CLEAR_FAULT,
+            "confirm_hardware_ready": bool(confirm_hardware_ready),
+        })
+        if "ok" not in reply:
+            raise HardwareError(f"malformed clear_fault reply: {reply}")
         return reply

@@ -1,6 +1,7 @@
 # reBotArm 夹爪配置文件
 
-channel: /dev/ttyACM0
+# Armと同じシリアルバス。ttyACM番号ではなく実機固有の永続パスを使う。
+channel: /dev/serial/by-id/usb-HDSC_CDC_Device_00000000050C-if00
 
 gripper:
   - name: gripper
@@ -17,7 +18,7 @@ gripper:
       pos_kp: 50.0
       pos_ki: 1.0
       vlim: 3.0
-    # 歯飛び限界トルク (実測; reBotArm_control_py/example/measure_gripper_max_torque.py)
+    # 歯飛び限界トルク (実測; third_party/reBotArm_control_py/example/measure_gripper_max_torque.py)
     # - intact 個体: tau_cmd ~3.88 Nm で歯飛び発生 (gripper_torque_test_1778392815.csv, 2026-05-10)
     #   モータ 4310 のピーク (~4 Nm) 付近 = 機構側のマージンほぼゼロ。
     # - 一度歯飛びさせると以降 ~1.3 Nm で滑る (劣化が残る) → 修理/交換が必要。

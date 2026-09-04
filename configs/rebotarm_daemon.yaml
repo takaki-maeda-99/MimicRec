@@ -20,18 +20,16 @@ disconnect_fault_threshold: 250
 # the result here. Examples:
 #   45° tilt to the right (about base +x) → [0.0, -6.937, -6.937]
 #   45° tilt forward       (about base +y) → [+6.937, 0.0, -6.937]
-gravity_in_base: [-6.937, 0.0, -6.937]   # 右 45° 傾斜マウント (manual verification)
+gravity_in_base: [0.0, 0.0, -9.81]   # upright base; keep floor normal +Z
 safety:
-  joint_pos_min_rad: [-3.14, -3.14, -3.14, -3.14, -3.14, -3.14]
-  joint_pos_max_rad: [3.14, 3.14, 3.14, 3.14, 3.14, 3.14]
-  # Smoothing clamps applied per-tick to incoming send_joint_command
-  # targets. Hand-teach recordings have jerky frames that the daemon
-  # ramps down to physical motion limits — the actual arm never sees a
-  # raw target that exceeds these. Bump if replay tracks too sluggishly,
-  # lower for stricter safety. ~12 rad/s ≈ 690 °/s, comfortably above
-  # the ~11 rad/s peaks we see in fast hand-teach motion.
+  # Physical limits from the active reBotArm URDF. These are intentionally
+  # duplicated at the daemon boundary as the final independent clamp.
+  joint_pos_min_rad: [-2.8, -3.14, -3.14, -1.87, -1.57, -3.14]
+  joint_pos_max_rad: [2.8, 0.0, 0.0, 1.57, 1.57, 3.14]
+  # Preserve the original position-mode tracking envelope. Cartesian IK,
+  # joint continuity, physical limits, and floor-path checks remain upstream.
   joint_vel_max_rad_s: 12.0
-  joint_accel_max_rad_s2: 100.0
+  joint_accel_max_rad_s2: 300.0
   torque_max_nm: [10, 10, 8, 5, 5, 3]
   temperature_warn_c: 70
   temperature_fault_c: 80
@@ -63,15 +61,16 @@ gravity_comp:
   friction_vel_taper_rad_s: [1.5, 1.5, 1.5, 1.0, 1.0, 0.0]
 
 # Position-tracking gains for replay / teleop. Motors stay in MIT mode;
-# POSITION is just MIT with strong kp + tau_g. Defaults mirror arm.yaml's
-# MIT.kp/kd (120/8 for 4340P, 18/2 for 4310). Tune up for tighter
-# tracking, down for softer landing.
+# POSITION is just MIT with strong kp + tau_g. The distal 4310 joints use
+# moderately raised gains over their 18/2 motor defaults for tighter Quest
+# tracking without applying the proximal 4340P gains to smaller motors.
 position:
-  kp: [120, 120, 120, 18, 18, 18]
-  kd: [8, 8, 8, 2, 2, 2]
+  kp: [120, 120, 120, 30, 30, 30]
+  kd: [8, 8, 8, 1.8, 1.8, 1.8]
 
 # Optional gripper sharing the arm's bus (motor 0x07 on the same
-# /dev/ttyACM0). Remove this section to disable the gripper entirely.
+# persistent serial device configured in arm.yaml/gripper.yaml). Remove this
+# section to disable the gripper entirely.
 # friction_tau_nm: torque applied in the velocity direction once velocity
 # crosses vel_deadband_rad_s, to overcome static friction. Increase if
 # the gripper still feels sticky; decrease if it drifts on its own.
@@ -100,7 +99,7 @@ gripper:
   # or the idle ramp will be silently clamped short. Uncomment + tune
   # to the gripper's safe open / closed range.
   position_min_rad: -5.5
-  position_max_rad: -0.5
+  position_max_rad: 0.0
 
 # Optional hardware enable-switch (deadman) on a GPIO line. When the
 # line reads its "locked" state the daemon holds the current pose in
@@ -125,6 +124,10 @@ gripper:
 enable_switch:
   chip: gpiochip0
   line: 17
+  # Controller PCs without a GPIO device can still use the software safety
+  # flow. Set true on the final hardware host to fail closed if the physical
+  # interlock cannot be opened.
+  required: false
   bias: pull_up
   active_state: high
   poll_hz: 50

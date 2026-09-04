@@ -10,6 +10,7 @@ def test_command_names_are_stable_strings():
     assert p.CMD_HEARTBEAT == "heartbeat"
     assert p.CMD_ESTOP == "estop"
     assert p.CMD_CLEAR_ESTOP == "clear_estop"
+    assert p.CMD_CLEAR_FAULT == "clear_fault"
     assert p.CMD_GET_SAFETY_STATUS == "get_safety_status"
 
 
