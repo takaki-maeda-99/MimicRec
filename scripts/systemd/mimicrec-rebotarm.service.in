@@ -1,0 +1,41 @@
+[Unit]
+Description=MimicRec reBotArm safety daemon
+After=network-online.target
+Wants=network-online.target
+ConditionFileIsExecutable=@REPO_ROOT@/.venv-rebotarm/bin/python
+ConditionPathExists=@REPO_ROOT@/configs/rebotarm_daemon.yaml
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=simple
+WorkingDirectory=@REPO_ROOT@
+Environment=PYTHONUNBUFFERED=1
+Environment="PYTHONPATH=@REPO_ROOT@/scripts"
+Environment="MPLCONFIGDIR=%t/mimicrec-matplotlib"
+ExecStartPre="@REPO_ROOT@/.venv-rebotarm/bin/python" "@REPO_ROOT@/scripts/check_tcp_port_available.py" --port 5558
+ExecStart="@REPO_ROOT@/.venv-rebotarm/bin/python" -m rebotarm_daemon --config "@REPO_ROOT@/configs/rebotarm_daemon.yaml"
+
+# The daemon owns the hardware safety shutdown. SIGINT lets it ramp the arm
+# down before disconnecting; systemd kills the whole control group if teardown
+# does not finish within the deadline.
+KillSignal=SIGINT
+KillMode=control-group
+TimeoutStopSec=15
+# A hard crash requires a fresh operator confirmation in the UI. Hardware
+# unplug/replug recovery is already handled inside the daemon process.
+Restart=no
+
+# The daemon needs the user's hardware groups but never needs elevated rights.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+UMask=0077
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mimicrec-rebotarm
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,35 @@
+[Unit]
+Description=MimicRec SO-101 safety daemon
+After=network-online.target
+Wants=network-online.target
+ConditionFileIsExecutable=@REPO_ROOT@/.venv/bin/python
+ConditionPathExists=@REPO_ROOT@/configs/so101_daemon.yaml
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=simple
+WorkingDirectory=@REPO_ROOT@
+Environment=PYTHONUNBUFFERED=1
+Environment="PYTHONPATH=@REPO_ROOT@/scripts"
+ExecStartPre="@REPO_ROOT@/.venv/bin/python" "@REPO_ROOT@/scripts/check_tcp_port_available.py" --port 5559
+ExecStart="@REPO_ROOT@/.venv/bin/python" -m so101_daemon --config "@REPO_ROOT@/configs/so101_daemon.yaml"
+
+KillSignal=SIGINT
+KillMode=control-group
+TimeoutStopSec=15
+# A crash leaves torque state uncertain, so require an operator-confirmed start.
+Restart=no
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+UMask=0077
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mimicrec-so101
+
+[Install]
+WantedBy=default.target

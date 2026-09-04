@@ -1,9 +1,10 @@
 from __future__ import annotations
 from contextlib import asynccontextmanager
+import os
 from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from mimicrec.api.routes import configs, cloud, datasets, episode, inference, replay, session, settings
+from mimicrec.api.routes import configs, cloud, datasets, episode, inference, replay, services, session, settings
 from mimicrec.api.ws import session_hub, state_hub, camera_hub, teleop_hub, inference_hub
 from mimicrec.api.errors import register_exception_handlers
 from mimicrec.cloud.push_state import PushCoordinator
@@ -25,12 +26,21 @@ async def lifespan(app: FastAPI):
 
 def create_app() -> FastAPI:
     app = FastAPI(title="MimicRec", version="0.1.0", lifespan=lifespan)
+    cors_origins = [
+        origin.strip()
+        for origin in os.environ.get(
+            "MIMICREC_CORS_ORIGINS",
+            "http://localhost:5173,http://127.0.0.1:5173,"
+            "http://localhost:8000,http://127.0.0.1:8000",
+        ).split(",")
+        if origin.strip()
+    ]
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],  # MVP: allow all origins
-        allow_credentials=True,
+        allow_origins=cors_origins,
+        allow_credentials=False,
         allow_methods=["*"],
-        allow_headers=["*"],
+        allow_headers=["Content-Type", "X-MimicRec-Control"],
     )
     app.state.session_manager = None
     app.state.error_bus = None
@@ -42,6 +52,7 @@ def create_app() -> FastAPI:
     app.state.vla_dest_root = None
     app.state.push_coordinator = PushCoordinator()
     app.state.auth_cache = None
+    app.state.service_manager = None
     app.include_router(session.router, prefix="/api")
     app.include_router(episode.router, prefix="/api")
     app.include_router(replay.router, prefix="/api")
@@ -49,6 +60,7 @@ def create_app() -> FastAPI:
     app.include_router(datasets.router, prefix="/api")
     app.include_router(configs.router, prefix="/api")
     app.include_router(settings.router, prefix="/api")
+    app.include_router(services.router, prefix="/api")
     app.include_router(cloud.router, prefix="/api")
     app.include_router(session_hub.router)
     app.include_router(state_hub.router)
