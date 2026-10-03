@@ -13,7 +13,6 @@ jobs:
     timeout-minutes: 10
     env:
       HF_HUB_OFFLINE: "1"
-      HF_HOME: ${{ runner.temp }}/hf-test-home
     steps:
       - uses: actions/checkout@v4
         with:
@@ -30,6 +29,8 @@ jobs:
           .venv/bin/python -m pip install --index-url https://pypi.org/simple -e "./backend[dev]" "aiohttp>=3.13.5" "pytest-aiohttp>=1.1.0" Pillow pyzmq
 
       - name: Run reservation tests
+        env:
+          HF_HOME: ${{ runner.temp }}/hf-test-home
         run: |
           bash scripts/test.sh -q \
             tests/unit/test_push_state.py \
