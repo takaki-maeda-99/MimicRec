@@ -57,11 +57,7 @@ class PushCoordinator:
         Returns True if successfully reserved (caller may proceed to delete),
         False if a push is in flight. Reservation prevents concurrent push.
         Caller must call drop_dataset(ds_name) when done."""
-        with self._mu:
-            if ds_name in self.in_flight:
-                return False
-            self.in_flight.add(ds_name)
-            return True
+        return self.try_reserve(ds_name)
 
     def drop_dataset(self, ds_name: str) -> None:
         """Cleanup all state for a deleted dataset."""
